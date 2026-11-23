@@ -1,0 +1,53 @@
+---
+type: log
+status: current
+updated: 2026-11-22
+related: [protocol.md, ../decisions/0008-idle-ram-50mb.md, ../decisions/0009-data-oriented-no-caches.md]
+---
+# Measurements
+
+Rows are only added, newest on top; one row per terminal per measurement session.
+If the table grows past ~40 rows, move the old ones to `measurements-YYYY.md` and link it here.
+
+Reference machine: AMD Ryzen 5 5600H (Cezanne iGPU, Radeon Vega) + NVIDIA RTX 3050 Mobile,
+Ubuntu, kernel 7.0.0-44, GNOME Shell 50.1 on Wayland, Mesa 26.0.8, NVIDIA driver 595.99.02.
+adapter chosen with `PowerPreference::LowPower`. Window 1000x640, idle shell (`sleep`).
+
+| Date | Terminal | Commit | Idle CPU | Startup | Latency | `cat` 100 MB | RSS | PSS | Notes |
+|---|---|---|---|---|---|---|---|---|---|
+| 2026-11-22 | axon, damage tracking, lazy fonts, Cascadia NF (default) | uncommitted | 0.0% | - | - | 4.3 s | 191 MB | 170 MB | after the 100 MB `cat`: RSS 216 MB, anon 99 MB (scrollback) |
+| 2026-11-22 | axon, lazy fonts, JetBrains Mono, radeon ICD only | uncommitted | 0.0% | - | - | - | 119 MB | 107 MB | anon 24 MB, file 94 MB (`VK_LOADER_DRIVERS_SELECT='*radeon*'`) |
+| 2026-11-22 | axon, lazy fonts, JetBrains Mono | uncommitted | 0.0% | - | - | - | 148 MB | 127 MB | anon 31 MB, file 117 MB |
+| 2026-11-22 | axon, lazy fonts, Cascadia NF (default) | uncommitted | 0.0% | - | - | - | 191 MB | 170 MB | anon 73 MB: the primary font alone is ~45 MB in fontdue |
+| 2026-11-22 | axon, before the font fix | uncommitted | 0.0% | - | - | - | 946 MB | 883 MB | anon 827 MB, see findings |
+
+Alacritty, Ghostty and foot are not installed on the reference machine, so no comparison row
+exists yet (task 1 in [next-steps](../plan/next-steps.md)).
+
+## Findings
+
+- **Cell buffer redesign** ([0009](../decisions/0009-data-oriented-no-caches.md)): the renderer output is
+  byte-identical to the previous one on 5 fixed scenes (block, beam and underline cursors, hollow cursor,
+  hidden cursor; every SGR attribute, wide characters, box drawing), and a long incremental run matches a full
+  rebuild every frame, both at 0 differing bytes of 2.56 MB. Idle RSS and the 100 MB `cat` time are unchanged
+  (191 MB, 4.3 s); the saving is structural (no row vectors, no mirror, 12 B per cell, no `rc`).
+- **Swapchain format is `Rgba16Float`** (8 bytes per pixel, 5 MB per image at 1000x640): `Gpu::new` takes the
+  first non-sRGB format the surface offers. `Bgra8Unorm` would halve it; task 14 in
+  [next-steps](../plan/next-steps.md).
+
+- **Damage tracking** (1000x640 window, 34 rows, workload script, 40 frames): `build()` median
+  79 us for a full rebuild, 12 us when 2 rows are rebuilt. Absolute savings are small at this
+  size and grow with the window. Incremental output matched a full rebuild byte for byte in all
+  40 frames (temporary check, removed). Output floods gain nothing: scrolling is Full damage.
+
+- **fontdue parses every glyph when a font is loaded.** Standalone: DejaVu Sans Mono 9 MB,
+  Cascadia Mono NF (13.5k glyphs) 45 MB and 76 ms, Noto Sans CJK (65k glyphs, 19 MB file)
+  314 MB and 624 ms. The old code loaded the CJK font at startup and again on
+  `ScaleFactorChanged`, which is why idle RSS was ~900 MB.
+- **Fix applied:** fallback fonts are loaded on first use, the CJK font is only consulted for
+  CJK code points, and a size change recomputes metrics without re-reading files.
+- **Floor from the graphics stack:** ~94 MB of file-backed pages (libLLVM from lavapipe, NVIDIA
+  and Mesa libraries mapped by the Vulkan loader), even with only the Radeon ICD enabled. This
+  is why 50 MB of RSS is not reachable here; the revisit condition of
+  [0008](../decisions/0008-idle-ram-50mb.md) is met. The private heap (`anon`) is 24-31 MB
+  with a small font.
