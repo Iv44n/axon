@@ -6,7 +6,8 @@ related: [protocol.md, ../decisions/0008-idle-ram-50mb.md, ../decisions/0009-dat
 ---
 # Measurements
 
-Rows are only added, newest on top; one row per terminal per measurement session.
+Rows are only added, newest on top; one row per terminal per measurement session. The
+README `Benchmarks` section carries the current numbers (from `scripts/bench.sh`); this log keeps the detail.
 If the table grows past ~40 rows, move the old ones to `measurements-YYYY.md` and link it here.
 
 Reference machine: AMD Ryzen 5 5600H (Cezanne iGPU, Radeon Vega) + NVIDIA RTX 3050 Mobile,
@@ -15,6 +16,7 @@ adapter chosen with `PowerPreference::LowPower`. Window 1000x640, idle shell (`s
 
 | Date | Terminal | Commit | Idle CPU | Startup | Latency | `cat` 100 MB | RSS | PSS | Notes |
 |---|---|---|---|---|---|---|---|---|---|
+| 2026-11-22 | axon `AXON_BACKEND=wl` (own Wayland client, CPU renderer), JetBrains Mono | 0b72197+ | 0.0% | - | - | 1.7 s | 12 MB | 8 MB | anon 5, file 5, shmem 2; Cascadia NF default: 54 MB; see software-renderer.md |
 | 2026-11-22 | spike: CPU into `wl_shm`, 1920x1048 window | not in repo | - | - | - | - | 14 MB | 8.2 MB | anon 3.7, file 1.9, shmem 8.4 (one buffer); see findings |
 | 2026-11-22 | spike: CPU into `wl_shm`, 1000x640 window | not in repo | 0.0% | - | - | - | 8.7 MB | 5.6 MB | anon 3.7, file 1.9, shmem 3.1 (one buffer); no wgpu, no winit |
 | 2026-11-22 | axon, damage tracking, lazy fonts, Cascadia NF (default) | uncommitted | 0.0% | - | - | 4.3 s | 191 MB | 170 MB | after the 100 MB `cat`: RSS 216 MB, anon 99 MB (scrollback) |
@@ -28,9 +30,9 @@ exists yet (task 1 in [next-steps](../plan/next-steps.md)).
 
 ## Findings
 
-- **CPU renderer and the `wl_shm` spike** (experiment 0 and stage A of task 15): idle RSS 8.7 MB at 1000x640
-  and 14 MB at 1080p without the GPU stack, against 191 MB today; CPU output within 1/255 of the GPU.
-  Details in [software-renderer](software-renderer.md).
+- **CPU renderer and the `wl_shm` spike** (experiment 0, stages A and B of task 15): idle RSS 8.7 MB in the
+  spike and 12-54 MB in the real app on the own Wayland client (font dependent), against 191 MB on
+  `wgpu`; CPU output within 1/255 of the GPU. Details in [software-renderer](software-renderer.md).
 
 
 - **Cell buffer redesign** ([0009](../decisions/0009-data-oriented-no-caches.md)): the renderer output is

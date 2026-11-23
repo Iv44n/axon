@@ -9,6 +9,7 @@ arboard = { version = "3.7.0", default-features = false, features = ["wayland-da
 bytemuck = { version = "1.25.2", features = ["derive"] }
 fontdue = "0.9.5"
 pollster = "1.0.3"
+rustix = { version = "1", default-features = false, features = ["std", "net", "event", "fs", "mm"] }
 wgpu = "30.0.2"
 winit = "0.30.13"
 

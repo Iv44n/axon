@@ -25,17 +25,21 @@ winit user_event ─► request_redraw ─► State::build() ─► Gpu cell buf
 
 | Module | Responsibility | May depend on |
 |---|---|---|
-| `main.rs` | winit app, `State` (window+session+mouse), `build()` grid→cells | all |
+| `main.rs` | winit app, `State` (window+session+mouse); picks the backend | all |
 | `cell.rs` | `Cell`, `F_*` flags, `T_*` special tiles, `pack`, the `Glyphs` trait | bytemuck |
 | `font.rs` | `Fonts` (fallbacks, rasterizing), `GlyphTable`, special tile bitmaps | fontdue |
 | `gpu.rs` | wgpu, atlas, pipelines, `render()` (to be deleted: [0011](../../../knowledge/decisions/0011-software-render-wl-shm.md)) | winit (`Window` only), `cell`, `font` |
-| `soft.rs` | CPU renderer into an `Argb8888` framebuffer; the replacement for `gpu.rs`, not wired in yet | `cell`, `font` |
+| `soft.rs` | CPU renderer into an `Argb8888` framebuffer; the replacement for `gpu.rs` | `cell`, `font`, `view` (trait only) |
+| `view.rs` | grid -> cells: `View::build(term, focused, &mut impl Backend)`, damage, cursor and selection rows | `cell`, `palette`, alacritty |
+| `session.rs` | `Term` + PTY thread (`spawn`, `resize`), `grid_size` | alacritty |
+| `wl.rs` | own Wayland client: wire protocol, `xdg_toplevel`, `wl_shm` buffers, frame callbacks | `rustix` |
+| `wlapp.rs` | the app on `wl.rs` + `soft.rs` + `session.rs` (`AXON_BACKEND=wl`); one blocking `poll` loop | all of the above |
 | `input.rs` | `KeyEvent` → xterm bytes | winit, alacritty `TermMode` |
 | `palette.rs` | Neon ANSI palette, `Color`→`Rgb` resolution | alacritty `vte::ansi` |
 | `shader.wgsl` | Vertex/fragment for cells and background | — |
 
 ## Dependency rules (inviolable)
-1. `gpu.rs` and `soft.rs` do **not** know about `alacritty_terminal` or `Term`. It only receives rows of `Cell { tile|flags, fg, bg }`; the position is the index.
+1. `gpu.rs`, `soft.rs` and `wl.rs` do **not** know about `alacritty_terminal` or `Term`. Renderers only receive rows of `Cell { tile|flags, fg, bg }` through `view::Backend`; the position is the index.
 2. `input.rs` is pure: no state, no I/O, unit-testable.
 3. `palette.rs` is data + pure functions. Future themes replace its constants, not its logic.
 4. Nothing outside `main.rs`/`app` touches `winit::event_loop`.

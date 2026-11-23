@@ -10,6 +10,7 @@ Direction: data-oriented, no caches, own implementations instead of dependencies
 - `cargo run --release` — run (debug is too slow for rendering).
 - `cargo build --release` — fat LTO, `panic=abort`, strip.
 - Env: `AXON_FONT`, `AXON_FONT_SIZE` (15), `AXON_OPACITY` (0.93), `AXON_DECORATIONS=1`.
+- `AXON_BACKEND=wl` runs on the own Wayland client and the CPU renderer (no input yet); the default is still `winit` + `wgpu`. `AXON_WL_DEBUG=1` traces the protocol.
 
 ## Project skills (read them before touching the corresponding area)
 - `axon-architecture` — layers, data flow, dependency rules, module roadmap.
@@ -30,3 +31,4 @@ indexes and open only the leaf you need. To write in it: `knowledge/MAINTENANCE.
 4. Verify the real UI after a visual change; `cargo build` does not prove it looks right. Renderer refactors must be pixel-exact (method in `axon-data-oriented-design`).
 5. No caches: do not add one, redesign the data instead. Flat arrays over hash tables, indices over pointers.
 6. Prefer our own implementation to a new dependency; existing dependencies are scaffolding with an exit plan (`knowledge/plan/own-implementations.md`).
+7. Keep the numbers current: after any change that can move binary size, memory or speed (code, dependencies, build profile, fonts), run `scripts/bench.sh` and update the README `Benchmarks` section (tables, date, commit and a new history row) and `knowledge/performance/` in the same change. Never leave stale numbers.

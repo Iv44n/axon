@@ -33,8 +33,9 @@ reachable. 0008 is `superseded-by-0011`: the metric stays RSS. Work plan: [softw
 - *Raw Vulkan or OpenGL/EGL:* not measured, but the loader and the driver are the floor, not `wgpu`.
 
 **Open questions (answer before or during the work):**
-- Double buffering: Mutter releases shm buffers right after copying; other compositors need a second
-  buffer (+8 MB at 1080p). Measure with a release-wait single buffer.
+- Double buffering: Mutter releases shm buffers right after copying, so one buffer is enough there
+  (measured in stage B); other compositors need a second buffer (+8 MB at 1080p), which `wl.rs` allocates
+  only when the first is still busy. Untested on a compositor that holds buffers.
 - HiDPI and fractional scale (`wp_fractional_scale_v1` + `wp_viewporter`) enlarge the buffer.
 - X11 (MIT-SHM or `XPutImage`) and the clipboard (`arboard`) need their own clients later.
 - Text quality: reproduce the squared-coverage blend of the shader on the CPU; compare pixels.

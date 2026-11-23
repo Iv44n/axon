@@ -6,6 +6,7 @@ use winit::window::Window;
 
 use crate::cell::{Cell, Glyphs, MAX_TILES, T_BLANK, T_FIRST_GLYPH, pack};
 use crate::font::{Fonts, GlyphTable, special_tiles};
+use crate::view::Backend;
 
 const ATLAS: u32 = 2048;
 
@@ -49,8 +50,6 @@ pub struct Gpu {
     pub cursor_color: u32,
     nrows: usize,
     cols: usize,
-    /// Scratch for the rows being written; dead once uploaded.
-    stage: Vec<Cell>,
     /// The cell buffer no longer matches the glyph tiles: every row must be written.
     stale: bool,
 }
@@ -230,7 +229,6 @@ impl Gpu {
             cursor_color: pack(255, 255, 255, 255),
             nrows: 0,
             cols: 0,
-            stage: Vec::new(),
             stale: true,
         };
         g.bake_specials();
@@ -364,37 +362,6 @@ impl Gpu {
         tile
     }
 
-    /// Starts a frame for a grid of `rows` x `cols` cells. Returns true when every row has to be
-    /// written: first frame, the grid size changed, or the glyph tiles were reassigned.
-    pub fn begin_frame(&mut self, rows: usize, cols: usize) -> bool {
-        let full = self.stale || self.nrows != rows || self.cols != cols;
-        if full {
-            self.stale = false;
-            self.nrows = rows;
-            self.cols = cols;
-            if rows * cols > self.icap {
-                self.icap = (rows * cols).next_power_of_two();
-                self.ibuf = Self::make_ibuf(&self.device, self.icap);
-            }
-        }
-        full
-    }
-
-    /// Writes `count` consecutive rows starting at `first`. `fill` receives `count * cols` cells
-    /// (zeroed: blank) and must set every cell that is not blank.
-    pub fn write_rows(&mut self, first: usize, count: usize, fill: impl FnOnce(&mut Gpu, &mut [Cell])) {
-        if first + count > self.nrows {
-            return;
-        }
-        let mut stage = std::mem::take(&mut self.stage);
-        stage.clear();
-        stage.resize(count * self.cols, Cell::zeroed());
-        fill(self, &mut stage);
-        let offset = (first * self.cols * std::mem::size_of::<Cell>()) as u64;
-        self.queue.write_buffer(&self.ibuf, offset, bytemuck::cast_slice(&stage));
-        self.stage = stage;
-    }
-
     pub fn render(&mut self, clear_alpha: bool) {
         let _ = clear_alpha;
         let frame = match self.surface.get_current_texture() {
@@ -452,5 +419,29 @@ impl Gpu {
 impl Glyphs for Gpu {
     fn glyph(&mut self, c: char, bold: bool, wide: bool) -> u32 {
         self.bake(c, bold, wide)
+    }
+}
+
+impl Backend for Gpu {
+    fn begin_frame(&mut self, rows: usize, cols: usize) -> bool {
+        let full = self.stale || self.nrows != rows || self.cols != cols;
+        if full {
+            self.stale = false;
+            self.nrows = rows;
+            self.cols = cols;
+            if rows * cols > self.icap {
+                self.icap = (rows * cols).next_power_of_two();
+                self.ibuf = Self::make_ibuf(&self.device, self.icap);
+            }
+        }
+        full
+    }
+
+    fn put_rows(&mut self, first: usize, count: usize, cells: &[Cell]) {
+        if first + count > self.nrows {
+            return;
+        }
+        let offset = (first * self.cols * std::mem::size_of::<Cell>()) as u64;
+        self.queue.write_buffer(&self.ibuf, offset, bytemuck::cast_slice(cells));
     }
 }

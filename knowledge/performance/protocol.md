@@ -7,7 +7,9 @@ related: [measurements.md, ../decisions/0008-idle-ram-50mb.md]
 # Comparison protocol
 
 Targets live in the `axon-performance` skill. This protocol adds what the skill does not
-cover: how to compare against other terminals.
+cover: how to compare against other terminals. axon's own numbers come from `scripts/bench.sh`
+and are mirrored in the README `Benchmarks` section, which must be updated on every change
+that can move them.
 
 ## Conditions
 Same machine, compositor, font, font size and window size for axon, Alacritty, Ghostty and

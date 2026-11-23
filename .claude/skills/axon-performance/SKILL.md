@@ -32,12 +32,13 @@ description: axon's performance budgets and rules (latency, idle CPU, throughput
 9. Dependencies: every new crate is justified by its cost in size and compile time.
 
 ## How to measure
+- **Everything at once: `scripts/bench.sh [--clean]`.** It prints binary size, cold build time, idle RSS/PSS/CPU and the 100 MB flood for both backends. Paste the result into the README `Benchmarks` section on every change that can move them (hard rule 7 in `CLAUDE.md`), and log the detail in `knowledge/performance/`.
 - Idle: `top -p $(pgrep axon)` with the terminal idle; must be 0.0%.
 - Throughput: `time cat /tmp/big.txt` inside axon (`seq 1 12300000 > /tmp/big.txt`, ~100 MB), compare with alacritty/kitty.
 - Frames: `RUST_LOG`/temporary counter in `redraw()` (do not leave it in the final code).
 - Latency: record at 240 fps or use `typometer`.
 - Memory: `ps -o rss= -p $(pgrep axon)`.
-- Binary: `ls -l target/release/axon`.
+- Binary: `stat -c %s target/release/axon` (the script reports bytes and MiB).
 
 ## Optimization candidates (when data justifies them)
 - Replace fontdue with an own font reader; the first-use stall of a fallback font disappears with it (`knowledge/plan/own-implementations.md`).

@@ -7,7 +7,7 @@ description: Internals of axon's renderer (wgpu 30) - glyph atlas, cell buffer f
 
 **Direction ([0011](../../../knowledge/decisions/0011-software-render-wl-shm.md)):** the GPU path is going away. `soft.rs` already paints the
 same `Cell` rows on the CPU into an `Argb8888` framebuffer (premultiplied) and matches `shader.wgsl` to within 1/255 on the fixed scenes.
-Until `gpu.rs` is deleted, any look change (colors, overlays, background, blending) must be made in **both** `shader.wgsl` and `soft.rs`,
+`AXON_BACKEND=wl` runs it on the own Wayland client (`wl.rs`). Until `gpu.rs` is deleted, any look change (colors, overlays, background, blending) must be made in **both** `shader.wgsl` and `soft.rs`,
 and checked with the pixel diff in `axon-data-oriented-design`. The framebuffer is the retained state: `Soft::write_rows` repaints only
 the damaged pixel rows, so there is no cell buffer.
 

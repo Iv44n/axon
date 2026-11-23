@@ -4,13 +4,14 @@
 //! The framebuffer is the retained state: only damaged rows are repainted into it, so there is no
 //! cell buffer and no copy. The look is shader.wgsl on the CPU (squared text coverage, overlays,
 //! gradient and neon border background); keep the two in sync until the GPU path is deleted.
-//! Not wired into the app yet: stage B of `knowledge/plan/software-renderer.md` does that.
+//! Driven by `wlapp.rs` (`AXON_BACKEND=wl`); see `knowledge/plan/software-renderer.md`.
 #![allow(dead_code)]
 
 use crate::cell::{
     Cell, Glyphs, MAX_TILES, T_BAR, T_BEAM, T_BOX, T_FIRST_GLYPH, T_STRIKE, T_UNDER, pack,
 };
 use crate::font::{Fonts, GlyphTable, special_tiles};
+use crate::view::Backend;
 
 /// Distance from a window edge beyond which the neon glow is too faint to show in 8 bits
 /// (`exp(-48/7) * 0.16` is 0.0002); inside it every pixel is computed.
@@ -33,8 +34,6 @@ pub struct Soft {
     h: usize,
     rows: usize,
     cols: usize,
-    /// Scratch for the rows being painted; dead once they are.
-    stage: Vec<Cell>,
     /// The framebuffer no longer matches the glyph tiles or the geometry: repaint every row.
     stale: bool,
 }
@@ -53,7 +52,6 @@ impl Soft {
             h: 0,
             rows: 0,
             cols: 0,
-            stage: Vec::new(),
             stale: true,
         };
         s.bake_specials();
@@ -101,29 +99,17 @@ impl Soft {
         full
     }
 
-    /// Paints `count` consecutive rows starting at `first`. `fill` receives `count * cols` cells
-    /// (blank) and must set every cell that is not blank.
-    pub fn write_rows(
-        &mut self,
-        fb: &mut [u32],
-        first: usize,
-        count: usize,
-        fill: impl FnOnce(&mut Soft, &mut [Cell]),
-    ) {
+    /// Paints `count` consecutive rows starting at `first` from `cells` (`count * cols` cells).
+    pub fn paint_rows(&mut self, fb: &mut [u32], first: usize, count: usize, cells: &[Cell]) {
         if first + count > self.rows || fb.len() < self.w * self.h {
             return;
         }
-        let mut stage = std::mem::take(&mut self.stage);
-        stage.clear();
-        stage.resize(count * self.cols, Cell::BLANK);
-        fill(self, &mut stage);
         let (pad, ch) = (self.pad as usize, self.fonts.cell_h as usize);
-        for (n, cells) in stage.chunks_exact(self.cols).enumerate() {
+        for (n, cells) in cells.chunks_exact(self.cols).enumerate() {
             let y0 = pad + (first + n) * ch;
             self.paint_bg(fb, y0, y0 + ch);
             self.paint_cells(fb, y0, cells);
         }
-        self.stage = stage;
     }
 
     // ------------------------------------------------------------ painting --
@@ -297,6 +283,30 @@ fn over(src: [u32; 4], dst: u32) -> u32 {
     let d = from_argb(dst);
     let m = |i: usize| (src[i] + div255(d[i] * (255 - src[3]))).min(255);
     argb([m(0), m(1), m(2), m(3)])
+}
+
+/// A `Soft` painting into one framebuffer for one frame: what `View::build` drives.
+pub struct Target<'a> {
+    pub soft: &'a mut Soft,
+    pub fb: &'a mut [u32],
+    pub w: usize,
+    pub h: usize,
+}
+
+impl Glyphs for Target<'_> {
+    fn glyph(&mut self, c: char, bold: bool, wide: bool) -> u32 {
+        self.soft.glyph(c, bold, wide)
+    }
+}
+
+impl Backend for Target<'_> {
+    fn begin_frame(&mut self, rows: usize, cols: usize) -> bool {
+        self.soft.begin_frame(self.fb, self.w, self.h, rows, cols)
+    }
+
+    fn put_rows(&mut self, first: usize, count: usize, cells: &[Cell]) {
+        self.soft.paint_rows(self.fb, first, count, cells);
+    }
 }
 
 #[cfg(test)]

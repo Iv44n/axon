@@ -15,6 +15,7 @@ Versions per `Cargo.toml`; if they differ, `Cargo.toml` wins.
 | Windows and input | `winit` 0.30; to be replaced by an own Wayland client ([0011](../decisions/0011-software-render-wl-shm.md)) |
 | Rendering | `wgpu` 30 (Vulkan) today; `src/soft.rs` is the CPU renderer that replaces it ([0011](../decisions/0011-software-render-wl-shm.md), [plan](../plan/software-renderer.md)) |
 | Text | `fontdue` 0.9 + own atlas; to be replaced ([0010](../decisions/0010-own-implementations.md)) |
+| System calls | `rustix` (sockets with fd passing, `memfd`, `mmap`, `poll`, `eventfd`) for the own Wayland client |
 | Clipboard | `arboard` 3.7, `wayland-data-control` only |
 | UI | Custom, drawn with the cell pipeline |
 | Configuration | Own minimal parser (pending; no `serde`/`toml`) |

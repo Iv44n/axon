@@ -171,6 +171,7 @@ dependencies = [
  "bytemuck",
  "fontdue",
  "pollster",
+ "rustix 1.1.6",
  "wgpu",
  "winit",
 ]

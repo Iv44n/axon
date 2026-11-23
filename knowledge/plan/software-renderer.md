@@ -23,13 +23,24 @@ alive until stage E, so the app never stops working.
   (identical). Results in [measurements](../performance/measurements.md), [software-renderer](../performance/software-renderer.md).
 - **Still a cache-like thing:** tiles are baked lazily like the GPU atlas; task 12 removes it.
 
-## B. Own Wayland client, one window
-`$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY` unix socket, `SCM_RIGHTS` for fds, objects as indices into a flat
-table (no `HashMap`), a hand-written dispatch for the few interfaces: registry, `wl_compositor`,
-`wl_shm`, `xdg_wm_base`/`xdg_surface`/`xdg_toplevel`. Present the `Soft` framebuffer from a `memfd`.
-Decide first: own wire code (fits [0010](../decisions/0010-own-implementations.md), ~500 lines) or
-`wayland-client` as scaffolding for one stage (the spike used it). Idle must stay 0% CPU: block in
-`poll`, redraw on `wl_surface.frame`.
+## B. Own Wayland client, one window - `src/wl.rs`, `src/wlapp.rs` (done 2026-11-22)
+- **Decided:** own wire code ([0010](../decisions/0010-own-implementations.md)), not `wayland-client`.
+  `rustix` is the syscall layer (`sendmsg`/`recvmsg` with `SCM_RIGHTS`, `memfd`, `mmap`, `poll`,
+  `eventfd`); it was already in the dependency tree.
+- **Done:** `wl.rs` speaks the wire protocol over `$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY`: objects are
+  indices into a flat table (`kinds[id]`), events are a `match` on `(kind, opcode)`, requests are built
+  into one reused byte buffer. Interfaces: registry, `wl_compositor`, `wl_shm`, `xdg_wm_base`,
+  `xdg_surface`, `xdg_toplevel`, `wl_surface` frame callbacks. The window shows the `Soft` framebuffer
+  from a `memfd`; a second buffer only exists if the compositor keeps the first one until the next attach.
+- **Loop:** `wlapp.rs` runs the session, `View`, `Soft` and `Wl` in one blocking `poll` on the socket
+  and an `eventfd` the PTY thread signals; frames are drawn on the frame callback. Select it with
+  `AXON_BACKEND=wl`; `winit` stays the default until stage E.
+- **Also done:** `view.rs` (grid -> cells for any `Backend`) and `session.rs` (Term + PTY, grid size),
+  tasks 4 and 5 in next-steps; the GPU output stayed byte-identical.
+- **Missing on purpose:** input, clipboard and mouse (stage C), HiDPI, decorations (stage D).
+- **Check:** protocol trace (`AXON_WL_DEBUG=1`) shows the full handshake, releases and frame callbacks
+  with no error; resize by maximize/restore cycles; exit when the shell ends; idle 0% CPU. Numbers in
+  [software-renderer](../performance/software-renderer.md).
 
 ## C. Input and clipboard
 `wl_seat`, `wl_keyboard` (the keymap is xkb text: parse the subset we need or load `libxkbcommon`),

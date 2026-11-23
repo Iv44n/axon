@@ -85,7 +85,7 @@ Plan and order: `knowledge/plan/own-implementations.md`.
 ## Process
 1. Write the access pattern before the structure.
 2. Answer the questions above; if the answer is "a cache", stop and redesign.
-3. Measure before and after (RSS, `build()` time, throughput) and log it in `knowledge/performance/measurements.md`.
+3. Measure before and after (RSS, `build()` time, throughput, binary size: `scripts/bench.sh`) and log it in `knowledge/performance/measurements.md` and the README `Benchmarks` section.
 4. A renderer refactor must be pixel-exact: dump the swapchain to raw RGBA before and after on fixed scenes
    (blocks, beam and underline cursors, hollow cursor, hidden cursor, wide characters, every SGR attribute) and
    diff the bytes; also compare a long incremental run against a full rebuild every frame. Do this with
