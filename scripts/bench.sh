@@ -50,6 +50,7 @@ flood() {
 }
 
 DEJAVU=/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf
+CASCADIA=$HOME/.local/share/fonts/CascadiaMonoNF.ttf   # the heavy one: 13.5k glyphs
 size=$(stat -c %s "$BIN")
 echo "commit:  $(git rev-parse --short HEAD)$(git diff --quiet HEAD -- src Cargo.toml Cargo.lock || echo '+dirty')"
 echo "date:    $(date +%F)"
@@ -64,8 +65,12 @@ echo
 echo "| Backend | Font | Idle RSS | Idle PSS | Idle anon | Idle CPU (ticks/3 s) |"
 echo "|---|---|---|---|---|---|"
 for backend in wl winit; do
-  for font in default dejavu; do
-    if [ "$font" = default ]; then r=$(idle "$backend"); else [ -f "$DEJAVU" ] || continue; r=$(idle "$backend" AXON_FONT="$DEJAVU"); fi
+  for font in default cascadia dejavu; do
+    case "$font" in
+      default) r=$(idle "$backend") ;;
+      cascadia) [ -f "$CASCADIA" ] || continue; r=$(idle "$backend" AXON_FONT="$CASCADIA") ;;
+      dejavu) [ -f "$DEJAVU" ] || continue; r=$(idle "$backend" AXON_FONT="$DEJAVU") ;;
+    esac
     set -- $r
     echo "| $backend | $font | $1 MB | $2 MB | $3 MB | $4 |"
   done

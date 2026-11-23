@@ -46,6 +46,19 @@ fn load_font(path: &str) -> Option<Font> {
     Font::from_bytes(bytes, FontSettings::default()).ok()
 }
 
+/// Exponent applied to glyph coverage when a tile is baked. Light text is mixed with the dark
+/// background in sRGB, which makes a half-covered edge pixel look thinner than it should; raising
+/// coverage to a power below 1 gives those pixels back their weight, so stems read as solid lines
+/// instead of dotted ones. The same curve serves both renderers (it lives in the bitmap).
+const COVERAGE_GAMMA: f32 = 0.70;
+
+fn contrast(c: u8) -> u8 {
+    match c {
+        0 | 255 => c,
+        _ => ((c as f32 / 255.0).powf(COVERAGE_GAMMA) * 255.0 + 0.5) as u8,
+    }
+}
+
 impl Fonts {
     pub fn new(px: f32) -> Self {
         let home = std::env::var("HOME").unwrap_or_default();
@@ -53,7 +66,7 @@ impl Fonts {
         if let Ok(p) = std::env::var("AXON_FONT") {
             candidates.push(p);
         }
-        for f in ["CascadiaMonoNF.ttf", "JetBrainsMono[wght].ttf", "CascadiaMono.ttf"] {
+        for f in ["JetBrainsMono[wght].ttf", "CascadiaMonoNF.ttf", "CascadiaMono.ttf"] {
             candidates.push(format!("{home}/.local/share/fonts/{f}"));
         }
         for f in [
@@ -133,6 +146,9 @@ impl Fonts {
                     buf[i] = buf[i].max(buf[i - 1]);
                 }
             }
+        }
+        for c in buf.iter_mut() {
+            *c = contrast(*c);
         }
         buf
     }
