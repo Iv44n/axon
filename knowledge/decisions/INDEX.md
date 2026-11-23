@@ -13,3 +13,4 @@ One leaf per decision. Never edited: superseded by a new ADR.
 - [0009 · Data-oriented design; no caches](0009-data-oriented-no-caches.md) — flat arrays, indices, packed bits; redesign instead of caching.
 - [0010 · Own implementations from scratch](0010-own-implementations.md) — dependencies are scaffolding; fonts, terminal core and PTY first.
 - [0011 · Software rendering into wl_shm](0011-software-render-wl-shm.md) — accepted 2026-11-22: own Wayland client + CPU renderer; 8.7 MB idle vs 191 MB with wgpu.
+- [0012 · Black-and-white glass chrome](0012-glass-chrome-black-white.md) — accepted 2026-11-22: rounded translucent window, title bar with buttons, drawn on the CPU; `chrome.rs`.

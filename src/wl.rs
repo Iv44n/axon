@@ -5,6 +5,7 @@
 //! Objects are indices into a flat table (`kinds`), not boxed trait objects or a hash map; an event
 //! is a `match` on `(kind, opcode)`. Messages are built straight into one reused byte buffer.
 //! Only the interfaces the window needs exist; the opcodes below come from the protocol XML.
+//! Pointer input is here (buttons, motion, window move/resize); keyboard and clipboard are stage C.
 use std::{
     collections::VecDeque,
     io::{self, IoSlice, IoSliceMut},
@@ -29,8 +30,27 @@ use rustix::{
 const DISPLAY: u32 = 1;
 /// `wl_shm.format.argb8888`: premultiplied alpha, little-endian `a<<24 | r<<16 | g<<8 | b`.
 const ARGB8888: u32 = 0;
-/// `xdg_toplevel.state.activated`.
+/// `xdg_toplevel.state`: maximized, fullscreen, activated.
+const STATE_MAXIMIZED: u32 = 1;
+const STATE_FULLSCREEN: u32 = 2;
 const STATE_ACTIVATED: u32 = 4;
+/// Smallest window the title bar and a usable grid fit in.
+const MIN_SIZE: (i32, i32) = (320, 200);
+
+/// `wp_cursor_shape_device_v1.shape` values the window uses.
+pub mod cursor {
+    pub const DEFAULT: u32 = 1;
+    pub const POINTER: u32 = 4;
+    pub const TEXT: u32 = 9;
+    pub const E_RESIZE: u32 = 18;
+    pub const N_RESIZE: u32 = 19;
+    pub const NE_RESIZE: u32 = 20;
+    pub const NW_RESIZE: u32 = 21;
+    pub const S_RESIZE: u32 = 22;
+    pub const SE_RESIZE: u32 = 23;
+    pub const SW_RESIZE: u32 = 24;
+    pub const W_RESIZE: u32 = 25;
+}
 
 /// What an object id means. Index `id` of `Wl::kinds`; `None` = free or unknown.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -49,18 +69,27 @@ enum Kind {
     WmBase,
     XdgSurface,
     Toplevel,
+    Seat,
+    Pointer,
+    CursorShapeManager,
+    CursorShapeDevice,
 }
 
 /// What the window layer tells the application.
 #[derive(Clone, Copy, Debug)]
 pub enum Event {
     /// The compositor proposes a size; 0 means "your choice".
-    Configure { w: i32, h: i32 },
+    Configure { w: i32, h: i32, maximized: bool },
     /// The window gained or lost the activated state (keyboard focus, to the user).
     Focus(bool),
     Close,
     /// The previous frame was shown: the next one may be drawn.
     FrameDone,
+    /// The pointer entered or moved, in surface pixels.
+    PointerMove { x: f32, y: f32 },
+    PointerLeave,
+    /// A button changed state; `time` is the compositor's millisecond clock.
+    PointerButton { button: u32, pressed: bool, time: u32 },
 }
 
 /// Interfaces the compositor offers, as `(registry name, version)`; 0 = absent.
@@ -69,6 +98,8 @@ struct Globals {
     compositor: (u32, u32),
     shm: (u32, u32),
     wm_base: (u32, u32),
+    seat: (u32, u32),
+    cursor_shape: (u32, u32),
 }
 
 /// A request argument. `Fd` travels in ancillary data, not in the byte stream.
@@ -149,10 +180,20 @@ pub struct Wl {
     surface: u32,
     xdg_surface: u32,
     toplevel: u32,
+    seat: u32,
+    pointer: u32,
+    cursor_manager: u32,
+    cursor_device: u32,
+    /// Serial of the last button press or pointer enter: what `move` and `resize` must quote.
+    serial: u32,
+    /// Serial of the last pointer enter, which `set_shape` must quote, and the shape asked for.
+    enter_serial: u32,
+    shape: u32,
     events: VecDeque<Event>,
-    /// Size and activated flag from the last `xdg_toplevel.configure`, applied on `xdg_surface.configure`.
-    pending: (i32, i32, bool),
+    /// Size and states from the last `xdg_toplevel.configure`, applied on `xdg_surface.configure`.
+    pending: (i32, i32, bool, bool),
     activated: bool,
+    maximized: bool,
     slots: [Slot; 2],
     cur: usize,
     frame_pending: bool,
@@ -188,9 +229,17 @@ impl Wl {
             surface: 0,
             xdg_surface: 0,
             toplevel: 0,
+            seat: 0,
+            pointer: 0,
+            cursor_manager: 0,
+            cursor_device: 0,
+            serial: 0,
+            enter_serial: 0,
+            shape: cursor::DEFAULT,
             events: VecDeque::new(),
-            pending: (0, 0, false),
+            pending: (0, 0, false, false),
             activated: false,
+            maximized: false,
             slots: [Slot::EMPTY; 2],
             cur: 0,
             frame_pending: false,
@@ -211,6 +260,14 @@ impl Wl {
         wl.compositor = wl.bind(c.0, "wl_compositor", c.1.min(4), Kind::Compositor);
         wl.shm = wl.bind(s.0, "wl_shm", 1, Kind::Shm);
         wl.wm_base = wl.bind(w.0, "xdg_wm_base", 1, Kind::WmBase);
+        if wl.globals.seat.0 != 0 {
+            let s = wl.globals.seat;
+            wl.seat = wl.bind(s.0, "wl_seat", s.1.min(5), Kind::Seat); // 5 adds wl_pointer.frame
+        }
+        if wl.globals.cursor_shape.0 != 0 {
+            let c = wl.globals.cursor_shape;
+            wl.cursor_manager = wl.bind(c.0, "wp_cursor_shape_manager_v1", 1, Kind::CursorShapeManager);
+        }
 
         wl.surface = wl.new_obj(Kind::Surface);
         wl.send(wl.compositor, 0, [Arg::U(wl.surface)]); // wl_compositor.create_surface
@@ -220,6 +277,7 @@ impl Wl {
         wl.send(wl.xdg_surface, 1, [Arg::U(wl.toplevel)]); // get_toplevel
         wl.send(wl.toplevel, 2, [Arg::S(title)]); // set_title
         wl.send(wl.toplevel, 3, [Arg::S(app_id)]); // set_app_id
+        wl.send(wl.toplevel, 8, [Arg::I(MIN_SIZE.0), Arg::I(MIN_SIZE.1)]); // set_min_size
         wl.send(wl.surface, 6, []); // commit: asks for the first configure
         wl.flush()?;
         Ok(wl)
@@ -231,6 +289,39 @@ impl Wl {
 
     pub fn set_title(&mut self, title: &str) {
         self.send(self.toplevel, 2, [Arg::S(title)]);
+    }
+
+    /// Starts an interactive window move, quoting the press that began it.
+    pub fn begin_move(&mut self) {
+        if self.seat != 0 {
+            self.send(self.toplevel, 5, [Arg::U(self.seat), Arg::U(self.serial)]);
+        }
+    }
+
+    /// Starts an interactive resize from `edges` (`xdg_toplevel.resize_edge` bits).
+    pub fn begin_resize(&mut self, edges: u32) {
+        if self.seat != 0 {
+            self.send(self.toplevel, 6, [Arg::U(self.seat), Arg::U(self.serial), Arg::U(edges)]);
+        }
+    }
+
+    pub fn minimize(&mut self) {
+        self.send(self.toplevel, 13, []);
+    }
+
+    pub fn toggle_maximized(&mut self) {
+        self.send(self.toplevel, if self.maximized { 10 } else { 9 }, []);
+    }
+
+    /// Asks for a pointer image by `cursor::*` shape; a no-op without `wp_cursor_shape_v1`.
+    pub fn set_cursor(&mut self, shape: u32) {
+        if shape == self.shape {
+            return;
+        }
+        self.shape = shape;
+        if self.cursor_device != 0 {
+            self.send(self.cursor_device, 1, [Arg::U(self.enter_serial), Arg::U(shape)]);
+        }
     }
 
     pub fn next_event(&mut self) -> Option<Event> {
@@ -413,6 +504,8 @@ impl Wl {
                     "wl_compositor" => self.globals.compositor = (name, version),
                     "wl_shm" => self.globals.shm = (name, version),
                     "xdg_wm_base" => self.globals.wm_base = (name, version),
+                    "wl_seat" => self.globals.seat = (name, version),
+                    "wp_cursor_shape_manager_v1" => self.globals.cursor_shape = (name, version),
                     _ => {}
                 }
             }
@@ -428,19 +521,51 @@ impl Wl {
             }
             (Kind::Toplevel, 0) => {
                 let (w, h) = (a.i32(), a.i32());
-                let activated = a.array().chunks_exact(4).any(|s| u32::from_ne_bytes(s.try_into().unwrap()) == STATE_ACTIVATED);
-                self.pending = (w, h, activated);
+                let states = a.array();
+                let has = |state| states.chunks_exact(4).any(|s| u32::from_ne_bytes(s.try_into().unwrap()) == state);
+                self.pending = (w, h, has(STATE_ACTIVATED), has(STATE_MAXIMIZED) || has(STATE_FULLSCREEN));
             }
             (Kind::Toplevel, 1) => self.events.push_back(Event::Close),
             (Kind::XdgSurface, 0) => {
                 let serial = a.u32();
                 self.send(self.xdg_surface, 4, [Arg::U(serial)]); // ack_configure
-                let (w, h, activated) = self.pending;
-                self.events.push_back(Event::Configure { w, h });
+                let (w, h, activated, maximized) = self.pending;
+                self.maximized = maximized;
+                self.events.push_back(Event::Configure { w, h, maximized });
                 if activated != self.activated {
                     self.activated = activated;
                     self.events.push_back(Event::Focus(activated));
                 }
+            }
+            (Kind::Seat, 0) => {
+                // wl_seat.capabilities: bit 0 is the pointer.
+                if a.u32() & 1 != 0 && self.pointer == 0 {
+                    self.pointer = self.new_obj(Kind::Pointer);
+                    self.send(self.seat, 0, [Arg::U(self.pointer)]); // get_pointer
+                    if self.cursor_manager != 0 {
+                        self.cursor_device = self.new_obj(Kind::CursorShapeDevice);
+                        self.send(self.cursor_manager, 1, [Arg::U(self.cursor_device), Arg::U(self.pointer)]);
+                    }
+                }
+            }
+            (Kind::Pointer, 0) => {
+                let (serial, _surface, x, y) = (a.u32(), a.u32(), a.i32(), a.i32());
+                self.serial = serial;
+                self.enter_serial = serial;
+                if self.cursor_device != 0 {
+                    self.send(self.cursor_device, 1, [Arg::U(serial), Arg::U(self.shape)]);
+                }
+                self.events.push_back(Event::PointerMove { x: x as f32 / 256.0, y: y as f32 / 256.0 });
+            }
+            (Kind::Pointer, 1) => self.events.push_back(Event::PointerLeave),
+            (Kind::Pointer, 2) => {
+                let (_time, x, y) = (a.u32(), a.i32(), a.i32());
+                self.events.push_back(Event::PointerMove { x: x as f32 / 256.0, y: y as f32 / 256.0 });
+            }
+            (Kind::Pointer, 3) => {
+                let (serial, time, button, state) = (a.u32(), a.u32(), a.u32(), a.u32());
+                self.serial = serial;
+                self.events.push_back(Event::PointerButton { button, pressed: state == 1, time });
             }
             _ => {}
         }

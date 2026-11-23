@@ -9,8 +9,8 @@ Direction: data-oriented, no caches, own implementations instead of dependencies
 ## Commands
 - `cargo run --release` — run (debug is too slow for rendering).
 - `cargo build --release` — fat LTO, `panic=abort`, strip.
-- Env: `AXON_FONT`, `AXON_FONT_SIZE` (15), `AXON_OPACITY` (0.93), `AXON_DECORATIONS=1`.
-- `AXON_BACKEND=wl` runs on the own Wayland client and the CPU renderer (no input yet); the default is still `winit` + `wgpu`. `AXON_WL_DEBUG=1` traces the protocol.
+- Env: `AXON_FONT`, `AXON_FONT_SIZE` (15), `AXON_OPACITY` (0.93 `winit`, 0.80 `wl`), `AXON_DECORATIONS=1`.
+- `AXON_BACKEND=wl` runs on the own Wayland client and the CPU renderer (pointer and window chrome, no keyboard yet); the default is still `winit` + `wgpu`. `AXON_WL_DEBUG=1` traces the protocol.
 
 ## Project skills (read them before touching the corresponding area)
 - `axon-architecture` — layers, data flow, dependency rules, module roadmap.

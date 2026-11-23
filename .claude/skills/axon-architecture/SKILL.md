@@ -29,13 +29,14 @@ winit user_event ─► request_redraw ─► State::build() ─► Gpu cell buf
 | `cell.rs` | `Cell`, `F_*` flags, `T_*` special tiles, `pack`, the `Glyphs` trait | bytemuck |
 | `font.rs` | `Fonts` (fallbacks, rasterizing), `GlyphTable`, special tile bitmaps | fontdue |
 | `gpu.rs` | wgpu, atlas, pipelines, `render()` (to be deleted: [0011](../../../knowledge/decisions/0011-software-render-wl-shm.md)) | winit (`Window` only), `cell`, `font` |
-| `soft.rs` | CPU renderer into an `Argb8888` framebuffer; the replacement for `gpu.rs` | `cell`, `font`, `view` (trait only) |
+| `soft.rs` | CPU renderer into an `Argb8888` framebuffer; the replacement for `gpu.rs` | `cell`, `chrome`, `font`, `view` (trait only) |
+| `chrome.rs` | window frame on the CPU: glass look, rounded corners, title bar and buttons per pixel, `hit` testing, `Ui` state | — |
 | `view.rs` | grid -> cells: `View::build(term, focused, &mut impl Backend)`, damage, cursor and selection rows | `cell`, `palette`, alacritty |
 | `session.rs` | `Term` + PTY thread (`spawn`, `resize`), `grid_size` | alacritty |
-| `wl.rs` | own Wayland client: wire protocol, `xdg_toplevel`, `wl_shm` buffers, frame callbacks | `rustix` |
+| `wl.rs` | own Wayland client: wire protocol, `xdg_toplevel`, `wl_shm` buffers, frame callbacks, `wl_seat` pointer, cursor shape | `rustix` |
 | `wlapp.rs` | the app on `wl.rs` + `soft.rs` + `session.rs` (`AXON_BACKEND=wl`); one blocking `poll` loop | all of the above |
 | `input.rs` | `KeyEvent` → xterm bytes | winit, alacritty `TermMode` |
-| `palette.rs` | Neon ANSI palette, `Color`→`Rgb` resolution | alacritty `vte::ansi` |
+| `palette.rs` | Black-and-white ANSI palette, `Color`→`Rgb` resolution | alacritty `vte::ansi` |
 | `shader.wgsl` | Vertex/fragment for cells and background | — |
 
 ## Dependency rules (inviolable)

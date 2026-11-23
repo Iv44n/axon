@@ -116,11 +116,11 @@ fn vs_bg(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
 fn fs_bg(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let p = frag.xy;
     let uv = p / u.viewport;
-    let top = vec3(0.020, 0.030, 0.060);
-    let bot = vec3(0.040, 0.020, 0.075);
+    let top = vec3(0.030, 0.030, 0.030);
+    let bot = vec3(0.045, 0.045, 0.045);
     var c = mix(top, bot, uv.y);
     let d = min(min(p.x, u.viewport.x - p.x), min(p.y, u.viewport.y - p.y));
-    let accent = mix(vec3(0.10, 0.89, 1.0), vec3(0.78, 0.49, 1.0), uv.x);
+    let accent = vec3(1.0);
     let glow = exp(-d / 7.0) * 0.16 + select(0.0, 0.55, d < 1.0);
     c = c + accent * glow;
     let a = clamp(u.opacity + glow * 0.5, 0.0, 1.0);

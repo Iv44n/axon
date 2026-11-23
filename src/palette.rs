@@ -1,4 +1,4 @@
-//! Neon palette and ANSI -> RGB color resolution.
+//! Black-and-white glass palette and ANSI -> RGB color resolution.
 use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::vte::ansi::{Color, Rgb};
 
@@ -6,16 +6,18 @@ const fn hex(v: u32) -> Rgb {
     Rgb { r: (v >> 16) as u8, g: (v >> 8) as u8, b: v as u8 }
 }
 
-pub const FG: Rgb = hex(0xcfd9f5);
-pub const BG: Rgb = hex(0x070a13);
-pub const CURSOR: Rgb = hex(0x19e3ff);
-pub const SELECTION_BG: Rgb = hex(0x143a56);
+pub const FG: Rgb = hex(0xf2f2f2);
+pub const BG: Rgb = hex(0x0a0a0a);
+pub const CURSOR: Rgb = hex(0xffffff);
+pub const SELECTION_BG: Rgb = hex(0x4a4a4a);
 
+/// Black and white first; the eight hues are muted so programs that ask for colour stay readable
+/// without breaking the monochrome glass. Index 8 (gray) keeps 4.5:1 on `BG`.
 const ANSI: [Rgb; 16] = [
-    hex(0x11162a), hex(0xff4d6d), hex(0x38f2a0), hex(0xffd36b),
-    hex(0x5b8cff), hex(0xc77dff), hex(0x19e3ff), hex(0xc9d6f2),
-    hex(0x4a5578), hex(0xff7a93), hex(0x7dffc4), hex(0xffe39a),
-    hex(0x8fb0ff), hex(0xdba6ff), hex(0x7df2ff), hex(0xf2f6ff),
+    hex(0x2c2c2e), hex(0xe5736f), hex(0x8fd19e), hex(0xe3c98a),
+    hex(0x7aa7e0), hex(0xc4a0d8), hex(0x86c9d0), hex(0xd0d0d0),
+    hex(0x8e8e93), hex(0xff8f8a), hex(0xa9e5b5), hex(0xf2dca4),
+    hex(0x9cc2f2), hex(0xdcbdea), hex(0xa5dfe4), hex(0xffffff),
 ];
 
 fn dim(c: Rgb) -> Rgb {

@@ -1,7 +1,7 @@
 //! The application on the own Wayland client (`AXON_BACKEND=wl`): the terminal session, the CPU
 //! renderer and `wl.rs`, in one blocking `poll` loop with no windowing or GPU library.
-//! Input arrives in stage C of `knowledge/plan/software-renderer.md`; today the window shows the
-//! shell's output.
+//! Pointer input drives the window chrome (buttons, move, resize); keyboard and clipboard arrive in
+//! stage C of `knowledge/plan/software-renderer.md`, so today the window shows the shell's output.
 use std::{
     collections::VecDeque,
     os::fd::{AsFd, OwnedFd},
@@ -19,11 +19,35 @@ use rustix::{
 
 use crate::{
     cell::pack,
+    chrome::{self, EDGE_BOTTOM, EDGE_LEFT, EDGE_RIGHT, EDGE_TOP, Hit, Ui},
     palette, session,
     soft::{Soft, Target},
     view::View,
-    wl::{Event, Wl},
+    wl::{Event, Wl, cursor},
 };
+
+/// `BTN_LEFT` from `linux/input-event-codes.h`.
+const BTN_LEFT: u32 = 0x110;
+/// Two presses on the title bar closer than this many milliseconds maximize or restore.
+const DOUBLE_CLICK_MS: u32 = 400;
+
+fn cursor_for(hit: Hit) -> u32 {
+    match hit {
+        Hit::Close | Hit::Minimize | Hit::Maximize => cursor::POINTER,
+        Hit::Edge(e) => match e {
+            EDGE_TOP => cursor::N_RESIZE,
+            EDGE_BOTTOM => cursor::S_RESIZE,
+            EDGE_LEFT => cursor::W_RESIZE,
+            EDGE_RIGHT => cursor::E_RESIZE,
+            e if e == EDGE_TOP | EDGE_LEFT => cursor::NW_RESIZE,
+            e if e == EDGE_TOP | EDGE_RIGHT => cursor::NE_RESIZE,
+            e if e == EDGE_BOTTOM | EDGE_LEFT => cursor::SW_RESIZE,
+            _ => cursor::SE_RESIZE,
+        },
+        Hit::Title => cursor::DEFAULT,
+        Hit::Client => cursor::TEXT,
+    }
+}
 
 /// How the PTY thread reaches the loop: events go in a queue and an eventfd wakes `poll`.
 #[derive(Clone)]
@@ -65,36 +89,40 @@ pub fn run() {
 
 fn run_inner() -> std::io::Result<()> {
     let base_px: f32 = std::env::var("AXON_FONT_SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(15.0);
-    let opacity: f32 = std::env::var("AXON_OPACITY").ok().and_then(|v| v.parse().ok()).unwrap_or(0.93);
+    let opacity: f32 = std::env::var("AXON_OPACITY").ok().and_then(|v| v.parse().ok()).unwrap_or(0.80);
     let mut soft = Soft::new(base_px, opacity);
     soft.cursor_color = pack(palette::CURSOR.r, palette::CURSOR.g, palette::CURSOR.b, 255);
+    soft.set_title("axon");
     let (cw, ch) = soft.cell();
 
     let mut wl = Wl::connect("axon", "axon")?;
     // The first configure decides the size; 0 x 0 means the compositor has no opinion.
     let (mut w, mut h) = (1000, 640);
-    let mut focused = true;
+    let mut ui = Ui::IDLE;
+    let mut hover = Hit::Client;
+    let mut last_click = 0u32;
     'first: loop {
         wl.wait(None)?;
         wl.read_events()?;
         while let Some(ev) = wl.next_event() {
             match ev {
-                Event::Configure { w: nw, h: nh } => {
+                Event::Configure { w: nw, h: nh, maximized } => {
                     if nw > 0 && nh > 0 {
                         (w, h) = (nw as u32, nh as u32);
                     }
+                    ui.maximized = maximized;
                     break 'first;
                 }
-                Event::Focus(f) => focused = f,
+                Event::Focus(f) => ui.focused = f,
                 Event::Close => return Ok(()),
-                Event::FrameDone => {}
+                _ => {}
             }
         }
     }
 
     let wake = Arc::new(eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)?);
     let proxy = Proxy { wake: wake.clone(), pending: Arc::new(AtomicBool::new(false)), queue: Arc::default() };
-    let (mut cols, mut rows) = session::grid_size(w, h, cw, ch, soft.pad);
+    let (mut cols, mut rows) = session::grid_size(w, h, cw, ch, soft.pad, soft.top);
     let (term, pty) = session::spawn(proxy.clone(), cols, rows, cw, ch, 0);
     let mut view = View::new();
     let mut dirty = true;
@@ -104,8 +132,9 @@ fn run_inner() -> std::io::Result<()> {
         if dirty && !wl.frame_pending() {
             if let Some(fb) = wl.framebuffer(w as usize, h as usize) {
                 proxy.pending.store(false, Ordering::Release);
+                soft.set_ui(ui);
                 let mut t = term.lock();
-                view.build(&mut t, focused, &mut Target { soft: &mut soft, fb, w: w as usize, h: h as usize });
+                view.build(&mut t, ui.focused, &mut Target { soft: &mut soft, fb, w: w as usize, h: h as usize });
                 drop(t);
                 wl.present();
                 dirty = false;
@@ -133,8 +162,16 @@ fn run_inner() -> std::io::Result<()> {
         loop {
             let Some(e) = proxy.queue.lock().unwrap().pop_front() else { break };
             match e {
-                TermEvent::Title(t) => wl.set_title(&t),
-                TermEvent::ResetTitle => wl.set_title("axon"),
+                TermEvent::Title(t) => {
+                    wl.set_title(&t);
+                    soft.set_title(&t);
+                    dirty = true;
+                }
+                TermEvent::ResetTitle => {
+                    wl.set_title("axon");
+                    soft.set_title("axon");
+                    dirty = true;
+                }
                 TermEvent::PtyWrite(t) => pty.notify(t.into_bytes()),
                 TermEvent::ColorRequest(i, f) => {
                     let rgb = term.lock().colors()[i].unwrap_or_else(|| palette::by_index(i));
@@ -150,23 +187,70 @@ fn run_inner() -> std::io::Result<()> {
         }
         while let Some(ev) = wl.next_event() {
             match ev {
-                Event::Configure { w: nw, h: nh } => {
+                Event::Configure { w: nw, h: nh, maximized } => {
+                    ui.maximized = maximized;
                     if nw > 0 && nh > 0 && (nw as u32, nh as u32) != (w, h) {
                         (w, h) = (nw as u32, nh as u32);
-                        let (c, r) = session::grid_size(w, h, cw, ch, soft.pad);
+                        let (c, r) = session::grid_size(w, h, cw, ch, soft.pad, soft.top);
                         if (c, r) != (cols, rows) {
                             (cols, rows) = (c, r);
                             session::resize(&term, &pty, cols, rows, cw, ch);
                         }
+                    }
+                    dirty = true;
+                }
+                Event::Focus(f) => {
+                    ui.focused = f;
+                    dirty = true;
+                }
+                Event::PointerMove { x, y } => {
+                    let now = chrome::hit(x, y, w, h, ui.maximized);
+                    if now != hover {
+                        hover = now;
+                        wl.set_cursor(cursor_for(now));
+                        if now.button() != ui.hover {
+                            ui.hover = now.button();
+                            dirty = true;
+                        }
+                    }
+                }
+                Event::PointerLeave => {
+                    hover = Hit::Client;
+                    if ui.hover != 0 || ui.down {
+                        (ui.hover, ui.down) = (0, false);
                         dirty = true;
                     }
                 }
-                Event::Focus(f) => {
-                    focused = f;
-                    dirty = true;
+                Event::PointerButton { button: BTN_LEFT, pressed: true, time } => match hover {
+                    Hit::Close | Hit::Minimize | Hit::Maximize => {
+                        ui.down = true;
+                        dirty = true;
+                    }
+                    Hit::Title if last_click != 0 && time.wrapping_sub(last_click) < DOUBLE_CLICK_MS => {
+                        last_click = 0;
+                        wl.toggle_maximized();
+                    }
+                    Hit::Title => {
+                        last_click = time;
+                        wl.begin_move();
+                    }
+                    Hit::Edge(edges) => wl.begin_resize(edges),
+                    Hit::Client => {}
+                },
+                Event::PointerButton { button: BTN_LEFT, pressed: false, .. } => {
+                    if ui.down {
+                        ui.down = false;
+                        dirty = true;
+                        match hover {
+                            Hit::Close => return Ok(()),
+                            Hit::Minimize => wl.minimize(),
+                            Hit::Maximize => wl.toggle_maximized(),
+                            _ => {}
+                        }
+                    }
                 }
                 Event::Close => return Ok(()),
-                Event::FrameDone => {}
+                Event::PointerButton { .. } | Event::FrameDone => {}
             }
         }
     }

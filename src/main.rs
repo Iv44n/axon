@@ -1,5 +1,6 @@
 //! axon — minimalist GPU terminal.
 mod cell;
+mod chrome;
 mod font;
 mod gpu;
 mod input;
@@ -122,7 +123,7 @@ impl State {
         let (w, h) = gpu.size();
         let (cw, ch) = gpu.cell();
         let pad = gpu.pad as u32;
-        let (cols, rows) = session::grid_size(w, h, cw, ch, pad);
+        let (cols, rows) = session::grid_size(w, h, cw, ch, pad, pad);
         let (term, notifier) = session::spawn(listener, cols, rows, cw, ch, u64::from(window.id()));
 
         window.request_redraw();
@@ -150,7 +151,7 @@ impl State {
         let (w, h) = self.gpu.size();
         let (cw, ch) = self.gpu.cell();
         let pad = self.gpu.pad as u32;
-        let (cols, rows) = session::grid_size(w, h, cw, ch, pad);
+        let (cols, rows) = session::grid_size(w, h, cw, ch, pad, pad);
         if cols != self.cols || rows != self.rows {
             self.cols = cols;
             self.rows = rows;

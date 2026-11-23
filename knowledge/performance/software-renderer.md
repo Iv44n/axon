@@ -9,6 +9,14 @@ related: [measurements.md, ../decisions/0011-software-render-wl-shm.md, ../plan/
 Findings for [0011](../decisions/0011-software-render-wl-shm.md); the idle RSS rows are in
 [measurements](measurements.md). Newest first.
 
+- **Glass chrome** ([0012](../decisions/0012-glass-chrome-black-white.md), `src/chrome.rs`): binary +7.6 KB
+  (7,325,272 -> 7,332,888 B), idle RSS 55 MB on `wl` with Cascadia (was 54), 0 ticks idle, flood 1.70 s and
+  80 MB. The frame is computed per pixel, nothing stored; rows away from the edges are one fill. Checked
+  headless in a temp copy: 5 scenes (rest, hover, pressed, unfocused, maximized) composited over light and
+  dark backdrops and read by eye, and every chrome change (hover, press, title, focus, maximize) painted
+  incrementally equals a full repaint (0 differing pixels of 468k, 6 steps). Pointer input and the window
+  requests were traced against Mutter (seat, pointer, cursor shape, enter) but not clicked by a test.
+
 - **Stage B: the app on the own Wayland client** (`AXON_BACKEND=wl`, no `winit`, no `wgpu`, so no Vulkan
   library is ever loaded), idle shell, 1000x640, default build: RSS **54 MB** with Cascadia NF (anon 47:
   `fontdue` keeps ~45 MB of it), **12 MB** with JetBrains Mono, 18 MB with DejaVu Sans Mono; PSS 50, 8 and

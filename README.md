@@ -6,7 +6,7 @@ Written in Rust, for Wayland and X11. GPU-rendered (wgpu) today; moving to a CPU
 - **GPU rendering**: glyph atlas + one fixed cell per grid position, one draw call for the grid and another for the background.
 - **Zero idle usage**: no timers or continuous redraw; it only paints when there are events.
 - **Full VT emulation** thanks to [`alacritty_terminal`](https://crates.io/crates/alacritty_terminal).
-- **Futuristic look**: translucent gradient background, cyan→violet glowing border, neon ANSI palette, no title bar.
+- **Black-and-white glass look**: rounded translucent window, a title bar with round close/minimize/maximize buttons, white text on near-black glass, muted ANSI hues. The frame is computed per pixel (`src/chrome.rs`), no images. On the `wl` backend; the `winit` backend only has the black-and-white colours.
 - **Small binary** (7.0 MiB, see [Benchmarks](#benchmarks)) with LTO, `panic=abort` and `strip`.
 
 ## Requirements
@@ -35,8 +35,10 @@ Always use `--release`: debug mode is much slower.
 | `Shift+PageUp/PageDown/Home/End` | Navigate the scrollback |
 | Mouse wheel | Scroll (sends arrow keys on the alternate screen) |
 | Click, double click, triple click | Selection: simple, word, line |
-| `Alt` + drag | Move the window (no decorations) |
-| Drag from an edge | Resize the window |
+| Drag the title bar, double click it | Move the window, maximize / restore (`wl` backend) |
+| Title bar buttons (left): close, minimize, maximize | Window controls (`wl` backend) |
+| Drag from an edge or corner | Resize the window |
+| `Alt` + drag | Move the window (`winit` backend, no decorations) |
 
 ### Configuration (environment variables)
 
@@ -44,9 +46,9 @@ Always use `--release`: debug mode is much slower.
 |---|---|---|
 | `AXON_FONT` | — | Path to a monospaced `.ttf`/`.otf` font |
 | `AXON_FONT_SIZE` | `15` | Font size in logical pixels |
-| `AXON_OPACITY` | `0.93` | Background opacity (if the compositor supports transparency) |
+| `AXON_OPACITY` | `0.93` (`winit`), `0.80` (`wl`) | Opacity of the glass body (if the compositor supports transparency) |
 | `AXON_DECORATIONS` | off | `1` to use the system title bar |
-| `AXON_BACKEND` | `winit` | `wl`: own Wayland client + CPU renderer, ~12-54 MB idle instead of ~190 MB (experimental: no keyboard or mouse yet) |
+| `AXON_BACKEND` | `winit` | `wl`: own Wayland client + CPU renderer, ~12-54 MB idle instead of ~190 MB (experimental: pointer only so far, no keyboard) |
 
 ## Benchmarks
 
@@ -55,13 +57,13 @@ Measured with [`scripts/bench.sh`](scripts/bench.sh) (`--clean` adds a cold buil
 can move size or speed** (rule in `CLAUDE.md`); older numbers stay in the history table.
 
 Machine: AMD Ryzen 5 5600H (12 threads) + RTX 3050 Mobile, Ubuntu, kernel 7.0.0-44, GNOME Shell 50.1 on Wayland.
-Last measured: 2026-11-22, commit `0b72197` plus the stage B working tree (own Wayland client).
+Last measured: 2026-11-22, on top of `8db3cc9` plus the glass chrome change (the commit that adds `chrome.rs`).
 
 **Build**
 
 | Binary | Cold release build |
 |---|---|
-| 7.0 MiB (7,325,272 bytes) | 94 s |
+| 7.0 MiB (7,332,888 bytes) | 95 s |
 
 **Idle memory and CPU** (`AXON_BACKEND` selects the backend; `wl` is the own Wayland client with the CPU renderer,
 `winit` is the default `winit` + `wgpu` one)
@@ -69,9 +71,9 @@ Last measured: 2026-11-22, commit `0b72197` plus the stage B working tree (own W
 | Backend | Font | RSS | PSS | Private (anon) | CPU |
 |---|---|---|---|---|---|
 | `wl` | DejaVu Sans Mono | **18 MB** | 14 MB | 11 MB | 0 ticks / 3 s |
-| `wl` | Cascadia NF (default) | 54 MB | 50 MB | 47 MB | 0 ticks / 3 s |
+| `wl` | Cascadia NF (default) | 55 MB | 51 MB | 47 MB | 0 ticks / 3 s |
 | `winit` | DejaVu Sans Mono | 155 MB | 100 MB | 37 MB | 0 ticks / 3 s |
-| `winit` | Cascadia NF (default) | 191 MB | 136 MB | 74 MB | 0 ticks / 3 s |
+| `winit` | Cascadia NF (default) | 196 MB | 141 MB | 74 MB | 0 ticks / 3 s |
 
 The idle target is under 50 MB of RSS. `wl` meets it with a small font; Cascadia NF costs ~45 MB inside `fontdue`,
 which the own font reader will remove. The `winit` backend cannot meet it: the Vulkan loader and the drivers map ~94 MB.
@@ -80,8 +82,8 @@ which the own font reader will remove. The `winit` backend cannot meet it: the V
 
 | Backend | Time | RSS afterwards |
 |---|---|---|
-| `wl` | 1.82 s | 80 MB |
-| `winit` | 1.29 s | 216 MB |
+| `wl` | 1.70 s | 80 MB |
+| `winit` | 1.30 s | 217 MB |
 
 Not measured yet: startup time, input latency, and a comparison with Alacritty, Ghostty and foot (not installed here).
 
@@ -89,7 +91,8 @@ Not measured yet: startup time, input latency, and a comparison with Alacritty, 
 
 | Date | Change | Binary | Idle RSS `winit` | Idle RSS `wl` |
 |---|---|---|---|---|
-| 2026-11-22 | Own Wayland client, `view.rs`, `session.rs` | 7,325,272 B | 191 MB | 54 MB |
+| 2026-11-22 | Glass chrome (`chrome.rs`), pointer input, black-and-white palette | 7,332,888 B | 196 MB | 55 MB |
+| 2026-11-22 | `8db3cc9`: own Wayland client, `view.rs`, `session.rs` | 7,325,272 B | 191 MB | 54 MB |
 | 2026-11-22 | `0b72197`: CPU renderer `soft.rs`, `cell.rs`, `font.rs` (not wired in) | 7,197,832 B | 191 MB | n/a |
 | 2026-11-22 | `eae69b5`: initial commit (damage tracking, cell buffer, lazy fonts) | 7,197,400 B | 191 MB | n/a |
 | 2026-11-22 | Before the lazy-font fix (never committed) | n/a | 946 MB | n/a |
@@ -103,12 +106,13 @@ src/
 ├─ font.rs      fonts, glyph table, special tiles (shared by the renderers)
 ├─ gpu.rs       wgpu, atlas, pipelines
 ├─ soft.rs      CPU renderer into an ARGB framebuffer
+├─ chrome.rs    window frame: glass look, rounded corners, title bar, buttons, hit testing
 ├─ view.rs      grid → cells for any renderer (damage, cursor, selection)
 ├─ session.rs   Term + PTY thread
 ├─ wl.rs        own Wayland client: wire protocol, window, shm buffers
 ├─ wlapp.rs     the app on wl.rs + soft.rs (`AXON_BACKEND=wl`)
 ├─ input.rs     Keyboard → xterm sequences (pure)
-├─ palette.rs   Neon palette and ANSI color resolution
+├─ palette.rs   Black-and-white palette and ANSI color resolution
 └─ shader.wgsl  Cell and background shaders
 ```
 

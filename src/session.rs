@@ -23,10 +23,11 @@ impl Dimensions for Size {
     fn columns(&self) -> usize { self.cols }
 }
 
-/// Columns and rows that fit in a `w` x `h` pixel window with `pad` pixels of margin.
-pub fn grid_size(w: u32, h: u32, cw: u32, ch: u32, pad: u32) -> (usize, usize) {
+/// Columns and rows that fit in a `w` x `h` pixel window with `pad` pixels of margin left, right and
+/// below, and `top` pixels above.
+pub fn grid_size(w: u32, h: u32, cw: u32, ch: u32, pad: u32, top: u32) -> (usize, usize) {
     let cols = (w.saturating_sub(2 * pad) / cw).max(2) as usize;
-    let rows = (h.saturating_sub(2 * pad) / ch).max(2) as usize;
+    let rows = (h.saturating_sub(top + pad) / ch).max(2) as usize;
     (cols, rows)
 }
 

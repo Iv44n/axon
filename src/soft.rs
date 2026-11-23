@@ -2,20 +2,17 @@
 //! grid straight into a premultiplied `Argb8888` framebuffer, the memory a `wl_shm` buffer maps.
 //!
 //! The framebuffer is the retained state: only damaged rows are repainted into it, so there is no
-//! cell buffer and no copy. The look is shader.wgsl on the CPU (squared text coverage, overlays,
-//! gradient and neon border background); keep the two in sync until the GPU path is deleted.
+//! cell buffer and no copy. Cells, text coverage and overlays match shader.wgsl; the frame around
+//! them (glass body, rounded corners, title bar and buttons) is `chrome.rs` and exists only here.
 //! Driven by `wlapp.rs` (`AXON_BACKEND=wl`); see `knowledge/plan/software-renderer.md`.
 #![allow(dead_code)]
 
 use crate::cell::{
     Cell, Glyphs, MAX_TILES, T_BAR, T_BEAM, T_BOX, T_FIRST_GLYPH, T_STRIKE, T_UNDER, pack,
 };
+use crate::chrome::{self, REACH, TITLE_CLEAR, TITLE_H, Ui};
 use crate::font::{Fonts, GlyphTable, special_tiles};
 use crate::view::Backend;
-
-/// Distance from a window edge beyond which the neon glow is too faint to show in 8 bits
-/// (`exp(-48/7) * 0.16` is 0.0002); inside it every pixel is computed.
-const GLOW_REACH: f32 = 48.0;
 
 pub struct Soft {
     fonts: Fonts,
@@ -25,8 +22,14 @@ pub struct Soft {
     tiles: Vec<u8>,
     next_tile: u32,
     opacity: f32,
-    /// Margin around the grid, in pixels.
+    /// Margin left, right and below the grid, in pixels.
     pub pad: u32,
+    /// Where the grid starts: the title bar plus a margin.
+    pub top: u32,
+    ui: Ui,
+    title: String,
+    /// The title bar no longer shows `ui` and `title`.
+    chrome_dirty: bool,
     /// Packed RGBA of the cursor overlay.
     pub cursor_color: u32,
     /// Framebuffer size and grid size of the last frame.
@@ -47,6 +50,10 @@ impl Soft {
             next_tile: T_FIRST_GLYPH,
             opacity,
             pad: (font_px * 0.9).round() as u32,
+            top: TITLE_H as u32 + (font_px * 0.45).round() as u32,
+            ui: Ui::IDLE,
+            title: String::new(),
+            chrome_dirty: true,
             cursor_color: pack(255, 255, 255, 255),
             w: 0,
             h: 0,
@@ -68,9 +75,32 @@ impl Soft {
         self.glyphs.clear();
         self.next_tile = T_FIRST_GLYPH;
         self.pad = (px * 0.9).round() as u32;
+        self.top = TITLE_H as u32 + (px * 0.45).round() as u32;
         self.tiles.clear();
         self.stale = true;
         self.bake_specials();
+    }
+
+    /// Window state that changes the look. Square corners (maximized) change the whole frame; the
+    /// rest only the title bar.
+    pub fn set_ui(&mut self, ui: Ui) {
+        if ui == self.ui {
+            return;
+        }
+        if ui.maximized != self.ui.maximized {
+            self.stale = true;
+        } else {
+            self.chrome_dirty = true;
+        }
+        self.ui = ui;
+    }
+
+    pub fn set_title(&mut self, title: &str) {
+        if title != self.title {
+            self.title.clear();
+            self.title.push_str(title);
+            self.chrome_dirty = true;
+        }
     }
 
     fn tile_len(&self) -> usize {
@@ -86,16 +116,21 @@ impl Soft {
 
     /// Starts a frame on a `w` x `h` framebuffer holding a grid of `rows` x `cols` cells. Returns
     /// true when every row has to be written: first frame, the sizes changed, or the tiles were
-    /// reassigned. The margins around the grid are painted here.
+    /// reassigned. The margins around the grid and the title bar are painted here.
     pub fn begin_frame(&mut self, fb: &mut [u32], w: usize, h: usize, rows: usize, cols: usize) -> bool {
         let full = self.stale || (self.w, self.h, self.rows, self.cols) != (w, h, rows, cols);
         if full {
             self.stale = false;
             (self.w, self.h, self.rows, self.cols) = (w, h, rows, cols);
-            let (pad, ch) = (self.pad as usize, self.fonts.cell_h as usize);
-            self.paint_bg(fb, 0, pad);
-            self.paint_bg(fb, pad + rows * ch, h);
+            let (top, ch) = (self.top as usize, self.fonts.cell_h as usize);
+            self.paint_bg(fb, 0, top);
+            self.paint_bg(fb, top + rows * ch, h);
+            self.paint_title(fb);
+        } else if self.chrome_dirty && fb.len() >= self.w * self.h {
+            self.paint_bg(fb, 0, TITLE_H);
+            self.paint_title(fb);
         }
+        self.chrome_dirty = false;
         full
     }
 
@@ -104,9 +139,9 @@ impl Soft {
         if first + count > self.rows || fb.len() < self.w * self.h {
             return;
         }
-        let (pad, ch) = (self.pad as usize, self.fonts.cell_h as usize);
+        let (top, ch) = (self.top as usize, self.fonts.cell_h as usize);
         for (n, cells) in cells.chunks_exact(self.cols).enumerate() {
-            let y0 = pad + (first + n) * ch;
+            let y0 = top + (first + n) * ch;
             self.paint_bg(fb, y0, y0 + ch);
             self.paint_cells(fb, y0, cells);
         }
@@ -159,19 +194,18 @@ impl Soft {
         }
     }
 
-    /// Background of pixel rows `y0..y1`: vertical gradient plus the neon border glow.
+    /// Background of pixel rows `y0..y1`: the glass frame (`chrome::pixel`).
     fn paint_bg(&self, fb: &mut [u32], y0: usize, y1: usize) {
         let (w, h) = (self.w, self.h);
-        let reach = GLOW_REACH.ceil() as usize;
         for y in y0..y1.min(h) {
             let row = &mut fb[y * w..][..w];
-            let py = y as f32 + 0.5;
-            if py.min(h as f32 - py) >= GLOW_REACH && w > 2 * reach {
-                for x in 0..reach {
+            if y >= REACH && y + REACH < h && w > 2 * REACH {
+                // Away from the edges the frame only varies with y: compute the two bands, fill the rest.
+                for x in 0..REACH {
                     row[x] = self.bg_px(x, y);
                 }
-                row[reach..w - reach].fill(self.bg_px(w / 2, y)); // no glow: constant along the row
-                for x in w - reach..w {
+                row[REACH..w - REACH].fill(self.bg_px(w / 2, y));
+                for x in w - REACH..w {
                     row[x] = self.bg_px(x, y);
                 }
             } else {
@@ -182,24 +216,34 @@ impl Soft {
         }
     }
 
-    /// shader.wgsl `fs_bg`, for the pixel whose centre is `(x + 0.5, y + 0.5)`.
     fn bg_px(&self, x: usize, y: usize) -> u32 {
-        let (w, h) = (self.w as f32, self.h as f32);
-        let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-        let (u, v) = (px / w, py / h);
-        let d = px.min(w - px).min(py.min(h - py));
-        let glow = if d < GLOW_REACH { (-d / 7.0).exp() * 0.16 + if d < 1.0 { 0.55 } else { 0.0 } } else { 0.0 };
-        let mix = |a: f32, b: f32, t: f32| a + (b - a) * t;
-        let top = [0.020, 0.030, 0.060];
-        let bot = [0.040, 0.020, 0.075];
-        let acc_a = [0.10, 0.89, 1.0];
-        let acc_b = [0.78, 0.49, 1.0];
-        let a = (self.opacity + glow * 0.5).clamp(0.0, 1.0);
-        let ch = |i: usize| {
-            let c = mix(top[i], bot[i], v) + mix(acc_a[i], acc_b[i], u) * glow;
-            ((c * a * 255.0 + 0.5) as u32).min(255)
-        };
-        argb([ch(0), ch(1), ch(2), (a * 255.0 + 0.5) as u32])
+        chrome::pixel(x, y, self.w, self.h, self.opacity, &self.ui)
+    }
+
+    /// The title, centred between the buttons and the right margin, over the title bar background.
+    fn paint_title(&mut self, fb: &mut [u32]) {
+        let (cw, ch, w) = (self.fonts.cell_w as usize, self.fonts.cell_h as usize, self.w);
+        let room = w.saturating_sub(2 * TITLE_CLEAR) / cw;
+        let title = std::mem::take(&mut self.title);
+        let count = title.chars().count().min(room);
+        let y0 = (TITLE_H - ch) / 2;
+        let x0 = (w - count * cw) / 2;
+        let strength = if self.ui.focused { 190 } else { 100 };
+        let len = cw * ch;
+        for (n, c) in title.chars().take(count).enumerate() {
+            let c = if n + 1 == count && title.chars().count() > count { '\u{2026}' } else { c };
+            let tile = self.glyph(c, false, false) as usize;
+            for y in 0..ch {
+                for x in 0..cw {
+                    let cov = self.tiles[tile * len + y * cw + x] as u32 * strength / 255;
+                    if cov != 0 {
+                        let dst = &mut fb[(y0 + y) * w + x0 + n * cw + x];
+                        *dst = argb(overlay(from_argb(*dst), [235, 235, 235, 255], cov));
+                    }
+                }
+            }
+        }
+        self.title = title;
     }
 }
 

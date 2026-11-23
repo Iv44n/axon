@@ -16,6 +16,7 @@ adapter chosen with `PowerPreference::LowPower`. Window 1000x640, idle shell (`s
 
 | Date | Terminal | Commit | Idle CPU | Startup | Latency | `cat` 100 MB | RSS | PSS | Notes |
 |---|---|---|---|---|---|---|---|---|---|
+| 2026-11-22 | axon `AXON_BACKEND=wl` with the glass chrome, Cascadia NF (default) | 8db3cc9+ | 0.0% | - | - | 1.7 s | 55 MB | 51 MB | anon 47; binary 7,332,888 B; `winit` 196 MB; see software-renderer.md |
 | 2026-11-22 | axon `AXON_BACKEND=wl` (own Wayland client, CPU renderer), JetBrains Mono | 0b72197+ | 0.0% | - | - | 1.7 s | 12 MB | 8 MB | anon 5, file 5, shmem 2; Cascadia NF default: 54 MB; see software-renderer.md |
 | 2026-11-22 | spike: CPU into `wl_shm`, 1920x1048 window | not in repo | - | - | - | - | 14 MB | 8.2 MB | anon 3.7, file 1.9, shmem 8.4 (one buffer); see findings |
 | 2026-11-22 | spike: CPU into `wl_shm`, 1000x640 window | not in repo | 0.0% | - | - | - | 8.7 MB | 5.6 MB | anon 3.7, file 1.9, shmem 3.1 (one buffer); no wgpu, no winit |

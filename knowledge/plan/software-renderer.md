@@ -43,12 +43,19 @@ alive until stage E, so the app never stops working.
   [software-renderer](../performance/software-renderer.md).
 
 ## C. Input and clipboard
+- **Pointer done 2026-11-22** (for the window chrome, [0012](../decisions/0012-glass-chrome-black-white.md)): `wl_seat`
+  + `wl_pointer` (enter, leave, motion, button) and `wp_cursor_shape_v1` in `wl.rs`; `wlapp.rs` hit-tests with
+  `chrome::hit` for the title-bar buttons, move, double-click maximize and resize edges. Still missing: wheel
+  (axis), selection, mouse reporting, and everything below.
 `wl_seat`, `wl_keyboard` (the keymap is xkb text: parse the subset we need or load `libxkbcommon`),
 key repeat (client side), `wl_pointer` (selection, wheel, buttons), cursor shape, and
 `wl_data_device_manager` for the clipboard (replaces `arboard`). `input.rs` takes keysyms instead of
 `winit` events.
 
 ## D. Window behaviour
+- **Chrome done 2026-11-22:** client-side title bar, buttons, rounded corners and glass look (`chrome.rs`), maximize
+  and minimize through `xdg_toplevel`. Left: HiDPI, the second buffer on a holding compositor, own shadow if
+  a compositor draws a rectangular one through the corners.
 Resize and the buffer lifecycle (release-wait single buffer, second buffer only if a compositor needs
 it), decorations (`xdg-decoration` or none), HiDPI (`wp_fractional_scale_v1` + `wp_viewporter`),
 focus, close. Measure idle RSS at 1000x640 and 1080p against the spike (8.7 MB and 14 MB).
