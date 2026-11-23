@@ -1,8 +1,9 @@
 # axon
 
-Native terminal emulator: minimalist, GPU (wgpu), Wayland/X11, Rust.
-VT emulation: `alacritty_terminal`. Window: `winit`. Glyphs: `fontdue` + atlas.
-Direction: data-oriented, no caches, own implementations instead of dependencies (`knowledge/decisions/0009`, `0010`);
+Native terminal emulator: minimalist, Wayland/X11, Rust. Today it renders on the GPU (wgpu); the decided direction is a CPU
+renderer into `wl_shm` with an own Wayland client (`knowledge/decisions/0011`, idle RSS 8.7 MB in the spike vs 191 MB).
+VT emulation: `alacritty_terminal`. Window: `winit`. Glyphs: `fontdue` + tiles.
+Direction: data-oriented, no caches, own implementations instead of dependencies (`knowledge/decisions/0009`, `0010`, `0011`);
 `alacritty_terminal`, `fontdue`, `winit` and `wgpu` are scaffolding.
 
 ## Commands

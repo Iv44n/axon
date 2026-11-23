@@ -15,6 +15,8 @@ adapter chosen with `PowerPreference::LowPower`. Window 1000x640, idle shell (`s
 
 | Date | Terminal | Commit | Idle CPU | Startup | Latency | `cat` 100 MB | RSS | PSS | Notes |
 |---|---|---|---|---|---|---|---|---|---|
+| 2026-11-22 | spike: CPU into `wl_shm`, 1920x1048 window | not in repo | - | - | - | - | 14 MB | 8.2 MB | anon 3.7, file 1.9, shmem 8.4 (one buffer); see findings |
+| 2026-11-22 | spike: CPU into `wl_shm`, 1000x640 window | not in repo | 0.0% | - | - | - | 8.7 MB | 5.6 MB | anon 3.7, file 1.9, shmem 3.1 (one buffer); no wgpu, no winit |
 | 2026-11-22 | axon, damage tracking, lazy fonts, Cascadia NF (default) | uncommitted | 0.0% | - | - | 4.3 s | 191 MB | 170 MB | after the 100 MB `cat`: RSS 216 MB, anon 99 MB (scrollback) |
 | 2026-11-22 | axon, lazy fonts, JetBrains Mono, radeon ICD only | uncommitted | 0.0% | - | - | - | 119 MB | 107 MB | anon 24 MB, file 94 MB (`VK_LOADER_DRIVERS_SELECT='*radeon*'`) |
 | 2026-11-22 | axon, lazy fonts, JetBrains Mono | uncommitted | 0.0% | - | - | - | 148 MB | 127 MB | anon 31 MB, file 117 MB |
@@ -25,6 +27,11 @@ Alacritty, Ghostty and foot are not installed on the reference machine, so no co
 exists yet (task 1 in [next-steps](../plan/next-steps.md)).
 
 ## Findings
+
+- **CPU renderer and the `wl_shm` spike** (experiment 0 and stage A of task 15): idle RSS 8.7 MB at 1000x640
+  and 14 MB at 1080p without the GPU stack, against 191 MB today; CPU output within 1/255 of the GPU.
+  Details in [software-renderer](software-renderer.md).
+
 
 - **Cell buffer redesign** ([0009](../decisions/0009-data-oriented-no-caches.md)): the renderer output is
   byte-identical to the previous one on 5 fixed scenes (block, beam and underline cursors, hollow cursor,

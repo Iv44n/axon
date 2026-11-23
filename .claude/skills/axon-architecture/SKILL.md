@@ -26,13 +26,16 @@ winit user_event ─► request_redraw ─► State::build() ─► Gpu cell buf
 | Module | Responsibility | May depend on |
 |---|---|---|
 | `main.rs` | winit app, `State` (window+session+mouse), `build()` grid→cells | all |
-| `gpu.rs` | wgpu, atlas, fonts, pipelines, `Cell`, `render()` | winit (`Window` only), fontdue |
+| `cell.rs` | `Cell`, `F_*` flags, `T_*` special tiles, `pack`, the `Glyphs` trait | bytemuck |
+| `font.rs` | `Fonts` (fallbacks, rasterizing), `GlyphTable`, special tile bitmaps | fontdue |
+| `gpu.rs` | wgpu, atlas, pipelines, `render()` (to be deleted: [0011](../../../knowledge/decisions/0011-software-render-wl-shm.md)) | winit (`Window` only), `cell`, `font` |
+| `soft.rs` | CPU renderer into an `Argb8888` framebuffer; the replacement for `gpu.rs`, not wired in yet | `cell`, `font` |
 | `input.rs` | `KeyEvent` → xterm bytes | winit, alacritty `TermMode` |
 | `palette.rs` | Neon ANSI palette, `Color`→`Rgb` resolution | alacritty `vte::ansi` |
 | `shader.wgsl` | Vertex/fragment for cells and background | — |
 
 ## Dependency rules (inviolable)
-1. `gpu.rs` does **not** know about `alacritty_terminal` or `Term`. It only receives rows of `Cell { tile|flags, fg, bg }`; the position is the index.
+1. `gpu.rs` and `soft.rs` do **not** know about `alacritty_terminal` or `Term`. It only receives rows of `Cell { tile|flags, fg, bg }`; the position is the index.
 2. `input.rs` is pure: no state, no I/O, unit-testable.
 3. `palette.rs` is data + pure functions. Future themes replace its constants, not its logic.
 4. Nothing outside `main.rs`/`app` touches `winit::event_loop`.

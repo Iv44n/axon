@@ -76,7 +76,8 @@ Not caches:
 | Lazy fallback fonts (`OnceCell`) | memoized load | Memory-mapped font, tables read in place, nothing parsed up front | pending |
 | `fontdue` (parses every glyph on load: 45 MB, CJK 314 MB) | dependency | Own TrueType/CFF reader and rasterizer | pending |
 | `alacritty_terminal` `Term` (AoS cells, converted to GPU cells every frame) | dependency + mirror | Own VT parser and grid: SoA arrays the GPU can read directly | pending |
-| `Rgba16Float` swapchain (8 bytes per pixel, chosen by accident) | oversized | `Bgra8Unorm` if the look allows | pending |
+| `Rgba16Float` swapchain (8 bytes per pixel, chosen by accident) | oversized | `Bgra8Unorm` if the look allows; moot: the GPU path goes away ([0011](../../../knowledge/decisions/0011-software-render-wl-shm.md)) | pending |
+| `winit` + `wgpu` (GPU stack floor: ~94 MB RSS; spike without it: 8.7 MB) | dependency | Own Wayland client + CPU renderer into `wl_shm` ([plan](../../../knowledge/plan/software-renderer.md)) | accepted, pending |
 | `dirty`, `last_cursor`, `last_sel` in `State` | damage protocol | Keep | n/a |
 
 Plan and order: `knowledge/plan/own-implementations.md`.

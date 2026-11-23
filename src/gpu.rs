@@ -1,40 +1,13 @@
 //! wgpu renderer: glyph atlas + one instance per cell + procedural background.
-use std::{cell::OnceCell, sync::Arc};
+use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
-use fontdue::{Font, FontSettings};
 use winit::window::Window;
 
+use crate::cell::{Cell, Glyphs, MAX_TILES, T_BLANK, T_FIRST_GLYPH, pack};
+use crate::font::{Fonts, GlyphTable, special_tiles};
+
 const ATLAS: u32 = 2048;
-
-pub const T_BLANK: u32 = 0;
-const T_BEAM: u32 = 1;
-const T_BAR: u32 = 2;
-const T_BOX: u32 = 3;
-const T_UNDER: u32 = 4;
-const T_STRIKE: u32 = 5;
-const T_FIRST_GLYPH: u32 = 6;
-/// The tile index lives in the low 16 bits of `Cell::tf`.
-const MAX_TILES: u32 = 1 << 16;
-
-// Flags in the high 16 bits of `Cell::tf`; the shader (shader.wgsl) draws them.
-pub const F_UNDER: u32 = 1 << 16;
-pub const F_STRIKE: u32 = 1 << 17;
-/// Cursor shape: a 2-bit field at bits 18-19.
-pub const F_BEAM: u32 = 1 << 18;
-pub const F_BAR: u32 = 2 << 18;
-pub const F_BOX: u32 = 3 << 18;
-
-/// One terminal cell as the GPU reads it. The cell buffer is a flat array indexed by
-/// `row * cols + col`: the position is the index, so it is not stored.
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-pub struct Cell {
-    /// Tile in the low 16 bits, `F_*` flags above.
-    pub tf: u32,
-    pub fg: u32,
-    pub bg: u32,
-}
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -47,183 +20,6 @@ struct Uniforms {
     cols: u32,
     cursor: u32,
     _pad: [u32; 2],
-}
-
-pub fn pack(r: u8, g: u8, b: u8, a: u8) -> u32 {
-    r as u32 | (g as u32) << 8 | (b as u32) << 16 | (a as u32) << 24
-}
-
-// ------------------------------------------------------------------ fonts --
-
-/// Fallback font, parsed on first use. fontdue parses every glyph eagerly, so a CJK font costs
-/// ~300 MB and ~600 ms; `ranges` (inclusive code points, empty = any) keeps it from being
-/// consulted, and therefore loaded, for characters it cannot help with.
-struct Fallback {
-    path: &'static str,
-    ranges: &'static [(u32, u32)],
-    font: OnceCell<Option<Font>>,
-}
-
-const CJK: &[(u32, u32)] = &[
-    (0x2E80, 0x9FFF),   // radicals, CJK symbols, kana, bopomofo, enclosed forms, ideographs
-    (0xAC00, 0xD7FF),   // hangul syllables
-    (0xF900, 0xFAFF),   // compatibility ideographs
-    (0xFE30, 0xFE4F),   // compatibility forms
-    (0xFF00, 0xFFEF),   // half/full-width forms
-    (0x20000, 0x3FFFF), // ideograph extensions
-];
-
-const FALLBACKS: &[(&str, &[(u32, u32)])] = &[
-    ("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", &[]),
-    ("/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf", &[]),
-    ("/usr/share/fonts/truetype/noto/NotoSansSymbols-Regular.ttf", &[]),
-    ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", CJK),
-];
-
-struct Fonts {
-    primary: Font,
-    fallbacks: Vec<Fallback>,
-    px: f32,
-    pub cell_w: u32,
-    pub cell_h: u32,
-    ascent: i32,
-}
-
-fn load_font(path: &str) -> Option<Font> {
-    let bytes = std::fs::read(path).ok()?;
-    Font::from_bytes(bytes, FontSettings::default()).ok()
-}
-
-impl Fonts {
-    fn new(px: f32) -> Self {
-        let home = std::env::var("HOME").unwrap_or_default();
-        let mut candidates: Vec<String> = Vec::new();
-        if let Ok(p) = std::env::var("AXON_FONT") {
-            candidates.push(p);
-        }
-        for f in ["CascadiaMonoNF.ttf", "JetBrainsMono[wght].ttf", "CascadiaMono.ttf"] {
-            candidates.push(format!("{home}/.local/share/fonts/{f}"));
-        }
-        for f in [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
-            "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf",
-        ] {
-            candidates.push(f.to_string());
-        }
-        let primary = candidates
-            .iter()
-            .find_map(|p| load_font(p))
-            .expect("no monospaced font found (set AXON_FONT=/path/to/font.ttf)");
-
-        let fallbacks = FALLBACKS
-            .iter()
-            .map(|&(path, ranges)| Fallback { path, ranges, font: OnceCell::new() })
-            .collect();
-
-        let mut fonts = Fonts { primary, fallbacks, px, cell_w: 1, cell_h: 1, ascent: 0 };
-        fonts.set_px(px);
-        fonts
-    }
-
-    /// Recomputes the cell metrics for a new size; no font file is read again.
-    fn set_px(&mut self, px: f32) {
-        let lm = self.primary.horizontal_line_metrics(px).expect("font has no line metrics");
-        self.px = px;
-        self.cell_w = self.primary.metrics('M', px).advance_width.round().max(1.0) as u32;
-        self.cell_h = (lm.ascent - lm.descent).ceil().max(1.0) as u32;
-        self.ascent = lm.ascent.round() as i32;
-    }
-
-    /// First fallback font that has `c`, loading fallbacks lazily and in order.
-    fn fallback_for(&self, c: char) -> Option<&Font> {
-        let cp = c as u32;
-        self.fallbacks.iter().find_map(|f| {
-            if !f.ranges.is_empty() && !f.ranges.iter().any(|&(lo, hi)| (lo..=hi).contains(&cp)) {
-                return None;
-            }
-            f.font.get_or_init(|| load_font(f.path)).as_ref().filter(|font| font.lookup_glyph_index(c) != 0)
-        })
-    }
-
-    /// Rasterizes a glyph into a `cell_w * (1|2)` x `cell_h` bitmap.
-    fn raster(&self, c: char, bold: bool, wide: bool) -> Vec<u8> {
-        let w = (self.cell_w * if wide { 2 } else { 1 }) as i32;
-        let h = self.cell_h as i32;
-        let mut buf = vec![0u8; (w * h) as usize];
-
-        let (font, fb) = if self.primary.lookup_glyph_index(c) != 0 {
-            (&self.primary, false)
-        } else if let Some(f) = self.fallback_for(c) {
-            (f, true)
-        } else {
-            (&self.primary, false)
-        };
-        let (m, bmp) = font.rasterize(c, self.px);
-        let xoff = if fb { ((w as f32 - m.advance_width) / 2.0).round() as i32 } else { 0 };
-        for r in 0..m.height as i32 {
-            let y = self.ascent - m.ymin - m.height as i32 + r;
-            if y < 0 || y >= h {
-                continue;
-            }
-            for col in 0..m.width as i32 {
-                let x = m.xmin + col + xoff;
-                if x < 0 || x >= w {
-                    continue;
-                }
-                buf[(y * w + x) as usize] = bmp[(r * m.width as i32 + col) as usize];
-            }
-        }
-        if bold {
-            for y in 0..h {
-                for x in (1..w).rev() {
-                    let i = (y * w + x) as usize;
-                    buf[i] = buf[i].max(buf[i - 1]);
-                }
-            }
-        }
-        buf
-    }
-}
-
-// ------------------------------------------------------------ glyph table --
-
-/// Tile of each baked (code point, style): a two-level flat table, no hashing. Code point `cp`
-/// lives in page `cp >> 8`, slot `(cp & 255) << 2 | style`. A tile of 0 means "not baked":
-/// glyph tiles start at `T_FIRST_GLYPH`, so 0 is never a real glyph.
-struct GlyphTable {
-    dir: Vec<u16>,
-    pages: Vec<[u32; 1024]>,
-}
-
-impl GlyphTable {
-    fn new() -> Self {
-        GlyphTable { dir: vec![0; 0x1100], pages: Vec::new() }
-    }
-
-    #[inline]
-    fn get(&self, c: char, style: u8) -> u32 {
-        let cp = c as usize;
-        match self.dir[cp >> 8] {
-            0 => 0,
-            p => self.pages[p as usize - 1][(cp & 255) << 2 | style as usize],
-        }
-    }
-
-    fn set(&mut self, c: char, style: u8, tile: u32) {
-        let cp = c as usize;
-        if self.dir[cp >> 8] == 0 {
-            self.pages.push([0; 1024]);
-            self.dir[cp >> 8] = self.pages.len() as u16;
-        }
-        let page = self.dir[cp >> 8] as usize - 1;
-        self.pages[page][(cp & 255) << 2 | style as usize] = tile;
-    }
-
-    fn clear(&mut self) {
-        self.dir.fill(0);
-        self.pages.clear();
-    }
 }
 
 // --------------------------------------------------------------- renderer --
@@ -498,30 +294,9 @@ impl Gpu {
     }
 
     fn bake_specials(&mut self) {
-        let (w, h) = (self.fonts.cell_w as usize, self.fonts.cell_h as usize);
-        let t = ((self.fonts.px / 14.0).round() as usize).max(1);
-        let base = self.fonts.ascent as usize;
-        let mk = |f: &dyn Fn(usize, usize) -> bool| -> Vec<u8> {
-            let mut v = vec![0u8; w * h];
-            for y in 0..h {
-                for x in 0..w {
-                    if f(x, y) {
-                        v[y * w + x] = 255;
-                    }
-                }
-            }
-            v
-        };
-        let tiles = [
-            (T_BLANK, mk(&|_, _| false)),
-            (T_BEAM, mk(&|x, _| x < t.max(2))),
-            (T_BAR, mk(&|_, y| y + t.max(2) >= h)),
-            (T_BOX, mk(&|x, y| x < t || y < t || x + t >= w || y + t >= h)),
-            (T_UNDER, mk(&|_, y| y >= (base + 1).min(h - t) && y < (base + 1).min(h - t) + t)),
-            (T_STRIKE, mk(&|_, y| y >= h * 55 / 100 && y < h * 55 / 100 + t)),
-        ];
-        for (tile, data) in tiles {
-            self.upload_tile(tile, w as u32, &data);
+        let (w, h) = (self.fonts.cell_w, self.fonts.cell_h);
+        for (tile, data) in special_tiles(w, h, self.fonts.px, self.fonts.ascent).iter().enumerate() {
+            self.upload_tile(tile as u32, w, data);
         }
     }
 
@@ -554,7 +329,7 @@ impl Gpu {
     }
 
     /// Glyph tile (for double-width glyphs returns the left one; the right one is +1).
-    pub fn glyph(&mut self, c: char, bold: bool, wide: bool) -> u32 {
+    fn bake(&mut self, c: char, bold: bool, wide: bool) -> u32 {
         if c == ' ' || c == '\0' {
             return T_BLANK;
         }
@@ -671,5 +446,11 @@ impl Gpu {
         }
         self.queue.submit(Some(enc.finish()));
         self.queue.present(frame);
+    }
+}
+
+impl Glyphs for Gpu {
+    fn glyph(&mut self, c: char, bold: bool, wide: bool) -> u32 {
+        self.bake(c, bold, wide)
     }
 }

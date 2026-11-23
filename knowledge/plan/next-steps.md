@@ -17,9 +17,10 @@ If a task needs design notes, create `plan/<task>.md` and link it from its line.
 - [ ] 6. xterm 1000/1006 mouse reporting (closes phase 4) → `axon-extend` skill
 - [ ] 7. Decide whether inline images and a blinking cursor are requirements → [risks](../risks/INDEX.md)
 - [ ] 8. Tabs and panes: one `Session` per pane; the renderer does not change
-- [ ] 9. Decide the idle RAM target: the graphics stack alone maps ~94 MB (RSS) on the reference machine, so 50 MB of RSS is unreachable → [measurements](../performance/measurements.md), [0008](../decisions/0008-idle-ram-50mb.md); needs a new ADR. Added after the first measurement; do it before 3
+- [x] 9. Idle RAM target: the user accepted [0011](../decisions/0011-software-render-wl-shm.md) (software rendering on `wl_shm`; the graphics stack alone maps ~94 MB, the spike reached 8.7 MB without it) (done 2026-11-22)
 - [ ] 10. Remove the ~600 ms UI-thread stall on the first CJK glyph (and its ~300 MB) → [risk](../risks/fallback-fonts.md). Added after the first measurement; the own font reader (task 12) removes it
 - [x] 11. Cell buffer redesign: fixed stride, flags in the tile bits, flat glyph table, no row cache → [0009](../decisions/0009-data-oriented-no-caches.md) (done 2026-11-22)
-- [ ] 12. Spike, then own font reader and rasterizer (replaces `fontdue`) → [own-implementations](own-implementations.md) items 0 and 1
+- [ ] 12. Own font reader and rasterizer (replaces `fontdue`); the `wl_shm` spike is done (2026-11-22) → [own-implementations](own-implementations.md) items 0 and 1
 - [ ] 13. Own PTY and terminal core (VT parser, SoA grid), with `alacritty_terminal` as test oracle → [own-implementations](own-implementations.md) items 2 and 3
-- [ ] 14. Swapchain format: `Rgba16Float` is chosen by accident (8 bytes per pixel); try `Bgra8Unorm` and check the look → [measurements](../performance/measurements.md)
+- [ ] 14. Swapchain format: `Rgba16Float` is chosen by accident (8 bytes per pixel); try `Bgra8Unorm` and check the look → [measurements](../performance/measurements.md). Moot: 0011 is accepted, the swapchain goes away with task 15
+- [ ] 15. (stage A done 2026-11-22: `soft.rs`, pixel-checked) Own Wayland client (registry, `xdg-shell`, `wl_shm`, input) and CPU cell renderer next to the wgpu one, pixel-compared on the fixed scenes; then delete `winit`/`wgpu` → [software-renderer](software-renderer.md), [0011](../decisions/0011-software-render-wl-shm.md)

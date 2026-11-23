@@ -3,7 +3,13 @@ name: axon-renderer
 description: Internals of axon's renderer (wgpu 30) - glyph atlas, cell buffer format, uniforms, WGSL shader, special tiles and API gotchas. Use it when modifying gpu.rs or shader.wgsl, or adding visual effects.
 ---
 
-# Renderer (`src/gpu.rs`, `src/shader.wgsl`)
+# Renderer (`src/gpu.rs`, `src/shader.wgsl`; CPU twin in `src/soft.rs`)
+
+**Direction ([0011](../../../knowledge/decisions/0011-software-render-wl-shm.md)):** the GPU path is going away. `soft.rs` already paints the
+same `Cell` rows on the CPU into an `Argb8888` framebuffer (premultiplied) and matches `shader.wgsl` to within 1/255 on the fixed scenes.
+Until `gpu.rs` is deleted, any look change (colors, overlays, background, blending) must be made in **both** `shader.wgsl` and `soft.rs`,
+and checked with the pixel diff in `axon-data-oriented-design`. The framebuffer is the retained state: `Soft::write_rows` repaints only
+the damaged pixel rows, so there is no cell buffer.
 
 ## Model
 - Font → `fontdue` rasterizes into bitmaps **exactly one cell in size** (`cell_w × cell_h`).

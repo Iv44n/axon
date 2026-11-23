@@ -10,11 +10,13 @@ Order = payoff per effort, with the data we have. Before writing each one, answe
 in the `axon-data-oriented-design` skill; measure before and after; log it in
 [measurements](../performance/measurements.md). Nothing here is started except where marked.
 
-## 0. Spike: what does the GPU stack cost? (decides item 4)
-The Vulkan loader plus Mesa/NVIDIA libraries map ~94 MB (RSS floor, measured). Build a throwaway
-window in `/tmp` that draws the same scene into a `wl_shm` buffer with the CPU, and compare idle
-RSS. If it is far below 50 MB, the 50 MB target ([0008](../decisions/0008-idle-ram-50mb.md)) is
-reachable only without the GPU stack, and item 4 becomes a software renderer.
+## 0. Spike: what does the GPU stack cost? (decides item 4) - done 2026-11-22
+The Vulkan loader plus Mesa/NVIDIA libraries map ~94 MB (RSS floor, measured). A throwaway window
+drew the same kind of scene into a `wl_shm` buffer with the CPU: **8.7 MB idle RSS** at 1000x640,
+14 MB at 1080p (axon today: 191 MB). The 50 MB target ([0008](../decisions/0008-idle-ram-50mb.md))
+is reachable only without the GPU stack, so item 4 becomes an own Wayland client with a software
+renderer: accepted in [0011](../decisions/0011-software-render-wl-shm.md); stages in [software-renderer](software-renderer.md).
+Numbers and caveats: [measurements](../performance/measurements.md).
 
 ## 1. Font reader and rasterizer (replaces `fontdue`)
 - **Payoff:** anon -45 MB (Cascadia NF) and -314 MB plus a ~600 ms stall (CJK), measured.
@@ -44,8 +46,10 @@ the parser's input buffer. Small; do it together with item 3.
   both and compare the grids; run vttest and esctest.
 
 ## 4. Window and GPU stack (`winit`, `wgpu`)
-Decided after item 0. Possible outcomes: keep `wgpu` and restrict the Vulkan loader to one driver;
-Wayland and X11 clients of our own with a software renderer; or raw Vulkan.
+Item 0 measured the outcomes: `wgpu` with one Vulkan driver is still 119 MB; a window with a CPU
+renderer on `wl_shm` is 9-14 MB. Decided: an own Wayland client (xdg-shell, `wl_shm`) and a CPU cell
+renderer, X11 later (MIT-SHM) ([0011](../decisions/0011-software-render-wl-shm.md)). Keep `winit` and
+`wgpu` until the software path matches the pixels, then delete them.
 
 ## Not on this list
 Config parser: a minimal own parser, not `serde` + `toml` (task 3 in next-steps). Clipboard

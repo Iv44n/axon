@@ -1,7 +1,10 @@
 //! axon — minimalist GPU terminal.
+mod cell;
+mod font;
 mod gpu;
 mod input;
 mod palette;
+mod soft;
 
 use std::{
     collections::HashMap,
@@ -34,7 +37,8 @@ use winit::{
     window::{CursorIcon, ResizeDirection, Window, WindowId},
 };
 
-use gpu::{Cell, F_BAR, F_BEAM, F_BOX, F_STRIKE, F_UNDER, Gpu, pack};
+use cell::{Cell, F_BAR, F_BEAM, F_BOX, F_STRIKE, F_UNDER, Glyphs, T_BLANK, pack};
+use gpu::Gpu;
 
 // -------------------------------------------------------------- events ----
 
@@ -318,7 +322,7 @@ impl State {
 
 /// Fills `cells` with the rows starting at `first`: row-major, `term.columns()` cells per row.
 /// The slice arrives zeroed (blank), so only non-blank cells are written.
-fn build_rows(g: &mut Gpu, term: &Term<Proxy>, first: usize, cells: &mut [Cell], focused: bool) {
+fn build_rows(g: &mut impl Glyphs, term: &Term<Proxy>, first: usize, cells: &mut [Cell], focused: bool) {
     let content = term.renderable_content();
     let colors = content.colors;
     let selection = content.selection;
@@ -372,13 +376,13 @@ fn build_rows(g: &mut Gpu, term: &Term<Proxy>, first: usize, cells: &mut [Cell],
 
             // Right half of a wide character: the next tile.
             let tile = if flags.contains(Flags::WIDE_CHAR_SPACER) {
-                right_half.take().unwrap_or(gpu::T_BLANK)
+                right_half.take().unwrap_or(T_BLANK)
             } else if flags.contains(Flags::HIDDEN) || flags.contains(Flags::LEADING_WIDE_CHAR_SPACER) {
-                gpu::T_BLANK
+                T_BLANK
             } else {
                 let wide = flags.contains(Flags::WIDE_CHAR);
                 let t = g.glyph(cell.c, flags.contains(Flags::BOLD), wide);
-                if wide && t != gpu::T_BLANK {
+                if wide && t != T_BLANK {
                     right_half = Some(t + 1);
                 }
                 t

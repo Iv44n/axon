@@ -1,6 +1,6 @@
 ---
 type: decision
-status: accepted
+status: superseded-by-0011
 updated: 2026-11-22
 related: [../performance/protocol.md]
 ---
