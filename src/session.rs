@@ -8,7 +8,7 @@ use alacritty_terminal::{
     event_loop::{EventLoop as PtyLoop, Msg, Notifier},
     grid::Dimensions,
     sync::FairMutex,
-    term::Config as TermConfig,
+    term::{Config as TermConfig, Osc52},
     tty,
 };
 
@@ -21,6 +21,13 @@ impl Dimensions for Size {
     fn total_lines(&self) -> usize { self.rows }
     fn screen_lines(&self) -> usize { self.rows }
     fn columns(&self) -> usize { self.cols }
+}
+
+/// Terminal policy. OSC 52 may only write the clipboard: letting program output read it would hand
+/// the clipboard to anything that can print to the terminal (a remote host, a `cat`ed file). Set
+/// explicitly so it does not hang on a library default.
+fn term_config() -> TermConfig {
+    TermConfig { osc52: Osc52::OnlyCopy, ..TermConfig::default() }
 }
 
 /// Columns and rows that fit in a `w` x `h` pixel window with `pad` pixels of margin left, right and
@@ -44,7 +51,7 @@ pub fn spawn<L: EventListener + Clone + Send + 'static>(
     ch: u32,
     id: u64,
 ) -> (Arc<FairMutex<Term<L>>>, Notifier) {
-    let term = Arc::new(FairMutex::new(Term::new(TermConfig::default(), &Size { cols, rows }, listener.clone())));
+    let term = Arc::new(FairMutex::new(Term::new(term_config(), &Size { cols, rows }, listener.clone())));
     tty::setup_env();
     let opts = tty::Options { shell: None, working_directory: None, drain_on_exit: false, env: HashMap::new() };
     let pty = tty::new(&opts, window_size(cols, rows, cw, ch), id).expect("pty");

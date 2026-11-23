@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>axon · design board</title>
+<!--
+  The design board: every window picture here is a frame rendered by the real renderer
+  (src/design.rs -> soft.rs -> chrome.rs), with alpha, placed over a CSS backdrop the way the
+  compositor would place it. Nothing is drawn by hand. Regenerate with scripts/design.sh.
+-->
+<style>
+  :root {
+    --page: #0c0c0d;
+    --panel: #141416;
+    --line: #26262a;
+    --text: #e9e9ec;
+    --muted: #8e8e93;
+    --accent: #ffffff;
+    --radius: 14px;
+    --split: 50%;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--text);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Inter, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  code, .mono { font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; }
+  header { padding: 48px 48px 20px; max-width: 1400px; margin: 0 auto; }
+  h1 { margin: 0; font-size: 28px; font-weight: 650; letter-spacing: -0.02em; }
+  h1 span { color: var(--muted); font-weight: 450; }
+  header p { margin: 8px 0 0; color: var(--muted); max-width: 760px; }
+  .stamp { font-size: 12px; margin-top: 14px !important; }
+
+  nav {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; flex-wrap: wrap; gap: 14px 22px; align-items: center;
+    padding: 12px 48px;
+    background: color-mix(in srgb, var(--page) 82%, transparent);
+    backdrop-filter: blur(18px) saturate(1.4);
+    border-bottom: 1px solid var(--line);
+  }
+  nav .group { display: flex; align-items: center; gap: 10px; }
+  nav .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+  .seg { display: inline-flex; padding: 3px; gap: 2px; background: #1b1b1e; border: 1px solid var(--line); border-radius: 10px; }
+  .seg button {
+    appearance: none; border: 0; background: transparent; color: var(--muted);
+    font: inherit; font-size: 13px; padding: 5px 11px; border-radius: 7px; cursor: pointer;
+  }
+  .seg button:hover { color: var(--text); }
+  .seg button[aria-pressed="true"] { background: #2c2c31; color: var(--accent); box-shadow: inset 0 1px 0 #ffffff14; }
+  .seg button:disabled { opacity: 0.35; cursor: default; }
+  .swatch-btn { display: inline-block; width: 12px; height: 12px; border-radius: 4px; margin-right: 6px; vertical-align: -1px; border: 1px solid #ffffff30; }
+  input[type=range] { accent-color: #fff; width: 160px; }
+  .keys { margin-left: auto; color: var(--muted); font-size: 12px; }
+  kbd { font: 11px ui-monospace, monospace; padding: 1px 5px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; color: var(--text); }
+
+  main { max-width: 1400px; margin: 0 auto; padding: 8px 48px 96px; }
+  section { margin-top: 56px; }
+  section > h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); font-weight: 600; margin: 0 0 6px; }
+  section > p { margin: 0 0 18px; color: #b9b9be; max-width: 820px; }
+
+  .grid { display: grid; gap: 22px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 560px), 1fr)); }
+  .grid.wide { grid-template-columns: 1fr; }
+  figure { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  figcaption { display: flex; justify-content: space-between; gap: 12px; padding: 10px 14px; border-top: 1px solid var(--line); font-size: 13px; }
+  figcaption span { color: var(--muted); }
+  .stage { position: relative; overflow: auto; padding: 36px; display: flex; justify-content: safe center; align-items: safe center; min-height: 240px; }
+  /* A figure is two layers of the same box (the current frame's size): the baseline layer places
+     its image so both windows line up, and split clips the layers at the same line. */
+  .pair { position: relative; flex: none; }
+  .layer { position: absolute; inset: 0; overflow: hidden; }
+  .layer img { position: absolute; display: block; max-width: none; }
+  .pair[data-mode="current"] > .base, .pair[data-mode="baseline"] > .cur { display: none; }
+  .pair[data-mode="split"] > .base { clip-path: inset(0 calc(100% - var(--split)) 0 0); }
+  .pair[data-mode="split"] > .cur { clip-path: inset(0 0 0 var(--split)); }
+  .pair[data-mode="split"]::after { content: ""; position: absolute; top: 0; bottom: 0; left: var(--split); width: 1px; background: #ff3b30; opacity: 0.8; }
+  body[data-zoom="2"] .layer img, body[data-zoom="4"] .layer img { image-rendering: pixelated; }
+  .note { position: absolute; top: 10px; left: 12px; font-size: 12px; color: #fff; background: #000a; padding: 2px 8px; border-radius: 6px; }
+
+  /* Backdrops: what the desktop behind the translucent window could be. */
+  body[data-backdrop="aurora"] .stage {
+    background:
+      radial-gradient(circle at 18% 32%, #ff8a7a 0 9%, transparent 30%),
+      radial-gradient(circle at 78% 22%, #5aa9ff 0 8%, transparent 34%),
+      radial-gradient(circle at 62% 88%, #ffd76a 0 6%, transparent 40%),
+      linear-gradient(135deg, #f3d3f6, #a9bfff 60%, #c8f1e4);
+  }
+  body[data-backdrop="night"] .stage {
+    background:
+      radial-gradient(circle at 24% 72%, #7b2ff7 0 6%, transparent 38%),
+      radial-gradient(circle at 82% 24%, #0f9b8e 0 5%, transparent 34%),
+      linear-gradient(160deg, #0d0e1c, #1d2a46);
+  }
+  body[data-backdrop="text"] .stage {
+    background: #fafafa repeating-linear-gradient(0deg, transparent 0 17px, #d9d9de 17px 18px);
+  }
+  body[data-backdrop="stripes"] .stage { background: repeating-linear-gradient(45deg, #ececec 0 14px, #2a2a2a 14px 28px); }
+  body[data-backdrop="checker"] .stage { background: conic-gradient(#c9c9c9 25%, #fff 0 50%, #c9c9c9 0 75%, #fff 0) 0 0 / 16px 16px; }
+  body[data-backdrop="white"] .stage { background: #fff; }
+  body[data-backdrop="black"] .stage { background: #000; }
+
+  .swatches { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); margin-top: 22px; }
+  .sw { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .sw .chip { height: 54px; display: flex; align-items: flex-end; padding: 8px 10px; font: 13px "JetBrains Mono", ui-monospace, monospace; }
+  .sw .meta { padding: 8px 10px; font-size: 12px; color: var(--muted); display: grid; gap: 2px; }
+  .sw .meta b { color: var(--text); font-weight: 550; }
+  .bad { color: #ff8f8f; }
+  .ok { color: #9be39b; }
+
+  table { border-collapse: collapse; width: 100%; max-width: 820px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  td, th { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  th { color: var(--muted); font-weight: 500; width: 40%; }
+  tr:last-child td, tr:last-child th { border-bottom: 0; }
+  ul.rules { margin: 0; padding-left: 18px; color: #c9c9ce; max-width: 820px; }
+  ul.rules li { margin: 6px 0; }
+  .empty { margin: 80px auto; max-width: 620px; text-align: center; color: var(--muted); }
+</style>
+</head>
+<body data-backdrop="aurora" data-zoom="fit">
+<header>
+  <h1>axon <span>design board</span></h1>
+  <p>Every window here is a frame from the real renderer (<code>src/design.rs</code> → <code>soft.rs</code> → <code>chrome.rs</code>), with alpha, over a backdrop, the way the compositor shows it. Change the code, run <code>scripts/design.sh</code>, reload.</p>
+  <p class="stamp mono" id="stamp"></p>
+</header>
+
+<nav aria-label="View options">
+  <div class="group"><span class="label">Backdrop</span><div class="seg" id="backdrop"></div></div>
+  <div class="group"><span class="label">Zoom</span><div class="seg" id="zoom"></div></div>
+  <div class="group"><span class="label">Compare</span><div class="seg" id="compare"></div>
+    <input type="range" id="split" min="0" max="100" value="50" aria-label="Split position" hidden></div>
+  <div class="keys"><kbd>B</kbd> backdrop · <kbd>F</kbd><kbd>1</kbd><kbd>2</kbd><kbd>4</kbd> zoom · <kbd>C</kbd> compare</div>
+</nav>
+
+<main id="main">
+  <section><h2>Window</h2>
+    <p>The default look: one continuous near-black glass, rounded, with a faint uniform edge; the title bar is the same surface (integrated, like Ghostty, WezTerm or Warp), the three monochrome buttons and the title float on it; a soft shadow is cast downward (drawn by axon: Mutter draws none for client-decorated windows). Try the backdrops: the window has to read on a bright wallpaper, a dark one and on busy content.</p>
+    <div class="grid wide" data-group="window"></div></section>
+  <section><h2>States</h2>
+    <p>Pointer over the button group shows the glyphs; the button under it turns near white, darker while held. Unfocused windows dim the buttons, the title and the cursor (hollow). Maximized, fullscreen and tiled windows have square corners, no outline and no shadow.</p>
+    <div class="grid" data-group="states"></div></section>
+  <section><h2>Opacity</h2>
+    <p>No compositor blur on GNOME (no <code>ext-background-effect</code>): whatever is behind shows through sharp. Lower opacity reads as glass on smooth wallpapers and as tinted plastic on busy ones; try the <i>Page</i> backdrop. The default is 0.88.</p>
+    <div class="grid" data-group="opacity"></div></section>
+  <section><h2>Colour</h2>
+    <p>Black and white chrome; colour comes only from programs. The ANSI hues are muted so a coloured prompt does not shout. Contrast is measured against the glass body over a black and over a white desktop (rule: 4.5:1 for text and for ANSI 8).</p>
+    <div class="grid wide" data-group="colour"></div>
+    <div class="swatches" id="swatches"></div></section>
+  <section><h2>Metrics</h2>
+    <p>Read from the constants by <code>src/design.rs</code>, so this table cannot drift from the code.</p>
+    <table id="metrics"></table></section>
+  <section><h2>Rules</h2>
+    <ul class="rules">
+      <li>Continuous: one glass, the title bar is part of it; no separators, and the edge is the same all the way round, so no line gathers in the corners.</li>
+      <li>Neutral chrome: no accent colour. Any colour on screen is one a program or the user asked for.</li>
+      <li>Every frame pixel is a function of position, window size and a few bits of UI state: no textures, masks or caches.</li>
+      <li>Crisp edges: anything meant to be sharp sits on pixel centres (<code>n + 0.5</code>); text is plain source-over with a 0.70 coverage curve.</li>
+      <li>Animations only under 200 ms and back to idle; idle stays at 0% CPU.</li>
+      <li>Monospaced type, JetBrains Mono 15 px by default.</li>
+    </ul></section>
+</main>
+
+<script src="baseline/frames.js"></script>
+<script>window.AXON_BASELINE = window.AXON_DESIGN; window.AXON_DESIGN = undefined;</script>
+<script src="frames/frames.js"></script>
+<script>
+(() => {
+  const D = window.AXON_DESIGN, B = window.AXON_BASELINE;
+  if (!D) {
+    document.getElementById('main').innerHTML =
+      '<p class="empty">No frames yet. Run <code>scripts/design.sh</code> from the repository and reload this page.</p>';
+    return;
+  }
+  document.getElementById('stamp').textContent =
+    `frames: ${D.stamp || 'unstamped'}` + (B ? ` · baseline: ${B.stamp || 'unstamped'}` : ' · no baseline (scripts/design.sh --baseline)');
+
+  const saved = JSON.parse(localStorage.getItem('axon-board') || '{}');
+  const state = Object.assign({ backdrop: 'aurora', zoom: 'fit', compare: 'current', split: 50 }, saved);
+  if (!B) state.compare = 'current';
+
+  const options = {
+    backdrop: [['aurora', 'Aurora', 'linear-gradient(135deg,#f3d3f6,#a9bfff)'], ['night', 'Night', 'linear-gradient(160deg,#0d0e1c,#1d2a46)'],
+               ['text', 'Page', '#fafafa'], ['stripes', 'Stripes', 'repeating-linear-gradient(45deg,#eee 0 3px,#222 3px 6px)'],
+               ['checker', 'Checker', 'conic-gradient(#bbb 25%,#fff 0 50%,#bbb 0 75%,#fff 0) 0 0/6px 6px'],
+               ['white', 'White', '#fff'], ['black', 'Black', '#000']],
+    zoom: [['fit', 'Fit'], [1, '1×'], [2, '2×'], [4, '4×']],
+    compare: [['current', 'Current'], ['baseline', 'Baseline'], ['split', 'Split']],
+  };
+  for (const [key, list] of Object.entries(options)) {
+    const seg = document.getElementById(key);
+    for (const [value, label, chip] of list) {
+      const b = document.createElement('button');
+      b.dataset.value = value;
+      b.innerHTML = (chip ? `<i class="swatch-btn" style="background:${chip}"></i>` : '') + label;
+      if (key === 'compare' && value !== 'current' && !B) b.disabled = true;
+      b.onclick = () => { state[key] = value; apply(); };
+      seg.append(b);
+    }
+  }
+  const split = document.getElementById('split');
+  split.oninput = () => { state.split = +split.value; apply(); };
+
+  // One image pixel = one device pixel at 1×, whatever the browser's scale; Fit shrinks a figure
+  // to its card. Both layers use the current frame's scale and box.
+  const layout = ({ fig, f, bf }) => {
+    const stage = fig.querySelector('.stage'), pair = fig.querySelector('.pair');
+    let k = state.zoom;
+    if (k === 'fit') k = Math.min(1, (stage.clientWidth - 72) / (f.w / devicePixelRatio));
+    const px = v => v * k / devicePixelRatio + 'px';
+    pair.style.width = px(f.w);
+    pair.style.height = px(f.h);
+    const cur = fig.querySelector('.cur img');
+    cur.style.width = px(f.w);
+    cur.style.left = cur.style.top = '0px';
+    const base = fig.querySelector('.base img');
+    if (base && bf) {
+      // Line the windows up: each frame says where its window starts (the shadow margin).
+      base.style.width = px(bf.w);
+      base.style.left = px((f.ox ?? 0) - (bf.ox ?? 0));
+      base.style.top = px((f.oy ?? 0) - (bf.oy ?? 0));
+    }
+  };
+
+  const figures = [];
+  for (const f of D.frames) {
+    const fig = document.createElement('figure');
+    const bf = B?.frames.find(x => x.name === f.name);
+    fig.innerHTML = `<div class="stage"><div class="pair">
+        <div class="layer cur"><img alt="${f.label}" src="frames/${f.name}.png?${encodeURIComponent(D.stamp)}"></div>
+        ${bf ? `<div class="layer base"><img alt="${f.label} (baseline)" src="baseline/${f.name}.png?${encodeURIComponent(B.stamp)}"></div>` : ''}
+      </div></div>
+      <figcaption><b>${f.label}</b><span class="mono">${f.w}×${f.h}${bf && (bf.w !== f.w || bf.h !== f.h) ? ` (was ${bf.w}×${bf.h})` : ''}</span></figcaption>`;
+    const entry = { fig, f, bf, hasBase: !!bf };
+    figures.push(entry);
+    document.querySelector(`[data-group="${f.group}"]`)?.append(fig);
+  }
+
+  function apply() {
+    document.body.dataset.backdrop = state.backdrop;
+    document.body.dataset.zoom = state.zoom;
+    document.documentElement.style.setProperty('--split', state.split + '%');
+    for (const [key] of Object.entries(options))
+      for (const b of document.getElementById(key).children)
+        b.setAttribute('aria-pressed', String(b.dataset.value == state[key]));
+    split.hidden = state.compare !== 'split';
+    split.value = state.split;
+    for (const { fig, hasBase } of figures) {
+      const pair = fig.querySelector('.pair');
+      pair.dataset.mode = hasBase ? state.compare : 'current';
+      fig.querySelector('.note')?.remove();
+      if (state.compare !== 'current' && !hasBase)
+        fig.querySelector('.stage').insertAdjacentHTML('afterbegin', '<span class="note">new: no baseline</span>');
+      else if (state.compare === 'split')
+        fig.querySelector('.stage').insertAdjacentHTML('afterbegin', '<span class="note">left: baseline · right: current</span>');
+    }
+    figures.forEach(layout);
+    localStorage.setItem('axon-board', JSON.stringify(state));
+  }
+
+  addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT' || e.metaKey || e.ctrlKey || e.altKey) return;
+    const k = e.key.toLowerCase();
+    if (k === 'b') { const l = options.backdrop.map(o => o[0]); state.backdrop = l[(l.indexOf(state.backdrop) + 1) % l.length]; }
+    else if (['1', '2', '4'].includes(k)) state.zoom = +k;
+    else if (k === 'f') state.zoom = 'fit';
+    else if (k === 'c' && B) { const l = ['current', 'baseline', 'split']; state.compare = l[(l.indexOf(state.compare) + 1) % 3]; }
+    else return;
+    apply();
+  });
+  matchMedia(`(resolution: ${devicePixelRatio}dppx)`).addEventListener?.('change', apply);
+  addEventListener('resize', () => figures.forEach(layout));
+
+  // Colour: swatches with contrast against the glass body over a black and a white desktop.
+  const t = D.tokens;
+  const lin = c => { c /= 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+  const rgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+  const lum = c => { const [r, g, b] = c.map(lin); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+  const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+  const body = desk => [0, 0, 0].map(() => Math.round(255 * (0.035 * t.opacity + desk * (1 - t.opacity))));
+  const [onBlack, onWhite] = [body(0), body(1)];
+  const names = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white'];
+  const list = [['foreground', t.fg], ['cursor', t.cursor], ['selection', t.selection], ['background', t.bg],
+    ...t.ansi.map((h, i) => [`${i} ${i < 8 ? names[i] : 'bright ' + names[i - 8]}`, h])];
+  const sw = document.getElementById('swatches');
+  for (const [name, hex] of list) {
+    const c = rgb(hex);
+    const [rb, rw] = [ratio(c, onBlack), ratio(c, onWhite)];
+    const need = name === 'foreground' || name.startsWith('8 ') || name.startsWith('7 ');
+    const cls = r => (need && r < 4.5) ? 'bad' : (r >= 4.5 ? 'ok' : '');
+    const text = lum(c) > 0.35 ? '#111' : '#f2f2f2';
+    sw.insertAdjacentHTML('beforeend', `<div class="sw"><div class="chip" style="background:${hex};color:${text}">${hex}</div>
+      <div class="meta"><b>${name}</b><span>on glass / black desk <span class="${cls(rb)}">${rb.toFixed(1)}:1</span></span>
+      <span>on glass / white desk <span class="${cls(rw)}">${rw.toFixed(1)}:1</span></span></div></div>`);
+  }
+
+  const rows = [
+    ['Window in the scenes', `${D.window.w} × ${D.window.h} px (logical)`],
+    ['Corner radius', `${t.radius} px (0 when maximized)`],
+    ['Title bar height', `${t.titleBar} px`],
+    ...(t.shadow ? [['Shadow', t.shadow]] : []),
+    ['Glass opacity', `${t.opacity} (AXON_OPACITY)`],
+    ['Font', `JetBrains Mono ${t.fontPx} px (AXON_FONT, AXON_FONT_SIZE)`],
+    ['Cell', `${t.cell[0]} × ${t.cell[1]} px`],
+    ['Grid inset', `${t.pad} px left, right and bottom; ${t.top} px from the top`],
+  ];
+  document.getElementById('metrics').innerHTML = rows.map(([k, v]) => `<tr><th>${k}</th><td class="mono">${v}</td></tr>`).join('');
+
+  apply();
+})();
+</script>
+</body>
+</html>

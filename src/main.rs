@@ -1,6 +1,7 @@
 //! axon — minimalist GPU terminal.
 mod cell;
 mod chrome;
+mod design;
 mod font;
 mod gpu;
 mod input;
@@ -10,6 +11,7 @@ mod soft;
 mod view;
 mod wl;
 mod wlapp;
+mod xkb;
 
 use std::{
     sync::{
@@ -247,11 +249,8 @@ impl ApplicationHandler<Ev> for App {
                         let _ = c.set_text(t);
                     }
                 }
-                TermEvent::ClipboardLoad(_, f) => {
-                    if let Some(t) = s.clipboard.as_mut().and_then(|c| c.get_text().ok()) {
-                        s.write(f(&t).into_bytes());
-                    }
-                }
+                // OSC 52 reads are refused (`session::term_config`): output must not read the clipboard.
+                TermEvent::ClipboardLoad(..) => {}
                 TermEvent::ColorRequest(i, f) => {
                     let rgb = s.term.lock().colors()[i].unwrap_or_else(|| palette::by_index(i));
                     s.write(f(rgb).into_bytes());
@@ -411,8 +410,12 @@ impl ApplicationHandler<Ev> for App {
 }
 
 fn main() {
-    if std::env::var("AXON_BACKEND").is_ok_and(|v| v == "wl") {
-        return wlapp::run();
+    // The own Wayland client by default; `winit` serves X11 until that has an own client, and
+    // `AXON_BACKEND=winit` forces it.
+    let backend = std::env::var("AXON_BACKEND")
+        .unwrap_or_else(|_| if std::env::var_os("WAYLAND_DISPLAY").is_some() { "wl".into() } else { "winit".into() });
+    if backend == "wl" && wlapp::run() {
+        return;
     }
     let el = EventLoop::<Ev>::with_user_event().build().expect("event loop");
     let mut app = App { proxy: el.create_proxy(), st: None };

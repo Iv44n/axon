@@ -1,7 +1,7 @@
 ---
 type: decision
-status: accepted
-updated: 2026-11-22
+status: superseded-by-0015
+updated: 2026-11-23
 related: [0009-data-oriented-no-caches.md, 0011-software-render-wl-shm.md, ../../.claude/skills/axon-design-language/SKILL.md]
 ---
 # 0012 · Black-and-white glass look and client-drawn window chrome

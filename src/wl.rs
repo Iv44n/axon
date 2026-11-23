@@ -5,7 +5,8 @@
 //! Objects are indices into a flat table (`kinds`), not boxed trait objects or a hash map; an event
 //! is a `match` on `(kind, opcode)`. Messages are built straight into one reused byte buffer.
 //! Only the interfaces the window needs exist; the opcodes below come from the protocol XML.
-//! Pointer input is here (buttons, motion, window move/resize); keyboard and clipboard are stage C.
+//! Input is here too: pointer (buttons, motion, wheel), keyboard (raw keys, the keymap text goes to
+//! `xkb.rs`) and the text clipboard through `wl_data_device`.
 use std::{
     collections::VecDeque,
     io::{self, IoSlice, IoSliceMut},
@@ -30,10 +31,11 @@ use rustix::{
 const DISPLAY: u32 = 1;
 /// `wl_shm.format.argb8888`: premultiplied alpha, little-endian `a<<24 | r<<16 | g<<8 | b`.
 const ARGB8888: u32 = 0;
-/// `xdg_toplevel.state`: maximized, fullscreen, activated.
+/// `xdg_toplevel.state`: maximized, fullscreen, activated, and the tiled edges (`xdg_wm_base` v2).
 const STATE_MAXIMIZED: u32 = 1;
 const STATE_FULLSCREEN: u32 = 2;
 const STATE_ACTIVATED: u32 = 4;
+const STATE_TILED: [u32; 4] = [5, 6, 7, 8];
 /// Smallest window the title bar and a usable grid fit in.
 const MIN_SIZE: (i32, i32) = (320, 200);
 
@@ -63,6 +65,7 @@ enum Kind {
     Compositor,
     Shm,
     Pool,
+    Region,
     /// A `wl_buffer`; the payload is its slot.
     Buffer(u8),
     Surface,
@@ -71,15 +74,33 @@ enum Kind {
     Toplevel,
     Seat,
     Pointer,
+    Keyboard,
     CursorShapeManager,
     CursorShapeDevice,
+    DataDeviceManager,
+    DataDevice,
+    DataSource,
 }
 
+/// Object ids the server allocates (the offers of `wl_data_device`) start here; they are not
+/// indices into `kinds`.
+const SERVER_ID_BASE: u32 = 0xff00_0000;
+
+/// A clipboard offer from another client: which text formats it can give.
+struct Offer {
+    id: u32,
+    /// `text/plain;charset=utf-8`, `text/plain` and `UTF8_STRING`.
+    mimes: [bool; 3],
+}
+
+const TEXT_MIMES: [&str; 3] = ["text/plain;charset=utf-8", "UTF8_STRING", "text/plain"];
+
 /// What the window layer tells the application.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum Event {
-    /// The compositor proposes a size; 0 means "your choice".
-    Configure { w: i32, h: i32, maximized: bool },
+    /// The compositor proposes a size; 0 means "your choice". `square`: maximized, fullscreen or
+    /// tiled, so no rounded corners, shadow or resize edges.
+    Configure { w: i32, h: i32, square: bool },
     /// The window gained or lost the activated state (keyboard focus, to the user).
     Focus(bool),
     Close,
@@ -90,6 +111,18 @@ pub enum Event {
     PointerLeave,
     /// A button changed state; `time` is the compositor's millisecond clock.
     PointerButton { button: u32, pressed: bool, time: u32 },
+    /// A wheel or touchpad scroll: `clicks` wheel notches (down is positive) or, for smooth
+    /// scrolling, `pixels`.
+    Scroll { pixels: f32, clicks: i32 },
+    /// The keymap text of the layout in use (`xkb.rs` compiles it).
+    Keymap(String),
+    /// A key by its evdev code; layouts and modifiers are applied by `xkb.rs`.
+    Key { key: u32, pressed: bool },
+    Modifiers { depressed: u32, latched: u32, locked: u32, group: u32 },
+    /// Client-side key repeat: keys per second (0 = off) and the delay before it starts, in ms.
+    RepeatInfo { rate: i32, delay: i32 },
+    /// The keyboard focus left the window: stop repeating.
+    KeyboardLeave,
 }
 
 /// Interfaces the compositor offers, as `(registry name, version)`; 0 = absent.
@@ -100,6 +133,7 @@ struct Globals {
     wm_base: (u32, u32),
     seat: (u32, u32),
     cursor_shape: (u32, u32),
+    data_device_manager: (u32, u32),
 }
 
 /// A request argument. `Fd` travels in ancillary data, not in the byte stream.
@@ -182,16 +216,29 @@ pub struct Wl {
     toplevel: u32,
     seat: u32,
     pointer: u32,
+    keyboard: u32,
     cursor_manager: u32,
     cursor_device: u32,
+    data_manager: u32,
+    data_device: u32,
+    /// Our `wl_data_source` (0 = none), the text it serves and whether we own the selection.
+    source: u32,
+    clip_out: String,
+    /// The selection other clients offer (id, 0 = none) and the offers still alive.
+    selection: u32,
+    offers: Vec<Offer>,
+    /// Scroll gathered until `wl_pointer.frame`: pixels and wheel notches.
+    axis: (f32, i32),
+    seat_version: u32,
     /// Serial of the last button press or pointer enter: what `move` and `resize` must quote.
     serial: u32,
     /// Serial of the last pointer enter, which `set_shape` must quote, and the shape asked for.
     enter_serial: u32,
     shape: u32,
     events: VecDeque<Event>,
-    /// Size and states from the last `xdg_toplevel.configure`, applied on `xdg_surface.configure`.
-    pending: (i32, i32, bool, bool),
+    /// Size and states from the last `xdg_toplevel.configure`, applied on `xdg_surface.configure`:
+    /// width, height, activated, maximized, square.
+    pending: (i32, i32, bool, bool, bool),
     activated: bool,
     maximized: bool,
     slots: [Slot; 2],
@@ -231,13 +278,22 @@ impl Wl {
             toplevel: 0,
             seat: 0,
             pointer: 0,
+            keyboard: 0,
             cursor_manager: 0,
             cursor_device: 0,
+            data_manager: 0,
+            data_device: 0,
+            source: 0,
+            clip_out: String::new(),
+            selection: 0,
+            offers: Vec::new(),
+            axis: (0.0, 0),
+            seat_version: 0,
             serial: 0,
             enter_serial: 0,
             shape: cursor::DEFAULT,
             events: VecDeque::new(),
-            pending: (0, 0, false, false),
+            pending: (0, 0, false, false, false),
             activated: false,
             maximized: false,
             slots: [Slot::EMPTY; 2],
@@ -259,10 +315,17 @@ impl Wl {
         let (c, s, w) = (g.compositor, g.shm, g.wm_base);
         wl.compositor = wl.bind(c.0, "wl_compositor", c.1.min(4), Kind::Compositor);
         wl.shm = wl.bind(s.0, "wl_shm", 1, Kind::Shm);
-        wl.wm_base = wl.bind(w.0, "xdg_wm_base", 1, Kind::WmBase);
+        wl.wm_base = wl.bind(w.0, "xdg_wm_base", w.1.min(2), Kind::WmBase); // 2: tiled states
         if wl.globals.seat.0 != 0 {
             let s = wl.globals.seat;
-            wl.seat = wl.bind(s.0, "wl_seat", s.1.min(5), Kind::Seat); // 5 adds wl_pointer.frame
+            wl.seat_version = s.1.min(5); // 5 adds wl_pointer.frame and axis_discrete
+            wl.seat = wl.bind(s.0, "wl_seat", wl.seat_version, Kind::Seat);
+            if wl.globals.data_device_manager.0 != 0 {
+                let d = wl.globals.data_device_manager;
+                wl.data_manager = wl.bind(d.0, "wl_data_device_manager", d.1.min(3), Kind::DataDeviceManager);
+                wl.data_device = wl.new_obj(Kind::DataDevice);
+                wl.send(wl.data_manager, 1, [Arg::U(wl.data_device), Arg::U(wl.seat)]); // get_data_device
+            }
         }
         if wl.globals.cursor_shape.0 != 0 {
             let c = wl.globals.cursor_shape;
@@ -305,6 +368,23 @@ impl Wl {
         }
     }
 
+    /// Where the window is inside the surface (the rest is its shadow) and, with `grab`, the band
+    /// around it that still takes the pointer (for resizing); without it the whole surface does.
+    /// Applies with the next commit.
+    pub fn set_geometry(&mut self, x: i32, y: i32, w: i32, h: i32, grab: Option<i32>) {
+        self.send(self.xdg_surface, 3, [Arg::I(x), Arg::I(y), Arg::I(w), Arg::I(h)]); // set_window_geometry
+        match grab {
+            Some(g) => {
+                let region = self.new_obj(Kind::Region);
+                self.send(self.compositor, 1, [Arg::U(region)]); // create_region
+                self.send(region, 1, [Arg::I(x - g), Arg::I(y - g), Arg::I(w + 2 * g), Arg::I(h + 2 * g)]); // add
+                self.send(self.surface, 5, [Arg::U(region)]); // set_input_region (copies the region)
+                self.send(region, 0, []); // destroy; the id comes back with delete_id
+            }
+            None => self.send(self.surface, 5, [Arg::U(0)]), // set_input_region(null): everything
+        }
+    }
+
     pub fn minimize(&mut self) {
         self.send(self.toplevel, 13, []);
     }
@@ -321,6 +401,62 @@ impl Wl {
         self.shape = shape;
         if self.cursor_device != 0 {
             self.send(self.cursor_device, 1, [Arg::U(self.enter_serial), Arg::U(shape)]);
+        }
+    }
+
+    /// Puts `text` on the clipboard. Needs a recent key or button press (its serial).
+    pub fn set_clipboard(&mut self, text: &str) {
+        if self.data_manager == 0 || self.data_device == 0 {
+            return;
+        }
+        let src = self.new_obj(Kind::DataSource);
+        self.send(self.data_manager, 0, [Arg::U(src)]); // create_data_source
+        for m in TEXT_MIMES {
+            self.send(src, 0, [Arg::S(m)]); // offer
+        }
+        self.send(self.data_device, 1, [Arg::U(src), Arg::U(self.serial)]); // set_selection; the old source gets `cancelled`
+        self.source = src;
+        self.clip_out = text.to_owned();
+    }
+
+    /// The text on the clipboard, if any. Blocks up to a second on a slow or broken owner.
+    pub fn clipboard_text(&mut self) -> Option<String> {
+        if self.source != 0 {
+            return Some(self.clip_out.clone()); // ours: asking ourselves over the wire would deadlock
+        }
+        let offer = self.offers.iter().find(|o| o.id == self.selection)?;
+        let mime = TEXT_MIMES[offer.mimes.iter().position(|&m| m)?];
+        let (read_end, write_end) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).ok()?;
+        let id = offer.id;
+        self.send(id, 1, [Arg::S(mime), Arg::Fd(write_end)]); // receive
+        self.flush().ok()?; // the write end is closed here: EOF arrives when the owner is done
+        let mut out = Vec::new();
+        let mut chunk = [0u8; 8192];
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while out.len() < (8 << 20) {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            let ts = rustix::event::Timespec { tv_sec: 0, tv_nsec: left.subsec_nanos() as i64 + left.as_secs() as i64 * 1_000_000_000 };
+            let mut fds = [PollFd::new(&read_end, PollFlags::IN)];
+            match poll(&mut fds, Some(&ts)) {
+                Ok(0) => break,
+                Ok(_) => match rustix::io::read(&read_end, &mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => out.extend_from_slice(&chunk[..n]),
+                },
+                Err(rustix::io::Errno::INTR) => {}
+                Err(_) => break,
+            }
+        }
+        String::from_utf8(out).ok()
+    }
+
+    fn flush_scroll(&mut self) {
+        let (pixels, clicks) = std::mem::take(&mut self.axis);
+        if pixels != 0.0 || clicks != 0 {
+            self.events.push_back(Event::Scroll { pixels, clicks });
         }
     }
 
@@ -481,6 +617,16 @@ impl Wl {
     }
 
     fn event(&mut self, id: u32, op: u16, a: &mut Args<'_>) {
+        if id >= SERVER_ID_BASE {
+            // wl_data_offer.offer: one more format the offer can give.
+            if op == 0 {
+                let mime = a.str();
+                if let (Some(o), Some(i)) = (self.offers.iter_mut().find(|o| o.id == id), TEXT_MIMES.iter().position(|m| *m == mime)) {
+                    o.mimes[i] = true;
+                }
+            }
+            return;
+        }
         let kind = self.kinds.get(id as usize).copied().unwrap_or(Kind::None);
         if self.debug {
             eprintln!("wl <- {kind:?}#{id}.{op}");
@@ -506,6 +652,7 @@ impl Wl {
                     "xdg_wm_base" => self.globals.wm_base = (name, version),
                     "wl_seat" => self.globals.seat = (name, version),
                     "wp_cursor_shape_manager_v1" => self.globals.cursor_shape = (name, version),
+                    "wl_data_device_manager" => self.globals.data_device_manager = (name, version),
                     _ => {}
                 }
             }
@@ -523,23 +670,30 @@ impl Wl {
                 let (w, h) = (a.i32(), a.i32());
                 let states = a.array();
                 let has = |state| states.chunks_exact(4).any(|s| u32::from_ne_bytes(s.try_into().unwrap()) == state);
-                self.pending = (w, h, has(STATE_ACTIVATED), has(STATE_MAXIMIZED) || has(STATE_FULLSCREEN));
+                let maximized = has(STATE_MAXIMIZED);
+                let square = maximized || has(STATE_FULLSCREEN) || STATE_TILED.iter().any(|&t| has(t));
+                self.pending = (w, h, has(STATE_ACTIVATED), maximized, square);
             }
             (Kind::Toplevel, 1) => self.events.push_back(Event::Close),
             (Kind::XdgSurface, 0) => {
                 let serial = a.u32();
                 self.send(self.xdg_surface, 4, [Arg::U(serial)]); // ack_configure
-                let (w, h, activated, maximized) = self.pending;
+                let (w, h, activated, maximized, square) = self.pending;
                 self.maximized = maximized;
-                self.events.push_back(Event::Configure { w, h, maximized });
+                self.events.push_back(Event::Configure { w, h, square });
                 if activated != self.activated {
                     self.activated = activated;
                     self.events.push_back(Event::Focus(activated));
                 }
             }
             (Kind::Seat, 0) => {
-                // wl_seat.capabilities: bit 0 is the pointer.
-                if a.u32() & 1 != 0 && self.pointer == 0 {
+                // wl_seat.capabilities: bit 0 is the pointer, bit 1 the keyboard.
+                let caps = a.u32();
+                if caps & 2 != 0 && self.keyboard == 0 {
+                    self.keyboard = self.new_obj(Kind::Keyboard);
+                    self.send(self.seat, 1, [Arg::U(self.keyboard)]); // get_keyboard
+                }
+                if caps & 1 != 0 && self.pointer == 0 {
                     self.pointer = self.new_obj(Kind::Pointer);
                     self.send(self.seat, 0, [Arg::U(self.pointer)]); // get_pointer
                     if self.cursor_manager != 0 {
@@ -561,6 +715,84 @@ impl Wl {
             (Kind::Pointer, 2) => {
                 let (_time, x, y) = (a.u32(), a.i32(), a.i32());
                 self.events.push_back(Event::PointerMove { x: x as f32 / 256.0, y: y as f32 / 256.0 });
+            }
+            (Kind::Pointer, 4) => {
+                // axis: vertical scroll in surface pixels; horizontal is not used by a terminal.
+                let (_time, axis, value) = (a.u32(), a.u32(), a.i32());
+                if axis == 0 {
+                    self.axis.0 += value as f32 / 256.0;
+                    if self.seat_version < 5 {
+                        self.flush_scroll();
+                    }
+                }
+            }
+            (Kind::Pointer, 5) => self.flush_scroll(),
+            (Kind::Pointer, 8) => {
+                let (axis, discrete) = (a.u32(), a.i32());
+                if axis == 0 {
+                    self.axis.1 += discrete;
+                }
+            }
+            (Kind::Keyboard, 0) => {
+                let (_format, size) = (a.u32(), a.u32());
+                if !self.in_fds.is_empty() {
+                    let fd = self.in_fds.remove(0);
+                    if let Some(text) = read_keymap(&fd, size as usize) {
+                        self.events.push_back(Event::Keymap(text));
+                    }
+                }
+            }
+            (Kind::Keyboard, 1) => self.serial = a.u32(), // enter: its serial is valid for set_selection
+            (Kind::Keyboard, 2) => self.events.push_back(Event::KeyboardLeave),
+            (Kind::Keyboard, 3) => {
+                let (serial, _time, key, state) = (a.u32(), a.u32(), a.u32(), a.u32());
+                self.serial = serial;
+                self.events.push_back(Event::Key { key, pressed: state == 1 });
+            }
+            (Kind::Keyboard, 4) => {
+                let (_serial, depressed, latched, locked, group) = (a.u32(), a.u32(), a.u32(), a.u32(), a.u32());
+                self.events.push_back(Event::Modifiers { depressed, latched, locked, group });
+            }
+            (Kind::Keyboard, 5) => {
+                let (rate, delay) = (a.i32(), a.i32());
+                self.events.push_back(Event::RepeatInfo { rate, delay });
+            }
+            (Kind::DataDevice, 0) => {
+                // data_offer: a new offer, whose formats follow as events on it.
+                let id = a.u32();
+                self.offers.push(Offer { id, mimes: [false; 3] });
+            }
+            (Kind::DataDevice, 5) => {
+                // selection: the clipboard owner changed; offers that are not it are dead weight.
+                self.selection = a.u32();
+                let keep = self.selection;
+                let gone: Vec<u32> = self.offers.iter().map(|o| o.id).filter(|&i| i != keep).collect();
+                for id in gone {
+                    self.send(id, 2, []); // wl_data_offer.destroy
+                }
+                self.offers.retain(|o| o.id == keep);
+            }
+            (Kind::DataSource, 1) => {
+                // send: another client wants our text, written to the fd it gave us. A thread, so a
+                // slow reader cannot stall the window.
+                let _mime = a.str();
+                if !self.in_fds.is_empty() {
+                    let fd = self.in_fds.remove(0);
+                    let text = self.clip_out.clone();
+                    std::thread::spawn(move || {
+                        use std::io::Write;
+                        let _ = std::fs::File::from(fd).write_all(text.as_bytes());
+                    });
+                }
+            }
+            (Kind::DataSource, 2) => {
+                // cancelled: someone else owns the clipboard now.
+                if id == self.source {
+                    self.source = 0;
+                    self.clip_out = String::new();
+                }
+                self.kinds[id as usize] = Kind::None;
+                self.send(id, 1, []); // wl_data_source.destroy
             }
             (Kind::Pointer, 3) => {
                 let (serial, time, button, state) = (a.u32(), a.u32(), a.u32(), a.u32());
@@ -643,6 +875,17 @@ impl Wl {
         self.send(self.surface, 6, []); // commit
         self.frame_pending = true;
     }
+}
+
+/// The keymap the compositor shares: `size` bytes of text in `fd` (mapped private, as the protocol asks).
+fn read_keymap(fd: &OwnedFd, size: usize) -> Option<String> {
+    // SAFETY: a read-only private mapping of `size` bytes, unmapped before returning.
+    let ptr = unsafe { mmap(std::ptr::null_mut(), size, ProtFlags::READ, MapFlags::PRIVATE, fd, 0).ok()? };
+    // SAFETY: the mapping is `size` bytes long and nothing else writes to a private mapping of ours.
+    let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, size) };
+    let text = String::from_utf8_lossy(bytes.split(|&b| b == 0).next().unwrap_or(&[])).into_owned();
+    unsafe { munmap(ptr, size).ok() };
+    Some(text)
 }
 
 impl Drop for Wl {

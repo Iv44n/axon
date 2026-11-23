@@ -119,15 +119,19 @@ impl Soft {
     /// reassigned. The margins around the grid and the title bar are painted here.
     pub fn begin_frame(&mut self, fb: &mut [u32], w: usize, h: usize, rows: usize, cols: usize) -> bool {
         let full = self.stale || (self.w, self.h, self.rows, self.cols) != (w, h, rows, cols);
+        let (ox, oy) = self.origin();
         if full {
             self.stale = false;
             (self.w, self.h, self.rows, self.cols) = (w, h, rows, cols);
-            let (top, ch) = (self.top as usize, self.fonts.cell_h as usize);
-            self.paint_bg(fb, 0, top);
-            self.paint_bg(fb, top + rows * ch, h);
+            let (top, bottom) = (oy + self.top as usize, oy + self.top as usize + rows * self.fonts.cell_h as usize);
+            self.paint_bg(fb, 0, top, 0, w);
+            self.paint_bg(fb, bottom, h, 0, w);
+            // Beside the grid rows: the shadow, which row repaints leave alone.
+            self.paint_bg(fb, top, bottom, 0, ox);
+            self.paint_bg(fb, top, bottom, w - ox, w);
             self.paint_title(fb);
         } else if self.chrome_dirty && fb.len() >= self.w * self.h {
-            self.paint_bg(fb, 0, TITLE_H);
+            self.paint_bg(fb, oy, oy + TITLE_H, ox, self.w - ox);
             self.paint_title(fb);
         }
         self.chrome_dirty = false;
@@ -139,25 +143,33 @@ impl Soft {
         if first + count > self.rows || fb.len() < self.w * self.h {
             return;
         }
-        let (top, ch) = (self.top as usize, self.fonts.cell_h as usize);
+        let (ox, oy) = self.origin();
+        let (top, ch) = (oy + self.top as usize, self.fonts.cell_h as usize);
         for (n, cells) in cells.chunks_exact(self.cols).enumerate() {
             let y0 = top + (first + n) * ch;
-            self.paint_bg(fb, y0, y0 + ch);
+            self.paint_bg(fb, y0, y0 + ch, ox, self.w - ox);
             self.paint_cells(fb, y0, cells);
         }
     }
 
     // ------------------------------------------------------------ painting --
 
+    /// Where the window starts in the framebuffer: the shadow margin (`chrome::margins`).
+    fn origin(&self) -> (usize, usize) {
+        let (ml, mt, _) = chrome::margins(self.ui.maximized);
+        (ml, mt)
+    }
+
     fn paint_cells(&self, fb: &mut [u32], y0: usize, cells: &[Cell]) {
         let (cw, ch) = (self.fonts.cell_w as usize, self.fonts.cell_h as usize);
         let len = cw * ch;
         let cursor = unpack(self.cursor_color);
+        let left = self.origin().0 + self.pad as usize;
         for (col, cell) in cells.iter().enumerate() {
             if cell.tf == 0 && cell.bg >> 24 == 0 {
                 continue; // nothing to draw: the background is already there
             }
-            let x0 = self.pad as usize + col * cw;
+            let x0 = left + col * cw;
             if x0 + cw > self.w || y0 + ch > self.h {
                 continue;
             }
@@ -194,23 +206,28 @@ impl Soft {
         }
     }
 
-    /// Background of pixel rows `y0..y1`: the glass frame (`chrome::pixel`).
-    fn paint_bg(&self, fb: &mut [u32], y0: usize, y1: usize) {
+    /// Background of pixels `x0..x1` of rows `y0..y1`: the glass frame and its shadow
+    /// (`chrome::pixel`). Row repaints pass the window's own columns only: the shadow beside a
+    /// row does not change between full repaints.
+    fn paint_bg(&self, fb: &mut [u32], y0: usize, y1: usize, x0: usize, x1: usize) {
         let (w, h) = (self.w, self.h);
+        let (ml, mt, mb) = chrome::margins(self.ui.maximized);
+        let (wh, reach) = ((h - mt - mb) as isize, REACH as isize);
+        // Columns between the side bands: there a row can be one value.
+        let (b0, b1) = ((ml + REACH).clamp(x0, x1), w.saturating_sub(ml + REACH).clamp(x0, x1));
         for y in y0..y1.min(h) {
             let row = &mut fb[y * w..][..w];
-            if y >= REACH && y + REACH < h && w > 2 * REACH {
-                // Away from the edges the frame only varies with y: compute the two bands, fill the rest.
-                for x in 0..REACH {
+            let wy = y as isize - mt as isize;
+            // Away from the title bar, the bottom edge and the corners a row is one value between
+            // the side bands (chrome tests), in the margin rows above and below as well.
+            if (wy < 0 || wy >= wh || (wy >= reach && wy + reach < wh)) && b1 > b0 {
+                for x in (x0..b0).chain(b1..x1) {
                     row[x] = self.bg_px(x, y);
                 }
-                row[REACH..w - REACH].fill(self.bg_px(w / 2, y));
-                for x in w - REACH..w {
-                    row[x] = self.bg_px(x, y);
-                }
+                row[b0..b1].fill(self.bg_px(w / 2, y));
             } else {
-                for (x, px) in row.iter_mut().enumerate() {
-                    *px = self.bg_px(x, y);
+                for x in x0..x1 {
+                    row[x] = self.bg_px(x, y);
                 }
             }
         }
@@ -223,11 +240,13 @@ impl Soft {
     /// The title, centred between the buttons and the right margin, over the title bar background.
     fn paint_title(&mut self, fb: &mut [u32]) {
         let (cw, ch, w) = (self.fonts.cell_w as usize, self.fonts.cell_h as usize, self.w);
-        let room = w.saturating_sub(2 * TITLE_CLEAR) / cw;
+        let (ox, oy) = self.origin();
+        let ww = w - 2 * ox;
+        let room = ww.saturating_sub(2 * TITLE_CLEAR) / cw;
         let title = std::mem::take(&mut self.title);
         let count = title.chars().count().min(room);
-        let y0 = (TITLE_H - ch) / 2;
-        let x0 = (w - count * cw) / 2;
+        let y0 = oy + (TITLE_H - ch) / 2;
+        let x0 = ox + (ww - count * cw) / 2;
         let strength = if self.ui.focused { 190 } else { 100 };
         let len = cw * ch;
         for (n, c) in title.chars().take(count).enumerate() {
@@ -302,20 +321,21 @@ fn div255(x: u32) -> u32 {
     (x + 127) / 255
 }
 
-/// shader.wgsl `fs_cell` before the overlays: the glyph at coverage `c` over the cell background,
-/// premultiplied. Text on a transparent background gets squared coverage, the look of the shader.
+/// shader.wgsl `fs_cell` before the overlays: the glyph (`fg` at coverage `c`) over the cell
+/// background, premultiplied. Plain source-over, so a cell with no background (alpha 0) keeps the
+/// glyph at full strength: `fg * c`, alpha `c`.
 fn text_px(fg: [u32; 4], bg: [u32; 4], c: u32) -> [u32; 4] {
     let a = bg[3] + div255((255 - bg[3]) * c);
-    let m = |i: usize| ((bg[i] * (255 - c) + fg[i] * c) * a + 32512) / 65025;
+    let m = |i: usize| (fg[i] * c * 255 + bg[i] * bg[3] * (255 - c) + 32512) / 65025;
     [m(0), m(1), m(2), a]
 }
 
-/// shader.wgsl `overlay`: `color` at coverage `c`, with squared coverage, over premultiplied `dst`.
+/// shader.wgsl `overlay`: `color` at coverage `c` over the premultiplied `dst`.
 fn overlay(dst: [u32; 4], color: [u32; 4], c: u32) -> [u32; 4] {
     if c == 0 {
         return dst;
     }
-    let m = |i: usize| ((color[i] * c * c + 32512) / 65025 + div255(dst[i] * (255 - c))).min(255);
+    let m = |i: usize| (div255(color[i] * c) + div255(dst[i] * (255 - c))).min(255);
     [m(0), m(1), m(2), (c + div255(dst[3] * (255 - c))).min(255)]
 }
 
@@ -360,6 +380,13 @@ mod tests {
     #[test]
     fn full_coverage_is_the_foreground() {
         assert_eq!(text_px([200, 100, 50, 255], [0, 0, 0, 0], 255), [200, 100, 50, 255]);
+    }
+
+    #[test]
+    fn partial_coverage_over_transparent_is_plain_source_over() {
+        // Half coverage of white is half white at half alpha, not a quarter: edges keep their weight.
+        let p = text_px([255, 255, 255, 255], [0, 0, 0, 0], 128);
+        assert_eq!(p, [128, 128, 128, 128]);
     }
 
     #[test]

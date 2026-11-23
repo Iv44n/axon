@@ -8,13 +8,14 @@ description: axon's architecture (GPU terminal in Rust) - layers, data flow, dep
 ## Data flow (one direction)
 
 ```
-keyboard/mouse ─► winit ─► input.rs ─► bytes ─► PTY (alacritty thread)
-                                                   │ reads output
-                                   Term<Proxy> (FairMutex) ◄┘  parses VT, updates grid
-                                        │ Event::Wakeup (coalesced by AtomicBool)
-                                        ▼
-winit user_event ─► request_redraw ─► State::build() ─► Gpu cell buffer ─► Gpu::render()
+wl_keyboard/wl_pointer ─► wl.rs ─► xkb.rs ─► input.rs ─► bytes ─► PTY (alacritty thread)
+                                                                     │ reads output
+                                                     Term<Proxy> (FairMutex) ◄┘  parses VT, updates grid
+                                                          │ Event::Wakeup (coalesced by AtomicBool, eventfd)
+                                                          ▼
+poll wakes wlapp ─► View::build ─► soft.rs rows ─► wl_shm buffer ─► wl.rs present (frame callback paces)
 ```
+(The `winit` fallback: `winit` events ─► `input::encode` ─► PTY; `user_event` ─► `State::build` ─► `Gpu::render`.)
 
 - The PTY thread belongs to `alacritty_terminal::EventLoop`; the UI thread only locks the `FairMutex`
   during `build()` (walking the visible cells) and `resize/selection`.
@@ -30,12 +31,14 @@ winit user_event ─► request_redraw ─► State::build() ─► Gpu cell buf
 | `font.rs` | `Fonts` (fallbacks, rasterizing), `GlyphTable`, special tile bitmaps | fontdue |
 | `gpu.rs` | wgpu, atlas, pipelines, `render()` (to be deleted: [0011](../../../knowledge/decisions/0011-software-render-wl-shm.md)) | winit (`Window` only), `cell`, `font` |
 | `soft.rs` | CPU renderer into an `Argb8888` framebuffer; the replacement for `gpu.rs` | `cell`, `chrome`, `font`, `view` (trait only) |
-| `chrome.rs` | window frame on the CPU: glass look, rounded corners, title bar and buttons per pixel, `hit` testing, `Ui` state | — |
+| `chrome.rs` | window frame on the CPU: glass look, rounded corners, title bar, buttons and shadow per pixel (buffer = window + `margins`), `hit` testing in window pixels, `Ui` state | — |
+| `design.rs` | tests only: design board frames and tokens (`scripts/design.sh` → `design/board.html`), own PNG encoder, the incremental-equals-full repaint check | `soft`, `view`, `session`, `chrome`, `palette` |
 | `view.rs` | grid -> cells: `View::build(term, focused, &mut impl Backend)`, damage, cursor and selection rows | `cell`, `palette`, alacritty |
 | `session.rs` | `Term` + PTY thread (`spawn`, `resize`), `grid_size` | alacritty |
-| `wl.rs` | own Wayland client: wire protocol, `xdg_toplevel`, `wl_shm` buffers, frame callbacks, `wl_seat` pointer, cursor shape | `rustix` |
-| `wlapp.rs` | the app on `wl.rs` + `soft.rs` + `session.rs` (`AXON_BACKEND=wl`); one blocking `poll` loop | all of the above |
-| `input.rs` | `KeyEvent` → xterm bytes | winit, alacritty `TermMode` |
+| `wl.rs` | own Wayland client: wire protocol, `xdg_toplevel`, `wl_shm` buffers, frame callbacks, `wl_seat` pointer + keyboard, cursor shape, `wl_data_device` clipboard | `rustix` |
+| `wlapp.rs` | the default app on `wl.rs` + `soft.rs` + `session.rs`: keyboard, repeat, pointer, selection, clipboard; one blocking `poll` loop | all of the above |
+| `xkb.rs` | keyboard layouts: `libxkbcommon` through `dlopen`, keymap text → keysym + text, compose | libc only |
+| `input.rs` | `encode_key(xkb key)` and the winit `encode` → xterm bytes | `xkb`, winit (until stage E), alacritty `TermMode` |
 | `palette.rs` | Black-and-white ANSI palette, `Color`→`Rgb` resolution | alacritty `vte::ansi` |
 | `shader.wgsl` | Vertex/fragment for cells and background | — |
 

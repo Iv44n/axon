@@ -1,13 +1,34 @@
 ---
 type: log
 status: current
-updated: 2026-11-22
+updated: 2026-11-23
 related: [measurements.md, ../decisions/0011-software-render-wl-shm.md, ../plan/software-renderer.md]
 ---
 # Software renderer measurements
 
 Findings for [0011](../decisions/0011-software-render-wl-shm.md); the idle RSS rows are in
 [measurements](measurements.md). Newest first.
+
+- **Sharper text and chrome** (2026-11-23, user: "a bit pixelated"; the screen is at scale 1.0, so not compositor
+  scaling). Found by zooming headless frames 3-6x: (1) a cell with no background (alpha 0, the normal case) got
+  `fg * c^2` at alpha `c`, half the brightness on glyph edges; now plain source-over in `text_px`, `overlay` and
+  `shader.wgsl`; (2) coverage raised to 0.70 when a tile is baked (`font.rs`), the sRGB-blend fix for light text;
+  (3) button centres moved from pixel borders to pixel centres. Binary 7,362,960 B, idle 14 MB, 0 ticks, flood
+  1.81 s, 25 tests pass. The shader got the same formula but was not compared byte for byte with `soft.rs`.
+
+- **Stage C: keyboard, clipboard, wheel, selection** ([0013](../decisions/0013-wayland-default-xkb-dlopen.md)): binary
+  +30 KB (7,332,888 -> 7,363,488 B), idle RSS 14 MB with JetBrains Mono (was 13: `libxkbcommon` and the compose
+  table), 0 ticks idle (a held key makes `poll` wake at the repeat rate, nothing else does), flood 1.78 s and 39 MB.
+  Checked: 22 unit tests, among them AltGr+Q = `@` and dead acute + `a` = `a` with an acute on a latam layout through the
+  real library, and the xterm encoding of keys. The protocol trace against Mutter shows keymap, enter, modifiers,
+  repeat info and the data device selection arriving with no error. Not testable here: real key presses, copy and
+  paste (no input injection into GNOME), so those were reviewed, not run.
+
+- **Default font is JetBrains Mono** (2026-11-23, `font.rs` candidate order): `wl` idles at **13 MB** RSS (PSS 9,
+  anon 5) against 55 MB with Cascadia Mono NF, and `winit` at 149 MB against 192 MB; 0 ticks idle. After the
+  100 MB flood `wl` holds 39 MB (1.80 s) and `winit` 175 MB (1.31 s): 10k lines of scrollback add ~26 MB
+  (10k x 108 columns x 24 B per `alacritty_terminal` cell). JetBrains Mono has no Nerd/Powerline icons; a
+  Nerd Font stays one `AXON_FONT` away at the price measured above.
 
 - **Glass chrome** ([0012](../decisions/0012-glass-chrome-black-white.md), `src/chrome.rs`): binary +7.6 KB
   (7,325,272 -> 7,332,888 B), idle RSS 55 MB on `wl` with Cascadia (was 54), 0 ticks idle, flood 1.70 s and
@@ -24,7 +45,7 @@ Findings for [0011](../decisions/0011-software-render-wl-shm.md); the idle RSS r
   trace shows the compositor (Mutter) releasing the single shm buffer right after each commit, so no second
   buffer was allocated.
 - **100 MB flood** (`cat` of 99.6 MB of 90-column lines): 1.73 s on `wl`, 1.37 s on `winit`; RSS afterwards
-  80 MB against 216 MB (10k lines of scrollback are ~72 MB of anon on both). The CPU path is 26% slower on a
+  80 MB against 216 MB (10k lines of scrollback are ~26 MB on both: the 72 MB first written here was wrong). The CPU path is 26% slower on a
   flood because every frame is a full repaint (scrolling is Full damage); not a target yet.
 - **Resize:** maximize and restore four times (1000x640 <-> 1920x1048, grid 108x34 <-> 210x56): each
   size change reallocates the buffers and repaints, no protocol error. Not covered: other compositors

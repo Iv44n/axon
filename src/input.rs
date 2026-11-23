@@ -1,5 +1,7 @@
-//! Keyboard -> bytes for the PTY.
+//! Keyboard -> bytes for the PTY. `encode_key` takes a resolved xkb key (the `wl` backend);
+//! `encode` takes a winit event and goes away with winit.
 use alacritty_terminal::term::TermMode;
+use crate::xkb::Key as XKey;
 use winit::{
     event::KeyEvent,
     keyboard::{Key, ModifiersState, NamedKey},
@@ -100,4 +102,146 @@ fn text_bytes(ev: &KeyEvent, m: ModifiersState) -> Option<Vec<u8>> {
     }
     out.extend_from_slice(t.as_bytes());
     Some(out)
+}
+
+// ------------------------------------------------------------ xkb keys --
+
+/// X11 keysyms the terminal cares about (`X11/keysymdef.h`).
+mod sym {
+    pub const BACKSPACE: u32 = 0xff08;
+    pub const TAB: u32 = 0xff09;
+    pub const RETURN: u32 = 0xff0d;
+    pub const ESCAPE: u32 = 0xff1b;
+    pub const HOME: u32 = 0xff50;
+    pub const LEFT: u32 = 0xff51;
+    pub const UP: u32 = 0xff52;
+    pub const RIGHT: u32 = 0xff53;
+    pub const DOWN: u32 = 0xff54;
+    pub const PAGE_UP: u32 = 0xff55;
+    pub const PAGE_DOWN: u32 = 0xff56;
+    pub const END: u32 = 0xff57;
+    pub const INSERT: u32 = 0xff63;
+    pub const KP_ENTER: u32 = 0xff8d;
+    pub const KP_HOME: u32 = 0xff95;
+    pub const KP_LEFT: u32 = 0xff96;
+    pub const KP_UP: u32 = 0xff97;
+    pub const KP_RIGHT: u32 = 0xff98;
+    pub const KP_DOWN: u32 = 0xff99;
+    pub const KP_PAGE_UP: u32 = 0xff9a;
+    pub const KP_PAGE_DOWN: u32 = 0xff9b;
+    pub const KP_END: u32 = 0xff9c;
+    pub const KP_INSERT: u32 = 0xff9e;
+    pub const KP_DELETE: u32 = 0xff9f;
+    pub const F1: u32 = 0xffbe;
+    pub const F12: u32 = 0xffc9;
+    pub const DELETE: u32 = 0xffff;
+    pub const ISO_LEFT_TAB: u32 = 0xfe20;
+    pub const SPACE: u32 = 0x20;
+}
+
+/// The bytes a key press sends, or `None` for keys that type nothing (modifiers, dead keys).
+pub fn encode_key(k: &XKey, mode: TermMode) -> Option<Vec<u8>> {
+    use sym::*;
+    let m = k.mods;
+    let mods = 1 + m.shift as u8 + 2 * m.alt as u8 + 4 * m.ctrl as u8;
+    let app = mode.contains(TermMode::APP_CURSOR);
+    let out = match k.sym {
+        RETURN | KP_ENTER => b"\r".to_vec(),
+        BACKSPACE => if m.alt { b"\x1b\x7f".to_vec() } else { b"\x7f".to_vec() },
+        TAB if !m.shift => b"\t".to_vec(),
+        TAB | ISO_LEFT_TAB => b"\x1b[Z".to_vec(),
+        ESCAPE => b"\x1b".to_vec(),
+        UP | KP_UP => csi(mods, app, 'A'),
+        DOWN | KP_DOWN => csi(mods, app, 'B'),
+        RIGHT | KP_RIGHT => csi(mods, app, 'C'),
+        LEFT | KP_LEFT => csi(mods, app, 'D'),
+        HOME | KP_HOME => csi(mods, app, 'H'),
+        END | KP_END => csi(mods, app, 'F'),
+        PAGE_UP | KP_PAGE_UP => tilde(mods, 5),
+        PAGE_DOWN | KP_PAGE_DOWN => tilde(mods, 6),
+        INSERT | KP_INSERT => tilde(mods, 2),
+        DELETE | KP_DELETE => tilde(mods, 3),
+        F1..=F12 => match k.sym - F1 {
+            n @ 0..=3 => csi_ss3(mods, ['P', 'Q', 'R', 'S'][n as usize]),
+            n => tilde(mods, [15, 17, 18, 19, 20, 21, 23, 24][n as usize - 4]),
+        },
+        SPACE if m.ctrl => vec![0],
+        SPACE if m.alt => b"\x1b ".to_vec(),
+        _ => return text_key(k),
+    };
+    Some(out)
+}
+
+/// Letters, digits, symbols and whatever else types text; Control turns them into C0 codes.
+fn text_key(k: &XKey) -> Option<Vec<u8>> {
+    let m = k.mods;
+    if m.ctrl {
+        if let Some(b) = char::from_u32(k.sym).filter(|c| c.is_ascii() && !c.is_ascii_control()).and_then(ctrl_byte) {
+            return Some(if m.alt { vec![0x1b, b] } else { vec![b] });
+        }
+    }
+    if k.text.is_empty() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(k.text.len() + 1);
+    if m.alt {
+        out.push(0x1b);
+    }
+    out.extend_from_slice(k.text.as_bytes());
+    Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::xkb::Mods;
+
+    fn key(sym: u32, text: &str, shift: bool, ctrl: bool, alt: bool) -> XKey {
+        XKey { sym, text: text.into(), mods: Mods { shift, ctrl, alt } }
+    }
+    fn enc(k: XKey) -> Vec<u8> {
+        encode_key(&k, TermMode::empty()).unwrap()
+    }
+
+    #[test]
+    fn text_and_enter() {
+        assert_eq!(enc(key(0x61, "a", false, false, false)), b"a");
+        assert_eq!(enc(key(0xf1, "\u{f1}", false, false, false)), "\u{f1}".as_bytes());
+        assert_eq!(enc(key(sym::RETURN, "\r", false, false, false)), b"\r");
+    }
+
+    #[test]
+    fn control_and_alt() {
+        assert_eq!(enc(key(0x63, "\x03", false, true, false)), [3]);
+        assert_eq!(enc(key(0x78, "x", false, false, true)), b"\x1bx");
+        assert_eq!(enc(key(0x62, "b", false, true, true)), [0x1b, 2]);
+        assert_eq!(enc(key(sym::SPACE, " ", false, true, false)), [0]);
+        assert_eq!(enc(key(sym::BACKSPACE, "\x08", false, false, true)), b"\x1b\x7f");
+    }
+
+    #[test]
+    fn cursor_keys_follow_the_mode() {
+        let up = key(sym::UP, "", false, false, false);
+        assert_eq!(encode_key(&up, TermMode::empty()).unwrap(), b"\x1b[A");
+        assert_eq!(encode_key(&up, TermMode::APP_CURSOR).unwrap(), b"\x1bOA");
+        assert_eq!(enc(key(sym::UP, "", true, false, false)), b"\x1b[1;2A");
+        assert_eq!(enc(key(sym::RIGHT, "", false, true, false)), b"\x1b[1;5C");
+    }
+
+    #[test]
+    fn function_navigation_and_tab_keys() {
+        assert_eq!(enc(key(sym::F1, "", false, false, false)), b"\x1bOP");
+        assert_eq!(enc(key(sym::F1 + 4, "", false, false, false)), b"\x1b[15~");
+        assert_eq!(enc(key(sym::F12, "", true, false, false)), b"\x1b[24;2~");
+        assert_eq!(enc(key(sym::PAGE_UP, "", false, false, false)), b"\x1b[5~");
+        assert_eq!(enc(key(sym::DELETE, "", false, false, false)), b"\x1b[3~");
+        assert_eq!(enc(key(sym::TAB, "\t", false, false, false)), b"\t");
+        assert_eq!(enc(key(sym::ISO_LEFT_TAB, "", true, false, false)), b"\x1b[Z");
+    }
+
+    #[test]
+    fn keys_without_text_send_nothing() {
+        assert_eq!(encode_key(&key(0xffe1, "", true, false, false), TermMode::empty()), None); // Shift_L
+        assert_eq!(encode_key(&key(0xfe51, "", false, false, false), TermMode::empty()), None); // dead_acute
+    }
 }

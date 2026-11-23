@@ -1,0 +1,391 @@
+//! Frames for the design board (`design/board.html`, `scripts/design.sh`).
+//!
+//! Renders the real window, through `view.rs`, `soft.rs` and `chrome.rs`, in a fixed set of scenes
+//! and writes each one as a PNG with alpha, so the board can put it over any backdrop and show
+//! exactly what the compositor would. Also writes `frames.js`: the scene list and the design
+//! tokens (sizes, palette) read from the code, so the board never restates a number by hand.
+//!
+//! `frames` is test-only and `#[ignore]`d: it writes files into the tree. The PNG encoder is a small
+//! own one (per-row filter, then deflate with fixed Huffman codes and run matches), enough for UI
+//! pictures. The same scenes drive `incremental_repaint_matches_a_full_one`, which runs always.
+#![cfg(test)]
+
+use alacritty_terminal::{
+    Term,
+    event::VoidListener,
+    index::{Column, Line, Point, Side},
+    selection::{Selection, SelectionType},
+    term::Config,
+    vte::ansi::Processor,
+};
+
+use crate::{
+    chrome::{self, Ui},
+    palette, session,
+    soft::{Soft, Target},
+    view::View,
+};
+
+/// Window size of every scene, in logical pixels (the frame adds the shadow margin around it).
+const W: u32 = 900;
+const H: u32 = 520;
+const PX: f32 = 15.0;
+const OPACITY: f32 = chrome::OPACITY;
+
+const SHELL: &str = "\x1b[1;32muser@axon\x1b[0m:\x1b[1;34m~/lab/apps/axon\x1b[0m$ ls --color\r\n\
+\x1b[1;34msrc\x1b[0m  \x1b[1;34mknowledge\x1b[0m  Cargo.toml  \x1b[32mscripts\x1b[0m  README.md  \x1b[31mbad.rs\x1b[0m\r\n\
+\x1b[1;32muser@axon\x1b[0m:\x1b[1;34m~/lab/apps/axon\x1b[0m$ git diff --stat\r\n\
+\x20src/chrome.rs | 120 \x1b[32m++++++++++\x1b[31m---\x1b[0m\r\n\
+\x20src/soft.rs   |  42 \x1b[32m+++++\x1b[31m-\x1b[0m\r\n\
+\x202 files changed, 141 insertions(+), 21 deletions(-)\r\n\
+\x1b[1;32muser@axon\x1b[0m:\x1b[1;34m~/lab/apps/axon\x1b[0m$ cargo build --release\r\n\
+\x1b[1;32m   Compiling\x1b[0m axon v0.1.0 (/home/user/lab/apps/axon)\r\n\
+\x1b[1;32m    Finished\x1b[0m `release` profile [optimized] target(s) in 52.47s\r\n\
+\x1b[1;32muser@axon\x1b[0m:\x1b[1;34m~/lab/apps/axon\x1b[0m$ ";
+
+const COLORS: &str = "\x1b[1m normal \x1b[0m \x1b[30m██\x1b[31m██\x1b[32m██\x1b[33m██\x1b[34m██\x1b[35m██\x1b[36m██\x1b[37m██\x1b[0m  \
+black red green yellow blue magenta cyan white\r\n\
+\x1b[1m bright \x1b[0m \x1b[90m██\x1b[91m██\x1b[92m██\x1b[93m██\x1b[94m██\x1b[95m██\x1b[96m██\x1b[97m██\x1b[0m\r\n\
+\r\n\
+\x20\x1b[31merror\x1b[0m  \x1b[32mok\x1b[0m  \x1b[33mwarning\x1b[0m  \x1b[34minfo\x1b[0m  \x1b[35mtodo\x1b[0m  \x1b[36mhint\x1b[0m  \
+\x1b[90mcomment\x1b[0m  \x1b[1mbold\x1b[0m  \x1b[2mdim\x1b[0m\r\n\
+\x20\x1b[4munderline\x1b[0m  \x1b[9mstrike\x1b[0m  \x1b[7m inverse \x1b[0m  \x1b[41;97m bg red \x1b[0m \x1b[42;30m bg green \x1b[0m \
+\x1b[44;97m bg blue \x1b[0m \x1b[100;97m bg gray \x1b[0m\r\n\
+\r\n\
+\x20┌─ box ─────────┐  █▓▒░  λ → ✓ ✗ • …\r\n\
+\x20│ [\x1b[32m██████\x1b[90m░░░\x1b[0m]   │  64%  The quick brown fox jumps over the lazy dog\r\n\
+\x20└───────────────┘  0O 1lI| {}[]() <= >= != == -> => :: 0x1f\r\n\
+\r\n\
+\x20selected text shows the selection colour\r\n\
+\x1b[1;32muser@axon\x1b[0m:\x1b[1;34m~\x1b[0m$ ";
+
+struct Scene {
+    name: &'static str,
+    label: &'static str,
+    group: &'static str,
+    ui: Ui,
+    opacity: f32,
+    title: &'static str,
+    input: &'static str,
+    /// Select `len` cells of this grid line, starting at column 1.
+    select: Option<(i32, usize)>,
+}
+
+const TITLE: &str = "~/lab/apps/axon: cargo build --release";
+
+fn scenes() -> Vec<Scene> {
+    let base = |name, label, group, ui| Scene { name, label, group, ui, opacity: OPACITY, title: TITLE, input: SHELL, select: None };
+    vec![
+        base("rest", "Focused, at rest", "window", Ui::IDLE),
+        base("hover", "Pointer over the buttons (close)", "states", Ui { hover: 1, ..Ui::IDLE }),
+        base("pressed", "Maximize held down", "states", Ui { hover: 3, down: true, ..Ui::IDLE }),
+        base("unfocused", "Unfocused", "states", Ui { focused: false, ..Ui::IDLE }),
+        base("maximized", "Maximized or tiled (square, no shadow)", "states", Ui { maximized: true, ..Ui::IDLE }),
+        Scene { title: "~: palette", input: COLORS, select: Some((10, 13)), ..base("colors", "Palette, attributes and selection", "colour", Ui::IDLE) },
+        Scene { opacity: 0.80, ..base("opacity-80", "Opacity 0.80", "opacity", Ui::IDLE) },
+        Scene { opacity: 0.88, ..base("opacity-88", "Opacity 0.88 (default)", "opacity", Ui::IDLE) },
+        Scene { opacity: 0.94, ..base("opacity-94", "Opacity 0.94", "opacity", Ui::IDLE) },
+    ]
+}
+
+/// Renders a scene; returns the frame (premultiplied `Argb8888`) and its size.
+fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
+    let mut soft = Soft::new(PX, s.opacity);
+    soft.cursor_color = crate::cell::pack(palette::CURSOR.r, palette::CURSOR.g, palette::CURSOR.b, 255);
+    soft.set_title(s.title);
+    soft.set_ui(s.ui);
+    let (cw, ch) = soft.cell();
+    let (cols, rows) = session::grid_size(W, H, cw, ch, soft.pad, soft.top);
+    let mut term = Term::new(Config::default(), &session::Size { cols, rows }, VoidListener);
+    let mut p: Processor = Processor::new();
+    p.advance(&mut term, s.input.as_bytes());
+    if let Some((line, len)) = s.select {
+        let mut sel = Selection::new(SelectionType::Simple, Point::new(Line(line), Column(1)), Side::Left);
+        sel.update(Point::new(Line(line), Column(len)), Side::Right);
+        term.selection = Some(sel);
+    }
+    let (ml, mt, mb) = chrome::margins(s.ui.maximized);
+    let (w, h) = (W as usize + 2 * ml, H as usize + mt + mb);
+    let mut fb = vec![0u32; w * h];
+    View::new().build(&mut term, s.ui.focused, &mut Target { soft: &mut soft, fb: &mut fb, w, h });
+    (fb, w, h)
+}
+
+/// The renderer repaints only what changed (rows, the title bar) and leaves the shadow margin
+/// alone between full repaints; after every step that must equal painting from scratch.
+#[test]
+fn incremental_repaint_matches_a_full_one() {
+    let steps: [(Ui, &str, &str); 7] = [
+        (Ui::IDLE, "one", SHELL),
+        (Ui { hover: 1, ..Ui::IDLE }, "one", ""),
+        (Ui { hover: 3, down: true, ..Ui::IDLE }, "a longer title here", "\r\nmore output\r\n$ "),
+        (Ui { focused: false, ..Ui::IDLE }, "a longer title here", ""),
+        (Ui { maximized: true, ..Ui::IDLE }, "x", "ls\r\n"),
+        (Ui::IDLE, "back", "\x1b[2J\x1b[H$ "),
+        (Ui { hover: 2, ..Ui::IDLE }, "back", "\x1b[31mred\x1b[0m"),
+    ];
+    let new = |s: &Soft| {
+        let (cw, ch) = s.cell();
+        let (cols, rows) = session::grid_size(W, H, cw, ch, s.pad, s.top);
+        Term::new(Config::default(), &session::Size { cols, rows }, VoidListener)
+    };
+    let mut soft = Soft::new(PX, OPACITY);
+    let mut term = new(&soft);
+    let mut view = View::new();
+    let mut fb = Vec::new();
+    let mut input = String::new();
+    for (n, (ui, title, out)) in steps.into_iter().enumerate() {
+        input.push_str(out);
+        let (ml, mt, mb) = chrome::margins(ui.maximized);
+        let (w, h) = (W as usize + 2 * ml, H as usize + mt + mb);
+        if fb.len() != w * h {
+            fb = vec![0xdead_beef; w * h]; // a new buffer holds garbage until painted
+        }
+        Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::new().advance(&mut term, out.as_bytes());
+        soft.set_title(title);
+        soft.set_ui(ui);
+        view.build(&mut term, ui.focused, &mut Target { soft: &mut soft, fb: &mut fb, w, h });
+
+        let mut fresh = Soft::new(PX, OPACITY);
+        let mut fresh_term = new(&fresh);
+        Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::new().advance(&mut fresh_term, input.as_bytes());
+        fresh.set_title(title);
+        fresh.set_ui(ui);
+        let mut full = vec![0u32; w * h];
+        View::new().build(&mut fresh_term, ui.focused, &mut Target { soft: &mut fresh, fb: &mut full, w, h });
+        let diff = fb.iter().zip(&full).filter(|(a, b)| a != b).count();
+        assert_eq!(diff, 0, "step {n}: {diff} pixels differ from a full repaint");
+    }
+}
+
+/// Cells a program paints in the terminal's own background colour are glass, like default ones:
+/// a theme that sets it explicitly must not leave an opaque block on the window.
+#[test]
+fn background_coloured_cells_are_glass() {
+    let paint = |input: &str| {
+        let s = Scene { input: Box::leak(input.to_owned().into_boxed_str()), ..scenes().remove(0) };
+        render(&s).0
+    };
+    let bg = palette::BG;
+    let explicit = format!("\x1b[48;2;{};{};{}m          \x1b[0m\r\n\x1b[41m          \x1b[0m", bg.r, bg.g, bg.b);
+    let (glass, painted) = (paint("          \r\n          "), paint(&explicit));
+    let diff = glass.iter().zip(&painted).filter(|(a, b)| a != b).count();
+    // Only the red row differs (10 cells), and no pixel of the background-coloured row.
+    let (cw, ch) = Soft::new(PX, OPACITY).cell();
+    assert_eq!(diff, (10 * cw * ch) as usize);
+}
+
+#[test]
+#[ignore = "writes design/frames; run through scripts/design.sh"]
+fn frames() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("design/frames");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut list = String::new();
+    for s in scenes() {
+        let (fb, w, h) = render(&s);
+        std::fs::write(dir.join(format!("{}.png", s.name)), png(&fb, w, h)).unwrap();
+        // `ox`, `oy`: where the window starts in the frame (the shadow margin).
+        let (ox, oy, _) = chrome::margins(s.ui.maximized);
+        list += &format!(
+            "    {{ name: {:?}, label: {:?}, group: {:?}, w: {w}, h: {h}, ox: {ox}, oy: {oy}, opacity: {} }},\n",
+            s.name, s.label, s.group, s.opacity
+        );
+    }
+    std::fs::write(dir.join("frames.js"), tokens(&list)).unwrap();
+}
+
+/// `frames.js`: the scenes and the tokens the board shows, straight from the constants.
+fn tokens(frames: &str) -> String {
+    let hex = |c: alacritty_terminal::vte::ansi::Rgb| format!("\"#{:02x}{:02x}{:02x}\"", c.r, c.g, c.b);
+    let ansi: Vec<String> = (0..16).map(|i| hex(palette::by_index(i))).collect();
+    let soft = Soft::new(PX, OPACITY);
+    let (cw, ch) = soft.cell();
+    let stamp = std::env::var("AXON_DESIGN_STAMP").unwrap_or_default();
+    format!(
+        "// Generated by `scripts/design.sh` (src/design.rs). Do not edit.\n\
+window.AXON_DESIGN = {{\n  stamp: {stamp:?},\n  window: {{ w: {W}, h: {H} }},\n  frames: [\n{frames}  ],\n  tokens: {{\n\
+    radius: {}, titleBar: {}, opacity: {OPACITY}, fontPx: {PX}, cell: [{cw}, {ch}], pad: {}, top: {},\n\
+    shadow: \"spread {} px, cast {} px down; margin {} px left and right, {} px above, {} px below\",\n\
+    fg: {}, bg: {}, cursor: {}, selection: {},\n    ansi: [{}],\n  }},\n}};\n",
+        chrome::RADIUS,
+        chrome::TITLE_H,
+        soft.pad,
+        soft.top,
+        chrome::SHADOW_BLUR,
+        chrome::SHADOW_DY,
+        chrome::margins(false).0,
+        chrome::margins(false).1,
+        chrome::margins(false).2,
+        hex(palette::FG),
+        hex(palette::BG),
+        hex(palette::CURSOR),
+        hex(palette::SELECTION_BG),
+        ansi.join(", "),
+    )
+}
+
+// ------------------------------------------------------------------- png --
+
+/// PNG of a premultiplied `Argb8888` frame (PNG wants straight alpha).
+fn png(fb: &[u32], w: usize, h: usize) -> Vec<u8> {
+    let stride = w * 4;
+    let mut rgba = Vec::with_capacity(stride * h);
+    for &px in fb {
+        let a = px >> 24;
+        let un = |c: u32| if a == 0 { 0 } else { ((c * 255 + a / 2) / a).min(255) as u8 };
+        rgba.extend_from_slice(&[un((px >> 16) & 255), un((px >> 8) & 255), un(px & 255), a as u8]);
+    }
+    // Per row, the filter (none, sub, up) with the smallest sum of magnitudes.
+    let mut raw = Vec::with_capacity((stride + 1) * h);
+    let mut row = vec![0u8; stride];
+    for y in 0..h {
+        let cur = &rgba[y * stride..][..stride];
+        let mut best = (u64::MAX, 0u8);
+        for f in 0..3u8 {
+            filter(f, cur, if y > 0 { Some(&rgba[(y - 1) * stride..][..stride]) } else { None }, &mut row);
+            let cost = row.iter().map(|&b| (b as i8).unsigned_abs() as u64).sum();
+            if cost < best.0 {
+                best = (cost, f);
+            }
+        }
+        filter(best.1, cur, if y > 0 { Some(&rgba[(y - 1) * stride..][..stride]) } else { None }, &mut row);
+        raw.push(best.1);
+        raw.extend_from_slice(&row);
+    }
+    let mut z = vec![0x78, 0x01];
+    z.extend(deflate(&raw));
+    z.extend(adler32(&raw).to_be_bytes());
+
+    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+    let mut ihdr = Vec::new();
+    ihdr.extend((w as u32).to_be_bytes());
+    ihdr.extend((h as u32).to_be_bytes());
+    ihdr.extend([8, 6, 0, 0, 0]); // 8 bits, RGBA, deflate, adaptive filters, no interlace
+    chunk(&mut out, b"IHDR", &ihdr);
+    chunk(&mut out, b"IDAT", &z);
+    chunk(&mut out, b"IEND", &[]);
+    out
+}
+
+fn filter(f: u8, cur: &[u8], prev: Option<&[u8]>, out: &mut [u8]) {
+    for i in 0..cur.len() {
+        let left = if i >= 4 { cur[i - 4] } else { 0 };
+        let up = prev.map_or(0, |p| p[i]);
+        out[i] = match f {
+            1 => cur[i].wrapping_sub(left),
+            2 => cur[i].wrapping_sub(up),
+            _ => cur[i],
+        };
+    }
+}
+
+fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+    out.extend((data.len() as u32).to_be_bytes());
+    let start = out.len();
+    out.extend(kind);
+    out.extend(data);
+    let crc = crc32(&out[start..]);
+    out.extend(crc.to_be_bytes());
+}
+
+fn crc32(data: &[u8]) -> u32 {
+    let mut c = !0u32;
+    for &b in data {
+        c ^= b as u32;
+        for _ in 0..8 {
+            c = if c & 1 != 0 { 0xedb8_8320 ^ (c >> 1) } else { c >> 1 };
+        }
+    }
+    !c
+}
+
+fn adler32(data: &[u8]) -> u32 {
+    let (mut a, mut b) = (1u32, 0u32);
+    for &x in data {
+        a = (a + x as u32) % 65521;
+        b = (b + a) % 65521;
+    }
+    b << 16 | a
+}
+
+/// Bits written least significant first, as deflate packs them.
+struct Bits {
+    out: Vec<u8>,
+    acc: u32,
+    n: u32,
+}
+
+impl Bits {
+    fn put(&mut self, v: u32, n: u32) {
+        self.acc |= v << self.n;
+        self.n += n;
+        while self.n >= 8 {
+            self.out.push(self.acc as u8);
+            self.acc >>= 8;
+            self.n -= 8;
+        }
+    }
+
+    /// A Huffman code: most significant bit first.
+    fn code(&mut self, code: u32, len: u32) {
+        let rev = (0..len).fold(0, |r, i| r | ((code >> i) & 1) << (len - 1 - i));
+        self.put(rev, len);
+    }
+
+    /// A literal/length symbol in the fixed code (RFC 1951 3.2.6).
+    fn sym(&mut self, v: u32) {
+        match v {
+            0..=143 => self.code(0x30 + v, 8),
+            144..=255 => self.code(0x190 + v - 144, 9),
+            256..=279 => self.code(v - 256, 7),
+            _ => self.code(0xc0 + v - 280, 8),
+        }
+    }
+}
+
+const LEN_BASE: [u16; 29] = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258];
+const LEN_EXTRA: [u8; 29] = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
+
+/// One fixed-Huffman block. The only matches are runs of the previous byte (distance 1): after
+/// the row filters, flat UI areas are long runs of zeros, which is where nearly all the bytes are.
+fn deflate(data: &[u8]) -> Vec<u8> {
+    let mut b = Bits { out: Vec::with_capacity(data.len() / 8), acc: 0, n: 0 };
+    b.put(1, 1); // final block
+    b.put(1, 2); // fixed Huffman codes
+    let mut i = 0;
+    while i < data.len() {
+        let mut run = 0;
+        if i > 0 {
+            while run < 258 && i + run < data.len() && data[i + run] == data[i - 1] {
+                run += 1;
+            }
+        }
+        if run >= 3 {
+            let k = LEN_BASE.iter().rposition(|&l| l as usize <= run).unwrap();
+            b.sym(257 + k as u32);
+            b.put((run - LEN_BASE[k] as usize) as u32, LEN_EXTRA[k] as u32);
+            b.code(0, 5); // distance code 0: distance 1
+            i += run;
+        } else {
+            b.sym(data[i] as u32);
+            i += 1;
+        }
+    }
+    b.sym(256); // end of block
+    if b.n > 0 {
+        b.out.push(b.acc as u8);
+    }
+    b.out
+}
+
+#[test]
+fn png_header_and_checksums() {
+    // The deflate stream itself is checked against a real decoder when the frames are made
+    // (scripts/design.sh); here the framing and the two checksums against their reference values.
+    let fb = [0xff00_0000u32, 0xff00_0000, 0xff00_0000, 0x8080_8080, 0, 0xffff_ffff];
+    let p = png(&fb, 3, 2);
+    assert_eq!(&p[..8], b"\x89PNG\r\n\x1a\n");
+    assert_eq!(&p[12..16], b"IHDR");
+    assert_eq!(adler32(b"Wikipedia"), 0x11e6_0398);
+    assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
+}

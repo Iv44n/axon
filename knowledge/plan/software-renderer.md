@@ -42,7 +42,13 @@ alive until stage E, so the app never stops working.
   with no error; resize by maximize/restore cycles; exit when the shell ends; idle 0% CPU. Numbers in
   [software-renderer](../performance/software-renderer.md).
 
-## C. Input and clipboard
+## C. Input and clipboard (done 2026-11-23, [0013](../decisions/0013-wayland-default-xkb-dlopen.md))
+- **Done:** `wl_keyboard` (keymap text to `xkb.rs`, raw keys, modifiers, repeat info), client-side key repeat in the
+  `poll` loop, keysym encoder in `input.rs` (`encode_key`), shortcuts, wheel (`axis` + `axis_discrete`), selection
+  (click, word, line), clipboard through `wl_data_device` (replaces `arboard` on this path), OSC 52 store only (reads are refused on purpose).
+  `libxkbcommon` is loaded with `dlopen`; the backend is the default on Wayland and falls back to `winit`.
+- **Left:** own keymap parser (then no `libxkbcommon`), `text-input-v3` for IMEs, primary selection, mouse reporting
+  (task 6), drag and drop. The plan below is the original scope.
 - **Pointer done 2026-11-22** (for the window chrome, [0012](../decisions/0012-glass-chrome-black-white.md)): `wl_seat`
   + `wl_pointer` (enter, leave, motion, button) and `wp_cursor_shape_v1` in `wl.rs`; `wlapp.rs` hit-tests with
   `chrome::hit` for the title-bar buttons, move, double-click maximize and resize edges. Still missing: wheel
@@ -54,8 +60,9 @@ key repeat (client side), `wl_pointer` (selection, wheel, buttons), cursor shape
 
 ## D. Window behaviour
 - **Chrome done 2026-11-22:** client-side title bar, buttons, rounded corners and glass look (`chrome.rs`), maximize
-  and minimize through `xdg_toplevel`. Left: HiDPI, the second buffer on a holding compositor, own shadow if
-  a compositor draws a rectangular one through the corners.
+  and minimize through `xdg_toplevel`. **Shadow done 2026-11-23** ([0014](../decisions/0014-client-shadow-design-board.md)):
+  margin outside the window geometry, input region, square and shadowless when maximized, fullscreen or tiled.
+  Left: HiDPI (the margin scales with it), the second buffer on a holding compositor.
 Resize and the buffer lifecycle (release-wait single buffer, second buffer only if a compositor needs
 it), decorations (`xdg-decoration` or none), HiDPI (`wp_fractional_scale_v1` + `wp_viewporter`),
 focus, close. Measure idle RSS at 1000x640 and 1080p against the spike (8.7 MB and 14 MB).

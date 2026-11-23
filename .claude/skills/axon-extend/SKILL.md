@@ -8,13 +8,13 @@ description: Step-by-step recipes for extending axon - new keyboard shortcut, co
 Before any change: read `axon-architecture` (dependency rules) and, if it touches rendering, `axon-renderer`.
 
 ## New app keyboard shortcut
-1. App shortcuts (not sent to the shell) are intercepted in `window_event → KeyboardInput` in `main.rs`, **before** `input::encode`. Use `Ctrl+Shift+…` to avoid clashing with terminal apps.
-2. Implement the action as a `State` method (`copy`, `paste`, …), not inline.
-3. If a redraw is needed: `window.request_redraw()`.
+1. App shortcuts (not sent to the shell) are intercepted in `App::handle_key` in `wlapp.rs` (keysyms from `xkb.rs`), **before** `input::encode_key`; the `winit` fallback has its own copy in `window_event → KeyboardInput` in `main.rs` until stage E. Use `Ctrl+Shift+…` to avoid clashing with terminal apps.
+2. Implement the action as an `App` method (`copy`, `paste`, `zoom`, …), not inline.
+3. If a redraw is needed: `self.dirty = true` (the loop draws on the next frame callback).
 4. Document the shortcut in `CLAUDE.md` or the README.
 
 ## New key/sequence sent to the PTY
-Add it in `input.rs` (pure function). Cover modifiers with the parameter `mods = 1+shift+2·alt+4·ctrl`. Add a unit test with the expected sequence.
+Add it in `input.rs` (`encode_key`, a pure function of a resolved xkb key). Cover modifiers with the parameter `mods = 1+shift+2·alt+4·ctrl`. Add a unit test with the expected sequence.
 
 ## Config option
 1. Today: `std::env::var` in `State::new` (`AXON_*`). As it grows, create `config.rs` (see the roadmap) with `struct Config` + `Default`, loaded from `~/.config/axon/config.toml` by an own minimal parser (no `serde`/`toml`, see `knowledge/decisions/0010`).

@@ -23,7 +23,7 @@ the damaged pixel rows, so there is no cell buffer.
   (`F_BEAM`, `F_BAR`, `F_BOX`). Colors are RGBA8 packed with `pack`. Constants are mirrored in `shader.wgsl`.
 - A cell with `tf == 0` and `bg.a == 0` is empty: the vertex shader emits a degenerate triangle.
 - 6-vertex quad generated in the shader (`QUAD[vi]`), `draw(0..6, 0..rows*cols)`.
-- Fragment: `textureLoad` (no sampler, pixel-exact) → `mix(bg, fg, coverage)`; **premultiplied** output,
+- Fragment: `textureLoad` (no sampler, pixel-exact) → `fg * cov + bg.rgb * bg.a * (1 - cov)`, alpha `mix(bg.a, 1, cov)` (plain source-over; never square the coverage); **premultiplied** output,
   blend `One / OneMinusSrcAlpha`. Underline, strikeout and cursor are `overlay()` calls over that result, in that order.
   The cursor color is the `cursor` uniform (`Gpu.cursor_color`).
 - Background: full-screen triangle (`vs_bg`/`fs_bg`) with a gray gradient, a white edge glow and `opacity` (the CPU frame is `chrome.rs`).

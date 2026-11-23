@@ -16,7 +16,12 @@ adapter chosen with `PowerPreference::LowPower`. Window 1000x640, idle shell (`s
 
 | Date | Terminal | Commit | Idle CPU | Startup | Latency | `cat` 100 MB | RSS | PSS | Notes |
 |---|---|---|---|---|---|---|---|---|---|
-| 2026-11-22 | axon `AXON_BACKEND=wl` with the glass chrome, Cascadia NF (default) | 8db3cc9+ | 0.0% | - | - | 1.7 s | 55 MB | 51 MB | anon 47; binary 7,332,888 B; `winit` 196 MB; see software-renderer.md |
+| 2026-11-23 | axon `wl` (default), continuous glass, JetBrains Mono | b30bc13+ | 0.0% | - | - | 1.75 s | 13 MB | 9 MB | anon 6; binary 7,366,560 B; after the `cat`: 39 MB; `winit` 149 MB; see window-frame.md |
+| 2026-11-23 | axon `wl` (default), own shadow, opacity 0.88, JetBrains Mono | b30bc13+ | 0.0% | - | - | 1.8 s | 14 MB | 10 MB | anon 6; binary 7,366,064 B; after the `cat`: 40 MB; `winit` 149 MB; see window-frame.md |
+| 2026-11-23 | axon `wl` (default), sharper text and pixel-aligned buttons, JetBrains Mono | b30bc13+ | 0.0% | - | - | 1.8 s | 14 MB | 10 MB | anon 6; binary 7,362,960 B; after the `cat`: 39 MB; `winit` 155 MB; see software-renderer.md |
+| 2026-11-23 | axon `wl` (default) with keyboard and clipboard, JetBrains Mono | b30bc13+ | 0.0% | - | - | 1.8 s | 14 MB | 10 MB | anon 6; binary 7,363,488 B; after the `cat`: 39 MB; `winit` 150 MB; see software-renderer.md |
+| 2026-11-23 | axon `AXON_BACKEND=wl`, JetBrains Mono (new default) | b30bc13+ | 0.0% | - | - | 1.8 s | 13 MB | 9 MB | anon 5; after the `cat`: 39 MB; `winit` 149 MB; see software-renderer.md |
+| 2026-11-22 | axon `AXON_BACKEND=wl` with the glass chrome, Cascadia NF (then default) | 8db3cc9+ | 0.0% | - | - | 1.7 s | 55 MB | 51 MB | anon 47; binary 7,332,888 B; `winit` 196 MB; see software-renderer.md |
 | 2026-11-22 | axon `AXON_BACKEND=wl` (own Wayland client, CPU renderer), JetBrains Mono | 0b72197+ | 0.0% | - | - | 1.7 s | 12 MB | 8 MB | anon 5, file 5, shmem 2; Cascadia NF default: 54 MB; see software-renderer.md |
 | 2026-11-22 | spike: CPU into `wl_shm`, 1920x1048 window | not in repo | - | - | - | - | 14 MB | 8.2 MB | anon 3.7, file 1.9, shmem 8.4 (one buffer); see findings |
 | 2026-11-22 | spike: CPU into `wl_shm`, 1000x640 window | not in repo | 0.0% | - | - | - | 8.7 MB | 5.6 MB | anon 3.7, file 1.9, shmem 3.1 (one buffer); no wgpu, no winit |

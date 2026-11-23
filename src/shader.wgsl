@@ -82,7 +82,7 @@ fn coverage(tile: u32, local: vec2<f32>) -> f32 {
 
 // Overlay (underline, strikeout, cursor): `color` at coverage `c` over the premultiplied `dst`.
 fn overlay(dst: vec4<f32>, color: vec3<f32>, c: f32) -> vec4<f32> {
-    return vec4(color * c * c, c) + dst * (1.0 - c);
+    return vec4(color * c, c) + dst * (1.0 - c);
 }
 
 @fragment
@@ -90,7 +90,7 @@ fn fs_cell(i: VOut) -> @location(0) vec4<f32> {
     let flags = i.tf >> 16u;
     let cov = coverage(i.tf & 0xffffu, i.local);
     let a = mix(i.bg.a, 1.0, cov);
-    var px = vec4(mix(i.bg.rgb, i.fg.rgb, cov) * a, a);
+    var px = vec4(i.fg.rgb * cov + i.bg.rgb * i.bg.a * (1.0 - cov), a);
     if (flags & 1u) != 0u {
         px = overlay(px, i.fg.rgb, coverage(T_UNDER, i.local));
     }

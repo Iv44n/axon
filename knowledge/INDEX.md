@@ -6,7 +6,7 @@ explain how things are done; this tree explains what and why, and links instead 
 **How to read it:** this index → a branch's `INDEX.md` → only the leaf that answers your
 question. Each line says enough to decide whether to open it. Do not read the whole tree.
 
-Summary: native terminal in Rust (winit + wgpu + alacritty_terminal today; own Wayland client and CPU renderer decided), no WebView.
+Summary: native terminal in Rust, no WebView: own Wayland client + CPU renderer by default, `winit` + `wgpu` as the X11 fallback, `alacritty_terminal` for VT emulation.
 
 ## Branches
 - [plan/](plan/INDEX.md) — phases, status and the next task. Start here if you are going to work.

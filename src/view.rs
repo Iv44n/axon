@@ -126,6 +126,7 @@ fn build_rows<L: EventListener>(g: &mut impl Glyphs, term: &Term<L>, first: usiz
     let shape = if !focused { CursorShape::HollowBlock } else { cur.shape };
     let cursor_color = palette::CURSOR;
     let dark = palette::BG;
+    let default_bg = palette::resolve(Color::Named(NamedColor::Background), colors);
     let transparent = pack(0, 0, 0, 0);
     let cols = term.columns();
 
@@ -149,7 +150,9 @@ fn build_rows<L: EventListener>(g: &mut impl Glyphs, term: &Term<L>, first: usiz
             }
             let mut fg = palette::resolve(fg_c, colors);
             let mut bg = palette::resolve(cell.bg, colors);
-            let mut bg_default = matches!(cell.bg, Color::Named(NamedColor::Background));
+            // A cell painted in the terminal's own background colour (themes that set it explicitly,
+            // `\e[49m`'s look-alikes) is the background: glass, not an opaque block on the glass.
+            let mut bg_default = matches!(cell.bg, Color::Named(NamedColor::Background)) || bg == default_bg;
             if flags.contains(Flags::INVERSE) {
                 std::mem::swap(&mut fg, &mut bg);
                 bg_default = false;
