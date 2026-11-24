@@ -16,4 +16,6 @@ One leaf per decision. Never edited: superseded by a new ADR.
 - [0012 · Black-and-white glass chrome](0012-glass-chrome-black-white.md) — superseded by 0015 (its look); CPU-drawn chrome and round buttons stand.
 - [0013 · Wayland default, xkb via dlopen](0013-wayland-default-xkb-dlopen.md) — accepted 2026-11-23: `wl` is the default backend; `libxkbcommon` loaded at run time; fallback to `winit`.
 - [0014 · Own shadow, design board](0014-client-shadow-design-board.md) — accepted 2026-11-23: shadow in a margin (`set_window_geometry`, input region); visual changes judged on real frames; opacity 0.88.
+- [0017 · Settings screen](0017-settings-screen.md) — accepted 2026-11-23: gear / `Ctrl+,` opens a live panel over the grid; Save writes the file keeping comments; no state when closed.
+- [0016 · Config file, font settings](0016-config-file-font-settings.md) — accepted 2026-11-23: `config.toml` with an own parser; family, size, weight, spacing, line height, opacity; `Ctrl+Shift+R` reloads.
 - [0015 · Continuous glass](0015-continuous-glass.md) — accepted 2026-11-23: integrated title bar, no separators, uniform 1 px outline; background-coloured cells are glass.

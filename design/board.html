@@ -146,6 +146,12 @@
   <section><h2>Opacity</h2>
     <p>No compositor blur on GNOME (no <code>ext-background-effect</code>): whatever is behind shows through sharp. Lower opacity reads as glass on smooth wallpapers and as tinted plastic on busy ones; try the <i>Page</i> backdrop. The default is 0.88.</p>
     <div class="grid" data-group="opacity"></div></section>
+  <section><h2>Settings screen</h2>
+    <p>Opened with the gear at the right end of the title bar or <code>Ctrl+,</code>. A modal glass panel over the dimmed grid; the title bar stays live. Values change the window as they are dragged; <b>Save</b> writes <code>config.toml</code> (comments kept), <b>Cancel</b> or <kbd>Esc</kbd> puts everything back. The panel's own text is fixed at 13 px so it does not move while the font size is edited.</p>
+    <div class="grid" data-group="settings"></div></section>
+  <section><h2>Font</h2>
+    <p>What <code>[font]</code> in <code>~/.config/axon/config.toml</code> changes: <code>weight</code>, <code>letter_spacing</code> and <code>line_height</code>. The default is weight 400, spacing 0 and height 1.0 (the first frame above). Weight is synthesized until the own font reader can read the variable axis.</p>
+    <div class="grid" data-group="font"></div></section>
   <section><h2>Colour</h2>
     <p>Black and white chrome; colour comes only from programs. The ANSI hues are muted so a coloured prompt does not shout. Contrast is measured against the glass body over a black and over a white desktop (rule: 4.5:1 for text and for ANSI 8).</p>
     <div class="grid wide" data-group="colour"></div>

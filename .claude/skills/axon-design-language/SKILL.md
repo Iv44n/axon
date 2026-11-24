@@ -32,6 +32,8 @@ board: `scripts/design.sh --baseline` (keeps the current frames), change the cod
 - Title bar 38 px: not drawn, only a drag area. The title centred in `#ebebeb` at 75% (40% when unfocused). Buttons on the left, macOS order: close, minimize, maximize; 13 px discs, 20 px apart.
   Resting light gray; the pointer over the group shows the glyphs (x, -, +) and turns the hovered disc near white;
   pressed is dimmer; an unfocused window dims them.
+- Settings gear: at the right end of the title bar (24.5 px from the edge), a ring with eight teeth in white at 55% (28% unfocused); hovered it gets a round 12% highlight and goes to 95%. It is its own hover state (`Hit::Settings`, `Ui.hover == 4`), the three discs do not show glyphs for it.
+- Settings screen (`settings.rs`, ADR 0017): a modal panel 460 px wide, centred under the title bar, near-opaque (9% white-ish black) with a 1 px 10% white outline and its own soft shadow, over the grid dimmed by 50% black; the title bar is not dimmed. Rows of 38 px: label at 62% white, a slider (4 px track at 16%, fill at 72%, 12 px white knob) with its value right-aligned, the font picker as two chevron buttons around the name, a pill switch. The number at a slider's right is a click target (hover: 10% white box); typing turns it into a darker field with the text and a 2 px caret (selected: 22% white behind the text). Buttons 30 px high: Defaults and Cancel at 10% white, Save white with dark text. Text 13 px, regular, white at 90%; headings bold. Nothing coloured. Rendered by the real renderer on the design board (`settings*` scenes).
 - Grid padding: 0.9 x font size on the sides and below, title bar + 0.45 x font size above.
 
 ## Rules

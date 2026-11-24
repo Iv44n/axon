@@ -12,7 +12,7 @@ Written in Rust, for Wayland (own client, CPU-rendered into `wl_shm`, no GPU sta
 - **Full VT emulation** thanks to [`alacritty_terminal`](https://crates.io/crates/alacritty_terminal).
 - **Black-and-white glass look**: one continuous rounded translucent pane with a soft shadow; the title bar is part of the same glass (no separators), with round close/minimize/maximize buttons, white text on near-black glass, muted ANSI hues. The frame is computed per pixel (`src/chrome.rs`), no images. On the default backend; the `winit` fallback only has the black-and-white colours.
 - **Design board**: `design/board.html` shows frames from the real renderer over different desktops, zoomed to the pixel and compared with a baseline (see [Design](#design)).
-- **Small binary** (7.0 MiB, see [Benchmarks](#benchmarks)) with LTO, `panic=abort` and `strip`.
+- **Small binary** (7.2 MiB, see [Benchmarks](#benchmarks)) with LTO, `panic=abort` and `strip`.
 
 ## Requirements
 
@@ -47,18 +47,71 @@ Always use `--release`: debug mode is much slower.
 
 | Shortcut | Action |
 |---|---|
+| `Ctrl+,` | Open or close the settings screen (also the gear in the title bar) |
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copy / paste |
 | `Ctrl+Shift+Q` | Quit |
 | `Ctrl` + `+` / `-` / `0` | Increase / decrease / reset font size |
 | `Shift+PageUp/PageDown/Home/End` | Navigate the scrollback |
-| Mouse wheel | Scroll (sends arrow keys on the alternate screen) |
+| `Ctrl+Shift+R` | Reload `config.toml` (fonts, spacing, opacity) |
+| Mouse wheel | Scroll (sends arrow keys on the alternate screen; wheel reports when the program asks for the mouse) |
+| Mouse in vim, tmux, htop, less | Clicks, drags, motion and wheel go to the program; hold `Shift` to select text anyway (`wl` backend) |
 | Click, double click, triple click | Selection: simple, word, line |
 | Drag the title bar, double click it | Move the window, maximize / restore |
 | Title bar buttons (left): close, minimize, maximize | Window controls |
 | Drag from an edge or corner, or just outside it | Resize the window |
 | `Alt` + drag | Move the window (`winit` fallback only, it has no title bar) |
 
-### Configuration (environment variables)
+### Settings screen
+
+Click the **gear** at the right end of the title bar, or press **`Ctrl+,`**. A glass panel opens over the grid with the
+font (a picker over the installed monospaced fonts), size, weight, bold text, letter spacing, line height and window
+opacity. Everything changes the real window as you drag, so you judge the text by eye. **Save** writes
+`~/.config/axon/config.toml` (your comments stay, only what you changed is written); **Cancel**, `Esc`, the gear or
+`Ctrl+,` again put everything back. Keys: arrows and `Tab` move between rows, left and right change a value (`Shift`:
+five steps), `Space` flips the switch, `Enter` saves.
+
+**Typing a number:** click the number at the right of a slider (or select its row and just start typing). It becomes a
+box: type digits, a `.` or `,` for decimals and a leading `-`; `Enter`, `Tab`, or a click elsewhere keeps it, `Esc`
+drops it. A typed number is not limited to the slider's span, only to the file's limits (size 6 to 96, weight 100
+to 900, spacing -8 to 32, line height 0.8 to 3, opacity 0.3 to 1); weights snap to tens.
+
+![axon settings screen](assets/settings.png)
+
+### Configuration file
+
+The settings screen writes the file for you; it can also be edited by hand. axon reads `~/.config/axon/config.toml`
+(or `$XDG_CONFIG_HOME/axon/config.toml`) if it exists; every setting is optional. **Create it from the terminal with `axon config`**: it writes the file with every setting, commented, and never
+overwrites an existing one.
+
+| Command | Does |
+|---|---|
+| `axon config` | Creates the file if it is missing and prints where it is |
+| `axon config edit` | The same, then opens it in `$VISUAL` or `$EDITOR` |
+| `axon config show` | Prints the settings in effect (file plus environment) and the mistakes in the file |
+| `axon config path` | Prints the path |
+| `axon --help`, `axon --version` | Usage, version |
+ [`assets/config.example`](assets/config.example) lists them all, commented, and `scripts/install.sh` puts a
+copy in `share/doc/axon/`. **`Ctrl+Shift+R` applies the file to the running window.** A mistake is printed to stderr
+with its line number and skipped; a number out of range is clamped.
+
+```toml
+[font]
+family = "JetBrains Mono"   # a family name, or the path of a .ttf / .otf
+size = 15                   # pixels, 6 to 96
+weight = 400                # 100 thin ... 900 black (synthesized for now)
+bold = true                 # bold text at weight + 300; false draws it regular
+letter_spacing = 0          # extra pixels between letters, -8 to 32
+line_height = 1.0           # multiple of the font's own height, 0.8 to 3
+
+[window]
+opacity = 0.88              # 0.3 to 1
+```
+
+The file is a small subset of TOML read by our own parser (`src/config.rs`): sections, `key = value`, `#` comments,
+strings, numbers and booleans. The Weight is synthesized because the font reader (`fontdue`) cannot read the variable
+axis of a font like `JetBrainsMono[wght].ttf`; the own font reader (task 12) will use the real axis.
+
+### Environment variables (win over the file)
 
 | Variable | Default | Description |
 |---|---|---|
@@ -91,25 +144,25 @@ Measured with [`scripts/bench.sh`](scripts/bench.sh) (`--clean` adds a cold buil
 can move size or speed** (rule in `CLAUDE.md`); older numbers stay in the history table.
 
 Machine: AMD Ryzen 5 5600H (12 threads) + RTX 3050 Mobile, Ubuntu, kernel 7.0.0-44, GNOME Shell 50.1 on Wayland.
-Last measured: 2026-11-23, on top of `b30bc13` plus the JetBrains Mono default, the stage C input work, the sharper text, the own shadow and the continuous glass.
+Last measured: 2026-11-24, on top of `02c3490` plus mouse reporting, the config file with the `axon config` command, the settings screen and the lost-frame watchdog (the cold build time is from `02c3490`).
 
 **Build**
 
 | Binary | Cold release build |
 |---|---|
-| 7.0 MiB (7,366,560 bytes) | 96 s |
+| 7.2 MiB (7,498,904 bytes) | 96 s |
 
 **Idle memory and CPU** (`AXON_BACKEND` selects the backend; `wl` is the own Wayland client with the CPU renderer and the
 default on Wayland, `winit` is the `winit` + `wgpu` fallback)
 
 | Backend | Font | RSS | PSS | Private (anon) | CPU |
 |---|---|---|---|---|---|
-| `wl` | JetBrains Mono (default) | **13 MB** | 9 MB | 6 MB | 0 ticks / 3 s |
-| `wl` | DejaVu Sans Mono | 19 MB | 15 MB | 11 MB | 0 ticks / 3 s |
-| `wl` | Cascadia Mono NF | 55 MB | 51 MB | 47 MB | 0 ticks / 3 s |
-| `winit` | JetBrains Mono (default) | 149 MB | 58 MB | 32 MB | 0 ticks / 3 s |
-| `winit` | DejaVu Sans Mono | 155 MB | 64 MB | 37 MB | 0 ticks / 3 s |
-| `winit` | Cascadia Mono NF | 191 MB | 101 MB | 74 MB | 0 ticks / 3 s |
+| `wl` | JetBrains Mono (default) | **15 MB** | 10 MB | 6 MB | 0 ticks / 3 s |
+| `wl` | DejaVu Sans Mono | 20 MB | 15 MB | 11 MB | 0 ticks / 3 s |
+| `wl` | Cascadia Mono NF | 58 MB | 53 MB | 49 MB | 0 ticks / 3 s |
+| `winit` | JetBrains Mono (default) | 149 MB | 56 MB | 32 MB | 0 ticks / 3 s |
+| `winit` | DejaVu Sans Mono | 155 MB | 60 MB | 37 MB | 0 ticks / 3 s |
+| `winit` | Cascadia Mono NF | 192 MB | 96 MB | 74 MB | 0 ticks / 3 s |
 
 The idle target is under 50 MB of RSS. `wl` meets it with the default font; a Nerd Font such as Cascadia Mono NF costs
 ~45 MB inside `fontdue` (it parses every glyph), which the own font reader will remove. The `winit` backend cannot meet
@@ -119,8 +172,8 @@ the target: the Vulkan loader and the drivers map ~94 MB.
 
 | Backend | Time | RSS afterwards |
 |---|---|---|
-| `wl` | 1.75 s | 39 MB |
-| `winit` | 1.32 s | 174 MB |
+| `wl` | 1.72 s | 43 MB |
+| `winit` | 1.32 s | 173 MB |
 
 Not measured yet: startup time, input latency, and a comparison with Alacritty, Ghostty and foot (not installed here).
 
@@ -128,6 +181,11 @@ Not measured yet: startup time, input latency, and a comparison with Alacritty, 
 
 | Date | Change | Binary | Idle RSS `winit` | Idle RSS `wl` |
 |---|---|---|---|---|
+| 2026-11-24 | Watchdog: a redraw stuck on a lost frame callback or buffer release goes on after 250 ms (suspend and resume froze the window) | 7,498,904 B | 146 MB | 15 MB |
+| 2026-11-23 | Settings screen: numbers can be typed into boxes | 7,499,608 B | 149 MB | 14 MB |
+| 2026-11-23 | Settings screen (`settings.rs`, gear, sfnt reader, `config::save`); +5 MB RSS while it is open | 7,483,864 B | 150 MB | 14 MB |
+| 2026-11-23 | Config file (`config.rs`): font family, size, weight, letter spacing, line height, opacity; `axon config` creates it, `Ctrl+Shift+R` reloads | 7,409,792 B | 150 MB | 14 MB |
+| 2026-11-23 | Mouse reporting (`mouse.rs`: modes 1000/1002/1003, SGR, UTF-8, classic) | 7,370,048 B | 149 MB | 14 MB |
 | 2026-11-23 | Continuous glass (no title pane, sheen or rim gradient), background-coloured cells are glass | 7,366,560 B | 149 MB | 13 MB |
 | 2026-11-23 | Own window shadow (margin, window geometry, input region), opacity 0.88, design board | 7,366,064 B | 149 MB | 14 MB |
 | 2026-11-23 | Sharper text (plain source-over, coverage contrast) and pixel-aligned buttons | 7,362,960 B | 155 MB | 14 MB |
@@ -179,9 +237,9 @@ Plan, decisions (ADRs), risks and measurements live in the knowledge tree at
 
 ## Status and known limitations
 
-- Mouse events are not yet sent to applications (vim/tmux with mouse); selection is local.
+- Mouse reports reach applications on the `wl` backend only; the `winit` fallback keeps local selection.
 - Synthesized bold; no italics or ligatures; no color emoji.
-- No config file: environment variables only (see the roadmap in `axon-architecture`).
+- Settings: fonts and opacity only (settings screen or `config.toml`); colours, shortcuts and themes are not configurable yet. The weight is synthesized.
 - Tested only on Linux/Wayland.
 
 ## License

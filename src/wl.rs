@@ -831,6 +831,15 @@ impl Wl {
         }
     }
 
+    /// The compositor owes us a frame callback or a buffer release and has been silent too long (it
+    /// drops them across a suspend, or while the window is hidden): forget both so drawing can go on.
+    pub fn give_up_waiting(&mut self) {
+        self.frame_pending = false;
+        for s in &mut self.slots {
+            s.busy = false;
+        }
+    }
+
     /// A `w` x `h` framebuffer to draw into, holding what was last presented, or `None` while the
     /// compositor still holds every buffer (wait for its `release` and ask again).
     ///

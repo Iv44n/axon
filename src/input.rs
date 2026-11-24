@@ -107,7 +107,7 @@ fn text_bytes(ev: &KeyEvent, m: ModifiersState) -> Option<Vec<u8>> {
 // ------------------------------------------------------------ xkb keys --
 
 /// X11 keysyms the terminal cares about (`X11/keysymdef.h`).
-mod sym {
+pub mod sym {
     pub const BACKSPACE: u32 = 0xff08;
     pub const TAB: u32 = 0xff09;
     pub const RETURN: u32 = 0xff0d;

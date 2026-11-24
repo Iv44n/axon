@@ -11,10 +11,11 @@ If a task needs design notes, create `plan/<task>.md` and link it from its line.
 
 - [ ] 1. First full measurement against Alacritty, Ghostty and foot → [protocol](../performance/protocol.md); results in [measurements](../performance/measurements.md). axon alone measured 2026-11-22 (idle CPU, RAM, 100 MB `cat`); the other terminals are not installed here; startup and latency pending
 - [x] 2. Per-line damage tracking with `Term::damage` and partial `write_buffer` → [0005](../decisions/0005-damage-tracking.md) (done 2026-11-22)
-- [ ] 3. `config.rs` with an own minimal parser (no `serde`/`toml`, [0010](../decisions/0010-own-implementations.md)) to replace the loose `env::var` calls → `axon-architecture` skill, step 1
+- [x] 3a. Settings screen for the font settings: gear / `Ctrl+,`, live preview, Save keeps the file's comments ([0017](../decisions/0017-settings-screen.md), done 2026-11-23)
+- [~] 3. `config.rs` with an own minimal parser (no `serde`/`toml`, [0010](../decisions/0010-own-implementations.md)): done 2026-11-23 for fonts and opacity ([0016](../decisions/0016-config-file-font-settings.md)); colours, shortcuts and themes still to come → `axon-architecture` skill, step 1
 - [x] 4. `view.rs`: move `build()` out of `main.rs` (done 2026-11-22, shared by both renderers)
 - [x] 5. `session.rs`: `Term` and the PTY thread behind `session::spawn` (done 2026-11-22; the `Proxy` stays per backend)
-- [ ] 6. xterm 1000/1006 mouse reporting (closes phase 4) → `axon-extend` skill
+- [x] 6. xterm 1000/1002/1003 mouse reporting with SGR, UTF-8 and classic encodings: `mouse.rs`, wired in `wlapp.rs` (done 2026-11-23; `winit` fallback has none) → `axon-extend` skill
 - [ ] 7. Decide whether inline images and a blinking cursor are requirements → [risks](../risks/INDEX.md)
 - [ ] 8. Tabs and panes: one `Session` per pane; the renderer does not change
 - [x] 9. Idle RAM target: the user accepted [0011](../decisions/0011-software-render-wl-shm.md) (software rendering on `wl_shm`; the graphics stack alone maps ~94 MB, the spike reached 8.7 MB without it) (done 2026-11-22)

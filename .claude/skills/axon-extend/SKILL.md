@@ -17,14 +17,17 @@ Before any change: read `axon-architecture` (dependency rules) and, if it touche
 Add it in `input.rs` (`encode_key`, a pure function of a resolved xkb key). Cover modifiers with the parameter `mods = 1+shift+2·alt+4·ctrl`. Add a unit test with the expected sequence.
 
 ## Config option
-1. Today: `std::env::var` in `State::new` (`AXON_*`). As it grows, create `config.rs` (see the roadmap) with `struct Config` + `Default`, loaded from `~/.config/axon/config.toml` by an own minimal parser (no `serde`/`toml`, see `knowledge/decisions/0010`).
-2. Never read config on the hot path; load it at startup and propagate it to `Gpu`/`State`.
+1. `config.rs` is the file (`~/.config/axon/config.toml`, own parser, [0016](../../../knowledge/decisions/0016-config-file-font-settings.md)). Add the field to `Config` / `FontCfg`, its range constant, a line in `apply`, a test in `config.rs`, and a commented line in `assets/config.example` and the README.
+2. Never read config on the hot path: it loads at startup and on `Ctrl+Shift+R` (`App::reload` in `wlapp.rs`); a setting that changes the glyph bitmaps goes through `Fonts` (`set_px` / `raster`), so tiles are rebuilt and the renderers stay unchanged.
+3. The environment variables win over the file (`env_overrides`).
+4. A setting the user should drag also gets a row in `settings.rs`: a `Row` variant (in `ALL`, `ROWS`, `label`, `range`), `Draft::get` / `set` / `text`, and a line in `changes()` with its file key. Its tests (`changes_lists_only_what_differs...`) need the new row.
+5. `axon config` writes `assets/config.example` as is (a test parses it with every line uncommented): keep it in step, and add the key to `describe` (`config show`).
 
 ## Color theme
 Edit only `palette.rs` (`FG`, `BG`, `CURSOR`, `SELECTION_BG`, the `ANSI` table) and the gradient/border in `fs_bg`. Follow `axon-design-language`. Check the contrast of `ANSI[0]`/`ANSI[8]` on `BG`.
 
 ## Mouse support for applications (vim, tmux)
-Check `TermMode::MOUSE_MODE` / `SGR_MOUSE`; if active, encode events in `input.rs` (`CSI < b ; x ; y M/m`) and **do not** start a selection (unless Shift is held).
+Done for the `wl` backend: `mouse.rs` is the pure encoder (`encode(mode, Event, Mods, col, row)`: modes 1000/1002/1003, SGR 1006, UTF-8 1005, classic), tested without a window. `wlapp.rs` calls it from `report_button`, `on_pointer_move` (only when the cell changes) and `on_scroll`, and starts no selection while a program has the mouse (Shift gives it back). To add an event, extend `mouse::Event` and its test.
 
 ## New event from the terminal (bell, notification, etc.)
 `TermEvent` arrives through `Ev::Term` in `user_event`. Add an arm there; keep the action off the PTY thread.

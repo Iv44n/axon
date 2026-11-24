@@ -29,7 +29,9 @@ use rustix::{
 use crate::{
     cell::pack,
     chrome::{self, EDGE_BOTTOM, EDGE_LEFT, EDGE_RIGHT, EDGE_TOP, Hit, Ui},
-    input, palette, session,
+    config::{self, Config, FontCfg},
+    input, mouse, palette, session,
+    settings::{self, Effect, Settings},
     soft::{Soft, Target},
     view::View,
     wl::{Event, Wl, cursor},
@@ -37,14 +39,18 @@ use crate::{
 };
 
 /// `BTN_LEFT` from `linux/input-event-codes.h`.
+/// How long a redraw may wait for the compositor's frame callback or buffer release before axon
+/// assumes it was lost (suspend and resume, a hidden window) and draws anyway.
+const STALL: Duration = Duration::from_millis(250);
 const BTN_LEFT: u32 = 0x110;
+const BTN_RIGHT: u32 = 0x111;
+const BTN_MIDDLE: u32 = 0x112;
 /// Two presses on the title bar closer than this many milliseconds maximize or restore.
 const DOUBLE_CLICK_MS: u32 = 400;
 /// Clicks on the grid closer than this select a word, then a line.
 const MULTI_CLICK_MS: u32 = 350;
 /// Lines per wheel notch.
 const WHEEL_LINES: f32 = 3.0;
-const DEFAULT_PX: f32 = 15.0;
 
 /// Keysyms the app's own shortcuts look at.
 const KS_PAGE_UP: u32 = 0xff55;
@@ -57,7 +63,7 @@ const KS_KP_0: u32 = 0xffb0;
 
 fn cursor_for(hit: Hit) -> u32 {
     match hit {
-        Hit::Close | Hit::Minimize | Hit::Maximize => cursor::POINTER,
+        Hit::Close | Hit::Minimize | Hit::Maximize | Hit::Settings => cursor::POINTER,
         Hit::Edge(e) => match e {
             EDGE_TOP => cursor::N_RESIZE,
             EDGE_BOTTOM => cursor::S_RESIZE,
@@ -128,11 +134,23 @@ struct App {
     rows: usize,
     cw: u32,
     ch: u32,
+    /// Current font size (zoomed) and the configured one, which Ctrl+0 returns to.
     base_px: f32,
+    cfg_px: f32,
+    /// The settings as loaded (file and environment), and the glass opacity on screen.
+    cfg: Config,
+    opacity: f32,
+    /// Since when a redraw has been waiting for the compositor (a frame callback or a free buffer).
+    waiting: Option<Instant>,
+    /// The settings screen, while it is open.
+    panel: Option<Box<Settings>>,
     dirty: bool,
     quit: bool,
     mouse: (f32, f32),
     selecting: bool,
+    /// The button a program is being told about (mouse reporting), and the cell last reported.
+    held: Option<u8>,
+    reported: (usize, usize),
     scroll_acc: f32,
     /// Time of the last press on the title bar, and of the last press on the grid with its click count.
     title_click: u32,
@@ -162,9 +180,10 @@ pub fn run() -> bool {
 
 impl App {
     fn new() -> std::io::Result<App> {
-        let base_px: f32 = std::env::var("AXON_FONT_SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_PX);
-        let opacity: f32 = std::env::var("AXON_OPACITY").ok().and_then(|v| v.parse().ok()).unwrap_or(chrome::OPACITY);
-        let mut soft = Soft::new(base_px, opacity);
+        let cfg = config::load();
+        let base_px = cfg.font.size;
+        let opacity = cfg.opacity.unwrap_or(chrome::OPACITY);
+        let mut soft = Soft::new(&cfg.font, opacity);
         soft.cursor_color = pack(palette::CURSOR.r, palette::CURSOR.g, palette::CURSOR.b, 255);
         soft.set_title("axon");
         let (cw, ch) = soft.cell();
@@ -221,10 +240,17 @@ impl App {
             cw,
             ch,
             base_px,
+            cfg_px: base_px,
+            cfg,
+            opacity,
+            panel: None,
             dirty: true,
+            waiting: None,
             quit: false,
             mouse: (0.0, 0.0),
             selecting: false,
+            held: None,
+            reported: (usize::MAX, 0),
             scroll_acc: 0.0,
             title_click: 0,
             grid_click: (0, 0),
@@ -233,6 +259,10 @@ impl App {
             delay,
         };
         app.set_geometry();
+        // A debugging aid: start with the settings screen open (screenshots, memory measurements).
+        if std::env::var_os("AXON_SETTINGS").is_some() {
+            app.toggle_settings();
+        }
         Ok(app)
     }
 
@@ -241,11 +271,17 @@ impl App {
             self.draw();
             self.wl.flush()?;
 
-            // Block until the compositor, the PTY thread or a held key needs us.
-            let timeout = self.repeat.as_ref().map(|r| {
-                let left = r.at.saturating_duration_since(Instant::now());
-                Timespec { tv_sec: left.as_secs() as i64, tv_nsec: left.subsec_nanos() as i64 }
-            });
+            // Block until the compositor, the PTY thread or a held key needs us; and, when a redraw is
+            // stuck waiting for the compositor, only until it is clear that it will not answer.
+            let now = Instant::now();
+            let timeout = [self.repeat.as_ref().map(|r| r.at), self.waiting.map(|t| t + STALL)]
+                .into_iter()
+                .flatten()
+                .min()
+                .map(|at| {
+                    let left = at.saturating_duration_since(now);
+                    Timespec { tv_sec: left.as_secs() as i64, tv_nsec: left.subsec_nanos() as i64 }
+                });
             let wake = self.proxy.wake.clone();
             let wl_fd = self.wl.fd();
             let mut fds = [PollFd::new(&wl_fd, PollFlags::IN), PollFd::new(wake.as_ref(), PollFlags::IN)];
@@ -266,24 +302,43 @@ impl App {
                 self.wl_event(ev);
             }
             self.tick_repeat();
+            if self.waiting.is_some_and(|t| t.elapsed() >= STALL) {
+                self.wl.give_up_waiting();
+                self.waiting = None;
+            }
         }
         Ok(())
     }
 
     /// Draws when something changed and the compositor has shown the previous frame.
     fn draw(&mut self) {
-        if !self.dirty || self.wl.frame_pending() {
+        if !self.dirty {
+            self.waiting = None;
+            return;
+        }
+        if self.wl.frame_pending() {
+            self.waiting.get_or_insert_with(Instant::now);
             return;
         }
         // The buffer is the window plus the margin its shadow is drawn in.
         let (ml, mt, mb) = chrome::margins(self.ui.maximized);
         let (w, h) = (self.w as usize + 2 * ml, self.h as usize + mt + mb);
-        let Some(fb) = self.wl.framebuffer(w, h) else { return };
+        let Some(fb) = self.wl.framebuffer(w, h) else {
+            self.waiting.get_or_insert_with(Instant::now);
+            return;
+        };
+        self.waiting = None;
         self.proxy.pending.store(false, Ordering::Release);
         self.soft.set_ui(self.ui);
+        if self.panel.is_some() {
+            self.soft.invalidate(); // the panel is painted over a complete grid, every time
+        }
         let mut t = self.term.lock();
-        self.view.build(&mut t, self.ui.focused, &mut Target { soft: &mut self.soft, fb, w, h });
+        self.view.build(&mut t, self.ui.focused, &mut Target { soft: &mut self.soft, fb: &mut *fb, w, h });
         drop(t);
+        if let Some(p) = &self.panel {
+            p.draw(fb, w, h, (ml, mt), (self.w, self.h), self.ui.maximized);
+        }
         self.wl.present();
         self.dirty = false;
     }
@@ -373,8 +428,20 @@ impl App {
                     self.dirty = true;
                 }
             }
-            Event::PointerButton { button: BTN_LEFT, pressed, time } => self.on_button(pressed, time),
-            Event::PointerButton { .. } => {}
+            Event::PointerButton { button, pressed, time } => {
+                let b = match button {
+                    BTN_LEFT => 0,
+                    BTN_MIDDLE => 1,
+                    BTN_RIGHT => 2,
+                    _ => return,
+                };
+                if self.panel.is_some() && b == 0 && self.panel_button(pressed) {
+                    return;
+                }
+                if !self.report_button(b, pressed) && b == 0 {
+                    self.on_button(pressed, time);
+                }
+            }
         }
     }
 
@@ -396,6 +463,111 @@ impl App {
             session::resize(&self.term, &self.pty, c, r, self.cw, self.ch);
         }
         self.dirty = true;
+    }
+
+    // ----------------------------------------------------------- settings --
+
+    fn toggle_settings(&mut self) {
+        if self.panel.is_some() {
+            self.close_settings(true);
+        } else {
+            self.selecting = false;
+            self.term.lock().selection = None;
+            let font = FontCfg { size: self.base_px, ..self.cfg.font.clone() };
+            self.panel = Some(Box::new(Settings::open(&font, self.opacity)));
+            self.repeat = None;
+            self.dirty = true;
+        }
+    }
+
+    /// Closes the screen; `restore` puts back what it opened with (Cancel, the gear, Ctrl+,).
+    fn close_settings(&mut self, restore: bool) {
+        let Some(p) = self.panel.take() else { return };
+        if restore {
+            self.apply(p.original());
+        }
+        self.soft.invalidate();
+        self.dirty = true;
+    }
+
+    /// Shows a draft on the window: fonts, spacing and opacity change in place.
+    fn apply(&mut self, d: &settings::Draft) {
+        self.base_px = d.font.size;
+        self.opacity = d.opacity;
+        self.soft.update_fonts(&d.font);
+        self.soft.set_opacity(d.opacity);
+        (self.cw, self.ch) = self.soft.cell();
+        self.relayout();
+    }
+
+    fn panel_effect(&mut self, e: Effect) {
+        match e {
+            Effect::None => {}
+            Effect::Redraw => self.dirty = true,
+            Effect::Apply => {
+                if let Some(d) = self.panel.as_ref().map(|p| p.draft.clone()) {
+                    self.apply(&d);
+                }
+            }
+            Effect::Save | Effect::Cancel => {
+                // The key that did this may still be held: it must not go on to the shell.
+                self.repeat = None;
+                if e == Effect::Save {
+                    self.save_settings();
+                } else {
+                    self.close_settings(true);
+                }
+            }
+        }
+    }
+
+    fn save_settings(&mut self) {
+        let Some(d) = self.panel.as_mut().map(|p| p.commit().clone()) else { return };
+        self.apply(&d); // a number typed just before Save is on the window too
+        let Some(p) = self.panel.as_mut() else { return };
+        match config::save(&p.changes()) {
+            Ok(_) => {
+                p.saved();
+                self.cfg.font = p.draft.font.clone();
+                self.cfg.opacity = Some(p.draft.opacity);
+                self.cfg_px = p.draft.font.size;
+                self.close_settings(false);
+            }
+            Err(e) => {
+                p.notice = Some(format!("not saved: {e}"));
+                self.dirty = true;
+            }
+        }
+    }
+
+    /// A primary-button press or release while the screen is open. Returns whether the screen took
+    /// it: presses over the grid always do; the title bar and the window edges keep working.
+    fn panel_button(&mut self, pressed: bool) -> bool {
+        let Some(p) = self.panel.as_mut() else { return false };
+        if !pressed {
+            p.release();
+            return false;
+        }
+        if self.hover != Hit::Client {
+            return false;
+        }
+        let e = p.press(self.mouse.0, self.mouse.1, self.w, self.h);
+        self.panel_effect(e);
+        true
+    }
+
+    /// Reads the configuration again (Ctrl+Shift+R): fonts, spacing and opacity change in place.
+    fn reload(&mut self) -> bool {
+        let cfg = config::load();
+        self.cfg = cfg.clone();
+        self.opacity = cfg.opacity.unwrap_or(chrome::OPACITY);
+        self.base_px = cfg.font.size;
+        self.cfg_px = cfg.font.size;
+        self.soft.set_fonts(&cfg.font);
+        self.soft.set_opacity(cfg.opacity.unwrap_or(chrome::OPACITY));
+        (self.cw, self.ch) = self.soft.cell();
+        self.relayout();
+        true
     }
 
     fn zoom(&mut self, px: f32) -> bool {
@@ -434,6 +606,15 @@ impl App {
     /// Runs a shortcut or sends the key to the shell. Returns whether anything was done.
     fn handle_key(&mut self, k: &Key) -> bool {
         let m = k.mods;
+        if m.ctrl && !m.alt && !m.shift && k.sym == 0x2c {
+            self.toggle_settings();
+            return true;
+        }
+        if let Some(p) = self.panel.as_mut() {
+            let e = p.key(k);
+            self.panel_effect(e);
+            return true;
+        }
         let letter = char::from_u32(k.sym).map(|c| c.to_ascii_lowercase());
         if m.ctrl && m.shift {
             match letter {
@@ -443,6 +624,7 @@ impl App {
                     self.quit = true;
                     return true;
                 }
+                Some('r') => return self.reload(),
                 _ => {}
             }
         }
@@ -450,7 +632,7 @@ impl App {
             match k.sym {
                 0x3d | 0x2b | KS_KP_ADD => return self.zoom(self.base_px + 1.0),
                 0x2d | KS_KP_SUBTRACT => return self.zoom(self.base_px - 1.0),
-                0x30 | KS_KP_0 => return self.zoom(DEFAULT_PX),
+                0x30 | KS_KP_0 => return self.zoom(self.cfg_px),
                 _ => {}
             }
         }
@@ -505,16 +687,59 @@ impl App {
 
     // ------------------------------------------------------------ pointer --
 
-    /// The grid cell under the pointer, and which half of it.
-    fn cell_at(&self) -> (Point, Side) {
+    /// The viewport cell under the pointer `(col, row)`, and which half of it.
+    fn viewport_cell(&self) -> (usize, usize, Side) {
         let (cw, ch) = (self.cw as f32, self.ch as f32);
         let fx = ((self.mouse.0 - self.soft.pad as f32) / cw).max(0.0);
         let fy = ((self.mouse.1 - self.soft.top as f32) / ch).max(0.0);
         let col = (fx as usize).min(self.cols - 1);
         let row = (fy as usize).min(self.rows - 1);
-        let side = if fx.fract() < 0.5 { Side::Left } else { Side::Right };
+        (col, row, if fx.fract() < 0.5 { Side::Left } else { Side::Right })
+    }
+
+    /// The terminal point under the pointer, and which half of its cell.
+    fn cell_at(&self) -> (Point, Side) {
+        let (col, row, side) = self.viewport_cell();
         let off = self.term.lock().grid().display_offset();
         (viewport_to_point(off, Point::new(row, Column(col))), side)
+    }
+
+    /// Whether the pointer feeds the program instead of selecting: it asked for reports, and Shift
+    /// (the usual way out, to select text anyway) is not held.
+    fn reporting(&mut self) -> bool {
+        let shift = self.xkb.as_ref().is_some_and(|x| x.mods().shift);
+        !shift && self.panel.is_none() && mouse::reporting(*self.term.lock().mode())
+    }
+
+    /// Sends `ev` at the cell under the pointer. Returns whether a report went out.
+    fn report(&mut self, ev: mouse::Event) -> bool {
+        let (col, row, _) = self.viewport_cell();
+        let mods = self.xkb.as_ref().map(|x| x.mods()).unwrap_or_default();
+        let mode = *self.term.lock().mode();
+        let Some(r) = mouse::encode(mode, ev, mods, col, row) else { return false };
+        self.reported = (col, row);
+        self.pty.notify(r.bytes().to_vec());
+        true
+    }
+
+    /// A button press or release in mouse-reporting mode. Returns whether the program took it.
+    fn report_button(&mut self, b: u8, pressed: bool) -> bool {
+        if pressed {
+            if self.hover != Hit::Client || self.held.is_some() || !self.reporting() {
+                return false;
+            }
+            self.held = Some(b);
+            self.term.lock().selection = None;
+            self.dirty = true;
+            self.report(mouse::Event::Press(b));
+            true
+        } else if self.held == Some(b) {
+            self.held = None;
+            self.report(mouse::Event::Release(b));
+            true
+        } else {
+            false
+        }
     }
 
     /// `(x, y)` is in surface pixels; everything else here is in window pixels.
@@ -522,6 +747,32 @@ impl App {
         let (ml, mt, _) = chrome::margins(self.ui.maximized);
         let (x, y) = (x - ml as f32, y - mt as f32);
         self.mouse = (x, y);
+        if let Some(p) = self.panel.as_mut() {
+            let was = p.hover;
+            let e = p.pointer(x, y, self.w, self.h);
+            if e != Effect::None {
+                self.panel_effect(e);
+            }
+            let p = self.panel.as_ref().map(|p| p.hover);
+            if p != Some(was) {
+                let shape = match p {
+                    Some(settings::Hit::Value(_)) => cursor::TEXT,
+                    Some(settings::Hit::Panel | settings::Hit::Outside) | None => cursor_for(self.hover),
+                    Some(_) => cursor::POINTER,
+                };
+                self.wl.set_cursor(shape);
+            }
+        }
+        if self.held.is_some() || (self.hover == Hit::Client && self.reporting()) {
+            // Programs hear about a move only when it crosses into another cell.
+            let (col, row, _) = self.viewport_cell();
+            if (col, row) != self.reported {
+                self.report(mouse::Event::Move(self.held));
+            }
+            if self.held.is_some() {
+                return;
+            }
+        }
         if self.selecting {
             let (p, side) = self.cell_at();
             if let Some(sel) = self.term.lock().selection.as_mut() {
@@ -551,13 +802,14 @@ impl App {
                     Hit::Close => self.quit = true,
                     Hit::Minimize => self.wl.minimize(),
                     Hit::Maximize => self.wl.toggle_maximized(),
+                    Hit::Settings => self.toggle_settings(),
                     _ => {}
                 }
             }
             return;
         }
         match self.hover {
-            Hit::Close | Hit::Minimize | Hit::Maximize => {
+            Hit::Close | Hit::Minimize | Hit::Maximize | Hit::Settings => {
                 self.ui.down = true;
                 self.dirty = true;
             }
@@ -591,6 +843,9 @@ impl App {
     }
 
     fn on_scroll(&mut self, pixels: f32, clicks: i32) {
+        if self.panel.is_some() {
+            return;
+        }
         // Wayland counts down as positive; the terminal's `Scroll::Delta` counts up into history.
         self.scroll_acc -= if clicks != 0 { clicks as f32 * WHEEL_LINES } else { pixels / self.ch as f32 };
         let lines = self.scroll_acc.trunc() as i32;
@@ -598,6 +853,12 @@ impl App {
             return;
         }
         self.scroll_acc -= lines as f32;
+        if self.hover == Hit::Client && self.reporting() {
+            for _ in 0..lines.unsigned_abs() {
+                self.report(mouse::Event::Wheel(lines > 0));
+            }
+            return;
+        }
         let mode = *self.term.lock().mode();
         if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
             let k = match (lines > 0, mode.contains(TermMode::APP_CURSOR)) {

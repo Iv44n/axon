@@ -33,7 +33,7 @@ alive until stage E, so the app never stops working.
   `xdg_surface`, `xdg_toplevel`, `wl_surface` frame callbacks. The window shows the `Soft` framebuffer
   from a `memfd`; a second buffer only exists if the compositor keeps the first one until the next attach.
 - **Loop:** `wlapp.rs` runs the session, `View`, `Soft` and `Wl` in one blocking `poll` on the socket
-  and an `eventfd` the PTY thread signals; frames are drawn on the frame callback. Select it with
+  and an `eventfd` the PTY thread signals; frames are drawn on the frame callback (if it or a buffer release has not come in 250 ms, `STALL` in `wlapp.rs`, the loop assumes it was lost and draws anyway: Mutter dropped them across a laptop suspend and the window froze, 2026-11-24). Select it with
   `AXON_BACKEND=wl`; `winit` stays the default until stage E.
 - **Also done:** `view.rs` (grid -> cells for any `Backend`) and `session.rs` (Term + PTY, grid size),
   tasks 4 and 5 in next-steps; the GPU output stayed byte-identical.
@@ -47,8 +47,8 @@ alive until stage E, so the app never stops working.
   `poll` loop, keysym encoder in `input.rs` (`encode_key`), shortcuts, wheel (`axis` + `axis_discrete`), selection
   (click, word, line), clipboard through `wl_data_device` (replaces `arboard` on this path), OSC 52 store only (reads are refused on purpose).
   `libxkbcommon` is loaded with `dlopen`; the backend is the default on Wayland and falls back to `winit`.
-- **Left:** own keymap parser (then no `libxkbcommon`), `text-input-v3` for IMEs, primary selection, mouse reporting
-  (task 6), drag and drop. The plan below is the original scope.
+- **Left:** own keymap parser (then no `libxkbcommon`), `text-input-v3` for IMEs, primary selection, drag and drop.
+  Mouse reporting is done (`mouse.rs`, 2026-11-23). The plan below is the original scope.
 - **Pointer done 2026-11-22** (for the window chrome, [0012](../decisions/0012-glass-chrome-black-white.md)): `wl_seat`
   + `wl_pointer` (enter, leave, motion, button) and `wp_cursor_shape_v1` in `wl.rs`; `wlapp.rs` hit-tests with
   `chrome::hit` for the title-bar buttons, move, double-click maximize and resize edges. Still missing: wheel

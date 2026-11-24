@@ -21,7 +21,9 @@ use alacritty_terminal::{
 
 use crate::{
     chrome::{self, Ui},
+    config::FontCfg,
     palette, session,
+    settings::{self, Settings},
     soft::{Soft, Target},
     view::View,
 };
@@ -65,6 +67,9 @@ struct Scene {
     group: &'static str,
     ui: Ui,
     opacity: f32,
+    font: FontCfg,
+    /// Open the settings screen over the grid, with this row selected and this under the pointer.
+    settings: Option<(usize, settings::Hit, &'static str)>,
     title: &'static str,
     input: &'static str,
     /// Select `len` cells of this grid line, starting at column 1.
@@ -74,7 +79,19 @@ struct Scene {
 const TITLE: &str = "~/lab/apps/axon: cargo build --release";
 
 fn scenes() -> Vec<Scene> {
-    let base = |name, label, group, ui| Scene { name, label, group, ui, opacity: OPACITY, title: TITLE, input: SHELL, select: None };
+    let base = |name, label, group, ui| Scene {
+        name,
+        label,
+        group,
+        ui,
+        opacity: OPACITY,
+        font: FontCfg::sized(PX),
+        settings: None,
+        title: TITLE,
+        input: SHELL,
+        select: None,
+    };
+    let font = |weight, letter_spacing, line_height| FontCfg { weight, letter_spacing, line_height, ..FontCfg::sized(PX) };
     vec![
         base("rest", "Focused, at rest", "window", Ui::IDLE),
         base("hover", "Pointer over the buttons (close)", "states", Ui { hover: 1, ..Ui::IDLE }),
@@ -85,12 +102,21 @@ fn scenes() -> Vec<Scene> {
         Scene { opacity: 0.80, ..base("opacity-80", "Opacity 0.80", "opacity", Ui::IDLE) },
         Scene { opacity: 0.88, ..base("opacity-88", "Opacity 0.88 (default)", "opacity", Ui::IDLE) },
         Scene { opacity: 0.94, ..base("opacity-94", "Opacity 0.94", "opacity", Ui::IDLE) },
+        base("gear-hover", "Pointer over the settings gear", "states", Ui { hover: 4, ..Ui::IDLE }),
+        Scene { settings: Some((0, settings::Hit::Panel, "")), font: FontCfg { family: Some("JetBrains Mono".into()), ..FontCfg::sized(PX) }, ..base("settings", "Settings screen", "settings", Ui::IDLE) },
+        Scene { settings: Some((2, settings::Hit::Slider(settings::Row::Weight, 0.4), "")), ..base("settings-slider", "Dragging the weight slider", "settings", Ui::IDLE) },
+        Scene { settings: Some((4, settings::Hit::Panel, "-1.5")), ..base("settings-typing", "Typing a number into a box", "settings", Ui::IDLE) },
+        Scene { settings: Some((6, settings::Hit::Save, "")), font: font(500, 1.0, 1.0), opacity: 0.80, ..base("settings-save", "Pointer over Save, other values changed", "settings", Ui::IDLE) },
+        Scene { font: font(300, 0.0, 1.0), ..base("font-light", "Weight 300 (light)", "font", Ui::IDLE) },
+        Scene { font: font(500, 0.0, 1.0), ..base("font-medium", "Weight 500 (medium)", "font", Ui::IDLE) },
+        Scene { font: font(400, 1.0, 1.0), ..base("font-spaced", "Letter spacing +1 px", "font", Ui::IDLE) },
+        Scene { font: font(400, 0.0, 1.3), ..base("font-tall", "Line height 1.3", "font", Ui::IDLE) },
     ]
 }
 
 /// Renders a scene; returns the frame (premultiplied `Argb8888`) and its size.
 fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
-    let mut soft = Soft::new(PX, s.opacity);
+    let mut soft = Soft::new(&s.font, s.opacity);
     soft.cursor_color = crate::cell::pack(palette::CURSOR.r, palette::CURSOR.g, palette::CURSOR.b, 255);
     soft.set_title(s.title);
     soft.set_ui(s.ui);
@@ -108,6 +134,16 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
     let (w, h) = (W as usize + 2 * ml, H as usize + mt + mb);
     let mut fb = vec![0u32; w * h];
     View::new().build(&mut term, s.ui.focused, &mut Target { soft: &mut soft, fb: &mut fb, w, h });
+    if let Some((sel, hover, typing)) = s.settings {
+        // Fixed fonts, not whatever is installed: the board must look the same on every machine.
+        let families = vec![("DejaVu Sans Mono".to_string(), "/x/a.ttf".into()), ("JetBrains Mono".to_string(), "/x/b.ttf".into())];
+        let mut panel = Settings::new(&s.font, s.opacity, families);
+        (panel.sel, panel.hover) = (sel, hover);
+        for c in typing.chars() {
+            panel.key(&crate::xkb::Key { text: c.to_string(), ..Default::default() });
+        }
+        panel.draw(&mut fb, w, h, (ml, mt), (W, H), s.ui.maximized);
+    }
     (fb, w, h)
 }
 
@@ -129,7 +165,7 @@ fn incremental_repaint_matches_a_full_one() {
         let (cols, rows) = session::grid_size(W, H, cw, ch, s.pad, s.top);
         Term::new(Config::default(), &session::Size { cols, rows }, VoidListener)
     };
-    let mut soft = Soft::new(PX, OPACITY);
+    let mut soft = Soft::new(&FontCfg::sized(PX), OPACITY);
     let mut term = new(&soft);
     let mut view = View::new();
     let mut fb = Vec::new();
@@ -146,7 +182,7 @@ fn incremental_repaint_matches_a_full_one() {
         soft.set_ui(ui);
         view.build(&mut term, ui.focused, &mut Target { soft: &mut soft, fb: &mut fb, w, h });
 
-        let mut fresh = Soft::new(PX, OPACITY);
+        let mut fresh = Soft::new(&FontCfg::sized(PX), OPACITY);
         let mut fresh_term = new(&fresh);
         Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::new().advance(&mut fresh_term, input.as_bytes());
         fresh.set_title(title);
@@ -171,7 +207,7 @@ fn background_coloured_cells_are_glass() {
     let (glass, painted) = (paint("          \r\n          "), paint(&explicit));
     let diff = glass.iter().zip(&painted).filter(|(a, b)| a != b).count();
     // Only the red row differs (10 cells), and no pixel of the background-coloured row.
-    let (cw, ch) = Soft::new(PX, OPACITY).cell();
+    let (cw, ch) = Soft::new(&FontCfg::sized(PX), OPACITY).cell();
     assert_eq!(diff, (10 * cw * ch) as usize);
 }
 
@@ -198,7 +234,7 @@ fn frames() {
 fn tokens(frames: &str) -> String {
     let hex = |c: alacritty_terminal::vte::ansi::Rgb| format!("\"#{:02x}{:02x}{:02x}\"", c.r, c.g, c.b);
     let ansi: Vec<String> = (0..16).map(|i| hex(palette::by_index(i))).collect();
-    let soft = Soft::new(PX, OPACITY);
+    let soft = Soft::new(&FontCfg::sized(PX), OPACITY);
     let (cw, ch) = soft.cell();
     let stamp = std::env::var("AXON_DESIGN_STAMP").unwrap_or_default();
     format!(

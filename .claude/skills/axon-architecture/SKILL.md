@@ -33,6 +33,9 @@ poll wakes wlapp ─► View::build ─► soft.rs rows ─► wl_shm buffer ─
 | `soft.rs` | CPU renderer into an `Argb8888` framebuffer; the replacement for `gpu.rs` | `cell`, `chrome`, `font`, `view` (trait only) |
 | `chrome.rs` | window frame on the CPU: glass look, rounded corners, title bar, buttons and shadow per pixel (buffer = window + `margins`), `hit` testing in window pixels, `Ui` state | — |
 | `design.rs` | tests only: design board frames and tokens (`scripts/design.sh` → `design/board.html`), own PNG encoder, the incremental-equals-full repaint check | `soft`, `view`, `session`, `chrome`, `palette` |
+| `settings.rs` | the settings screen: modal glass panel (state, layout, hit testing, keys, painting over a finished frame); own 13 px `Fonts` only while open | `chrome`, `config` (types), `font`, `input::sym`, `xkb::Key` |
+| `config.rs` | settings file (`config.toml`), own parser, `FontCfg`, env overrides; read at startup and on reload | — |
+| `mouse.rs` | mouse reports for programs (xterm 1000/1002/1003; SGR, UTF-8, classic): pure `encode`, own tests | `xkb` (`Mods`), alacritty (`TermMode`) |
 | `view.rs` | grid -> cells: `View::build(term, focused, &mut impl Backend)`, damage, cursor and selection rows | `cell`, `palette`, alacritty |
 | `session.rs` | `Term` + PTY thread (`spawn`, `resize`), `grid_size` | alacritty |
 | `wl.rs` | own Wayland client: wire protocol, `xdg_toplevel`, `wl_shm` buffers, frame callbacks, `wl_seat` pointer + keyboard, cursor shape, `wl_data_device` clipboard | `rustix` |
@@ -70,7 +73,7 @@ Recommended extraction order:
 
 Planned features and where they live:
 - Tabs/panes: one `Session` per pane; `view` composes several into one grid; the renderer does not change.
-- Mouse reporting (xterm 1000/1006): `input.rs` (encoding) + `app` (capture).
+- Mouse reporting (xterm 1000/1006): `mouse.rs` (encoding, done) + `wlapp.rs` (capture).
 - Ligatures/color emoji: `axon-render` (second RGBA atlas); `Cell` gains a flag bit.
 - Scrollback search, hyperlinks (OSC 8): `view` (highlighting) + `session` (queries to `Term`).
 - Cross-platform: only `app` (winit) and `session` (`tty` already abstracts Windows/Unix). `wayland` in

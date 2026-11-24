@@ -31,6 +31,7 @@ DEST="${DESTDIR:-}$PREFIX"
 BIN="$DEST/bin/axon"
 ICON="$DEST/share/icons/hicolor/scalable/apps/axon.svg"
 DESKTOP="$DEST/share/applications/axon.desktop"
+CONF="$DEST/share/doc/axon/config.example"
 
 refresh_caches() {
   # Best effort: the launcher finds the entry without these, only a little later.
@@ -41,7 +42,7 @@ refresh_caches() {
 }
 
 if [ "$UNINSTALL" = 1 ]; then
-  rm -fv "$BIN" "$ICON" "$DESKTOP"
+  rm -fv "$BIN" "$ICON" "$DESKTOP" "$CONF"
   refresh_caches
   echo "axon removed from $PREFIX (your fonts and settings were not touched)."
   exit 0
@@ -58,6 +59,7 @@ fi
 
 install -Dm755 target/release/axon "$BIN"
 install -Dm644 assets/axon.svg "$ICON"
+install -Dm644 assets/config.example "$CONF"
 
 # The Exec line must be an absolute path (the launcher has no PATH of ours); quote it if it has spaces.
 exec_path="$PREFIX/bin/axon"
@@ -83,6 +85,7 @@ echo "Installed axon $(grep -m1 '^version' Cargo.toml | cut -d'"' -f2) under $PR
 echo "  $BIN"
 echo "  $DESKTOP"
 echo "  $ICON"
+echo "  $CONF   (copy it to ~/.config/axon/config.toml to change fonts and opacity)"
 
 case ":$PATH:" in
   *":$PREFIX/bin:"*) ;;

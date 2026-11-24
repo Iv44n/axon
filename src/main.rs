@@ -1,12 +1,15 @@
 //! axon — minimalist GPU terminal.
 mod cell;
 mod chrome;
+mod config;
 mod design;
 mod font;
 mod gpu;
 mod input;
+mod mouse;
 mod palette;
 mod session;
+mod settings;
 mod soft;
 mod view;
 mod wl;
@@ -42,6 +45,7 @@ use winit::{
 };
 
 use cell::pack;
+use config::FontCfg;
 use gpu::Gpu;
 use view::View;
 
@@ -113,10 +117,12 @@ impl State {
             .with_decorations(decorations);
         let window = Arc::new(el.create_window(attrs).expect("window"));
 
-        let base_px: f32 = std::env::var("AXON_FONT_SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(15.0);
-        let opacity: f32 = std::env::var("AXON_OPACITY").ok().and_then(|v| v.parse().ok()).unwrap_or(0.93);
+        let cfg = config::load();
+        let base_px = cfg.font.size;
+        let opacity = cfg.opacity.unwrap_or(0.93);
         let scale = window.scale_factor() as f32;
-        let mut gpu = Gpu::new(window.clone(), el.owned_display_handle(), base_px * scale, opacity);
+        let font = FontCfg { size: base_px * scale, letter_spacing: cfg.font.letter_spacing * scale, ..cfg.font };
+        let mut gpu = Gpu::new(window.clone(), el.owned_display_handle(), &font, opacity);
         gpu.cursor_color = pack(palette::CURSOR.r, palette::CURSOR.g, palette::CURSOR.b, 255);
 
         let pending = Arc::new(AtomicBool::new(false));
@@ -410,6 +416,10 @@ impl ApplicationHandler<Ev> for App {
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(code) = config::command(&args) {
+        std::process::exit(code);
+    }
     // The own Wayland client by default; `winit` serves X11 until that has an own client, and
     // `AXON_BACKEND=winit` forces it.
     let backend = std::env::var("AXON_BACKEND")

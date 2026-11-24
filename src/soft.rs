@@ -11,6 +11,7 @@ use crate::cell::{
     Cell, Glyphs, MAX_TILES, T_BAR, T_BEAM, T_BOX, T_FIRST_GLYPH, T_STRIKE, T_UNDER, pack,
 };
 use crate::chrome::{self, REACH, TITLE_CLEAR, TITLE_H, Ui};
+use crate::config::FontCfg;
 use crate::font::{Fonts, GlyphTable, special_tiles};
 use crate::view::Backend;
 
@@ -42,9 +43,10 @@ pub struct Soft {
 }
 
 impl Soft {
-    pub fn new(font_px: f32, opacity: f32) -> Self {
+    pub fn new(cfg: &FontCfg, opacity: f32) -> Self {
+        let font_px = cfg.size;
         let mut s = Soft {
-            fonts: Fonts::new(font_px),
+            fonts: Fonts::new(cfg),
             glyphs: GlyphTable::new(),
             tiles: Vec::new(),
             next_tile: T_FIRST_GLYPH,
@@ -72,6 +74,39 @@ impl Soft {
     /// Rebuilds the glyph tiles for a new size (scale / font size change).
     pub fn set_font_px(&mut self, px: f32) {
         self.fonts.set_px(px);
+        self.reset_tiles(px);
+    }
+
+    /// Loads the fonts again from a new configuration (reload).
+    pub fn set_fonts(&mut self, cfg: &FontCfg) {
+        self.fonts = Fonts::new(cfg);
+        self.reset_tiles(cfg.size);
+    }
+
+    /// Applies a configuration: the font file is read again only when the family changed.
+    pub fn update_fonts(&mut self, cfg: &FontCfg) {
+        if self.fonts.family() == cfg.family.as_deref() {
+            self.fonts.reconfigure(cfg);
+            self.reset_tiles(cfg.size);
+        } else {
+            self.set_fonts(cfg);
+        }
+    }
+
+    /// The next frame repaints everything (an overlay was drawn over the grid, or taken away).
+    pub fn invalidate(&mut self) {
+        self.stale = true;
+    }
+
+    /// Changes the glass alpha (reload).
+    pub fn set_opacity(&mut self, opacity: f32) {
+        if opacity != self.opacity {
+            self.opacity = opacity;
+            self.stale = true;
+        }
+    }
+
+    fn reset_tiles(&mut self, px: f32) {
         self.glyphs.clear();
         self.next_tile = T_FIRST_GLYPH;
         self.pad = (px * 0.9).round() as u32;

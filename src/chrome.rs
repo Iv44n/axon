@@ -42,6 +42,8 @@ const BTN_R: f32 = 6.5;
 const BTN_X0: f32 = 20.5;
 const BTN_DX: f32 = 20.0;
 const BTN_CY: f32 = 19.5;
+/// The gear's centre is this far from the right edge of the window.
+const GEAR_FROM_RIGHT: f32 = 24.5;
 /// Grab zone inside a window edge, the one outside it (over the shadow), and the longer zone that
 /// turns an edge into a corner.
 const EDGE: f32 = 4.0;
@@ -62,18 +64,21 @@ pub enum Hit {
     Close,
     Minimize,
     Maximize,
+    /// The gear at the right end of the title bar: the settings screen.
+    Settings,
     Title,
     /// A resize edge or corner: `EDGE_*` bits.
     Edge(u32),
 }
 
 impl Hit {
-    /// 1..=3 for the buttons, 0 for everything else.
+    /// 1..=3 for the window buttons, 4 for the gear, 0 for everything else.
     pub fn button(self) -> u8 {
         match self {
             Hit::Close => 1,
             Hit::Minimize => 2,
             Hit::Maximize => 3,
+            Hit::Settings => 4,
             _ => 0,
         }
     }
@@ -147,6 +152,9 @@ pub fn hit(x: f32, y: f32, w: u32, h: u32, maximized: bool) -> Hit {
             return hit;
         }
     }
+    if (x - (w - GEAR_FROM_RIGHT)).hypot(y - BTN_CY) <= 11.0 {
+        return Hit::Settings;
+    }
     if y < TITLE_H as f32 { Hit::Title } else { Hit::Client }
 }
 
@@ -207,6 +215,8 @@ fn glyph(i: u8, px: f32, py: f32) -> f32 {
 
 /// The three buttons over `base`, at pixel centre `(px, py)`.
 fn buttons(mut base: P, px: f32, py: f32, ui: &Ui) -> P {
+    // Hovering one of the three shows the glyphs of all three; the gear is its own thing.
+    let group = (1..=3).contains(&ui.hover);
     if px > BTN_X0 + 2.0 * BTN_DX + BTN_R + 2.0 || (py - BTN_CY).abs() > BTN_R + 2.0 {
         return base;
     }
@@ -223,7 +233,8 @@ fn buttons(mut base: P, px: f32, py: f32, ui: &Ui) -> P {
         let alpha = match (ui.focused, ui.hover != 0, hovered, ui.down && hovered) {
             (_, _, true, true) => 0.62,
             (_, _, true, false) => 0.92,
-            (_, true, false, _) => 0.46,
+            (_, true, false, _) if group => 0.46,
+            (_, true, false, _) => 0.34,
             (true, false, false, _) => 0.34,
             (false, false, false, _) => 0.17,
         };
@@ -231,16 +242,46 @@ fn buttons(mut base: P, px: f32, py: f32, ui: &Ui) -> P {
         // A faint dark ring inside the disc gives it an edge.
         let ring = (1.0 - (-d).clamp(0.0, 1.0)) * cov;
         base = P::black(ring * 0.20).over(base);
-        if ui.hover != 0 {
+        if group {
             base = P::black(glyph(i, px, py) * 0.78).over(base);
         }
     }
     base
 }
 
+/// Coverage of the gear icon at offset `(dx, dy)` from its centre: a ring with eight teeth, 13 px wide.
+fn gear(dx: f32, dy: f32) -> f32 {
+    let r = dx.hypot(dy);
+    let ring = (0.5 - (r - 4.4)).clamp(0.0, 1.0) * (0.5 + (r - 2.4)).clamp(0.0, 1.0);
+    let tooth = (((8.0 * dy.atan2(dx)).cos() + 0.25) * 3.0).clamp(0.0, 1.0);
+    let teeth = tooth * (0.5 - (r - 6.6)).clamp(0.0, 1.0) * (0.5 + (r - 3.8)).clamp(0.0, 1.0);
+    ring.max(teeth)
+}
+
+/// The settings gear over `base` at window pixel `(px, py)`: a faint white icon, brighter on a
+/// round highlight when the pointer is over it.
+fn gear_button(base: P, px: f32, py: f32, wf: f32, ui: &Ui) -> P {
+    let (dx, dy) = (px - (wf - GEAR_FROM_RIGHT), py - BTN_CY);
+    if dx.abs() > 12.0 || dy.abs() > 12.0 {
+        return base;
+    }
+    let hovered = ui.hover == 4;
+    let mut p = base;
+    if hovered {
+        let d = dx.hypot(dy) - 11.0;
+        p = P::white(if ui.down { 0.20 } else { 0.12 } * (0.5 - d).clamp(0.0, 1.0)).over(p);
+    }
+    let alpha = match (hovered, ui.focused) {
+        (true, _) => 0.95,
+        (false, true) => 0.55,
+        (false, false) => 0.28,
+    };
+    P::white(alpha * gear(dx, dy)).over(p)
+}
+
 /// Signed distance from `(px, py)` to a `w` x `h` rectangle at the origin with corner radius `r`:
 /// negative inside.
-fn rounded_rect(px: f32, py: f32, w: f32, h: f32, r: f32) -> f32 {
+pub fn rounded_rect(px: f32, py: f32, w: f32, h: f32, r: f32) -> f32 {
     let qx = (px - w * 0.5).abs() - (w * 0.5 - r);
     let qy = (py - h * 0.5).abs() - (h * 0.5 - r);
     qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - r
@@ -281,6 +322,7 @@ pub fn pixel(x: usize, y: usize, w: usize, h: usize, opacity: f32, ui: &Ui) -> u
         p = P::white(OUTLINE * (1.5 + d).clamp(0.0, 1.0)).over(p);
     }
     p = buttons(p, px, py, ui);
+    p = gear_button(p, px, py, wf, ui);
 
     // The window over its own shadow (only its anti-aliased edge lets any through).
     let p = p.scale(cov);
@@ -376,6 +418,9 @@ mod tests {
         assert_eq!(h(40.0, 19.0), Hit::Minimize);
         assert_eq!(h(60.0, 19.0), Hit::Maximize);
         assert_eq!(h(400.0, 19.0), Hit::Title);
+        assert_eq!(h(800.0 - 24.5, 19.0), Hit::Settings);
+        assert_eq!(h(800.0 - 40.0, 19.0), Hit::Title);
+        assert_eq!(Hit::Settings.button(), 4);
         assert_eq!(h(400.0, 300.0), Hit::Client);
         assert_eq!(h(2.0, 300.0), Hit::Edge(EDGE_LEFT));
         assert_eq!(h(400.0, 598.0), Hit::Edge(EDGE_BOTTOM));
@@ -388,5 +433,31 @@ mod tests {
         assert_eq!(h(400.0, 605.0), Hit::Edge(EDGE_BOTTOM));
         assert_eq!(h(-5.0, -5.0), Hit::Edge(EDGE_TOP | EDGE_LEFT));
         assert_eq!(h(-20.0, 300.0), Hit::Client);
+    }
+
+    #[test]
+    fn the_gear_is_drawn_lights_up_on_hover_and_leaves_the_window_buttons_alone() {
+        let alpha = |ui: &Ui, x: usize, y: usize| {
+            let (ml, mt, _) = margins(ui.maximized);
+            let (bw, bh) = (WIN.0 + 2 * ml, WIN.1 + mt + margins(ui.maximized).2);
+            pixel(ml + x, mt + y, bw, bh, 0.88, ui) >> 24
+        };
+        let lum = |ui: &Ui, x: usize, y: usize| {
+            let (ml, mt, mb) = margins(ui.maximized);
+            let (bw, bh) = (WIN.0 + 2 * ml, WIN.1 + mt + mb);
+            pixel(ml + x, mt + y, bw, bh, 0.88, ui) >> 8 & 255
+        };
+        // The icon's ring sits 3.5 px from its centre (x = 775.5, y = 19.5).
+        let ring = (779, 19);
+        let off = lum(&UI, 700, 19);
+        assert!(lum(&UI, ring.0, ring.1) > off + 40, "ring is lighter than the glass");
+        let hover = Ui { hover: 4, ..UI };
+        assert!(lum(&hover, ring.0, ring.1) > lum(&UI, ring.0, ring.1), "hover brightens it");
+        assert!(lum(&hover, 784, 19) > lum(&UI, 784, 19), "and lights a round highlight around it");
+        // Hovering the gear does not make the three discs show their glyphs.
+        for x in 14..70 {
+            assert_eq!(lum(&hover, x, 19), lum(&UI, x, 19), "x = {x}");
+        }
+        assert_eq!(alpha(&UI, 700, 19), alpha(&UI, 400, 19));
     }
 }

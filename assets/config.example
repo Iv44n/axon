@@ -1,0 +1,31 @@
+# axon settings. Copy this file to ~/.config/axon/config.toml and uncomment what you want to change.
+# Everything is optional; a mistake is reported on stderr with its line number and skipped.
+# The settings screen (the gear in the title bar, or Ctrl+,) edits and saves this file for you.
+# Press Ctrl+Shift+R in axon to apply the file without restarting.
+# The environment variables AXON_FONT, AXON_FONT_SIZE and AXON_OPACITY win over this file.
+
+[font]
+# A family name found in ~/.local/share/fonts, ~/.fonts, /usr/local/share/fonts or /usr/share/fonts
+# ("JetBrains Mono", "Cascadia Mono NF"...), or the path of a .ttf / .otf file. Default: JetBrains Mono,
+# then Cascadia Mono, then DejaVu Sans Mono.
+# family = "JetBrains Mono"
+
+# Size in pixels (6 to 96). Ctrl + / Ctrl - zoom for the session; Ctrl+0 comes back to this value.
+# size = 15
+
+# 100 (thin) to 900 (black); 400 is the font as drawn. Synthesized for now: lighter thins the edges of
+# the glyphs, heavier thickens them sideways.
+# weight = 400
+
+# Draw bold text (SGR 1) at weight + 300. Set false to draw bold as regular.
+# bold = true
+
+# Extra pixels between letters, at the configured size (-8 to 32). Fractions round to whole pixels.
+# letter_spacing = 0
+
+# Row height as a multiple of the font's own height (0.8 to 3).
+# line_height = 1.0
+
+[window]
+# How opaque the glass is, 0.3 to 1. There is no blur on GNOME, so below ~0.85 what is behind shows.
+# opacity = 0.88

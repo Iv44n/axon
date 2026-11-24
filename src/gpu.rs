@@ -4,6 +4,7 @@ use std::sync::Arc;
 use bytemuck::{Pod, Zeroable};
 use winit::window::Window;
 
+use crate::config::FontCfg;
 use crate::cell::{Cell, Glyphs, MAX_TILES, T_BLANK, T_FIRST_GLYPH, pack};
 use crate::font::{Fonts, GlyphTable, special_tiles};
 use crate::view::Backend;
@@ -55,7 +56,8 @@ pub struct Gpu {
 }
 
 impl Gpu {
-    pub fn new(window: Arc<Window>, display: winit::event_loop::OwnedDisplayHandle, font_px: f32, opacity: f32) -> Self {
+    pub fn new(window: Arc<Window>, display: winit::event_loop::OwnedDisplayHandle, font: &FontCfg, opacity: f32) -> Self {
+        let font_px = font.size;
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(Box::new(display)));
         let surface = instance.create_surface(window.clone()).expect("surface");
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -204,7 +206,7 @@ impl Gpu {
         });
         let icap = 1 << 13;
         let ibuf = Self::make_ibuf(&device, icap);
-        let fonts = Fonts::new(font_px);
+        let fonts = Fonts::new(font);
         let (atlas, bind) = Self::make_atlas(&device, &layout, &ubuf);
 
         let mut g = Gpu {

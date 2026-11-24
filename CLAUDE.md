@@ -12,7 +12,7 @@ Direction: data-oriented, no caches, own implementations instead of dependencies
 - `scripts/design.sh [--baseline]` — renders the design board frames from the real renderer (`src/design.rs`) into
   `design/frames/`; open `design/board.html`. `--baseline` keeps the previous frames to compare. Use it for every visual change.
 - `scripts/install.sh [--prefix DIR] [--no-build] [--uninstall]` — installs the binary, desktop entry and icon (`assets/`); `DESTDIR` is honoured. Test it with a throwaway `DESTDIR` or `HOME`, never the real one.
-- Env: `AXON_FONT`, `AXON_FONT_SIZE` (15), `AXON_OPACITY` (0.93 `winit`, 0.88 `wl`), `AXON_DECORATIONS=1`.
+- Settings: `axon config` creates `~/.config/axon/config.toml` (`config edit`, `config show`, `config path`; own parser in `config.rs`; `assets/config.example` lists every key; `Ctrl+Shift+R` reloads in `wl`; the settings screen (gear in the title bar or `Ctrl+,`, `settings.rs`) edits and saves it; `AXON_SETTINGS=1` starts with it open, for screenshots and measurements). Env overrides it: `AXON_FONT`, `AXON_FONT_SIZE` (15), `AXON_OPACITY` (0.93 `winit`, 0.88 `wl`), `AXON_DECORATIONS=1`.
 - `AXON_BACKEND`: `wl` (default when `WAYLAND_DISPLAY` is set) or `winit` (+ `wgpu`, the X11 fallback; `wl` falls back to it by itself if it cannot start). `AXON_WL_DEBUG=1` traces the protocol.
 
 ## Project skills (read them before touching the corresponding area)
