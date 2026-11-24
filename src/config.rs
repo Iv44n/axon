@@ -5,6 +5,8 @@
 //! (`AXON_FONT`, `AXON_FONT_SIZE`, `AXON_OPACITY`) still win over the file.
 use std::path::PathBuf;
 
+use crate::context;
+
 /// How the grid's text looks. Sizes are in pixels.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FontCfg {
@@ -20,11 +22,45 @@ pub struct FontCfg {
     pub letter_spacing: f32,
     /// Row height as a multiple of the font's own (ascent + descent).
     pub line_height: f32,
+    /// How glyph edges are smoothed: grey levels, or per-subpixel (LCD) coverage in the panel's order.
+    pub smoothing: Smoothing,
+    /// Snap the glyphs' baseline, x-height and cap height to whole pixel rows, so horizontal strokes are crisp.
+    pub hinting: bool,
+}
+
+/// Antialiasing of the text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Smoothing {
+    /// One coverage level per pixel.
+    Gray,
+    /// LCD: red, green and blue subpixels left to right (what almost every panel is).
+    Rgb,
+    /// LCD with the subpixels the other way round.
+    Bgr,
+}
+
+impl Smoothing {
+    pub fn name(self) -> &'static str {
+        match self {
+            Smoothing::Gray => "gray",
+            Smoothing::Rgb => "rgb",
+            Smoothing::Bgr => "bgr",
+        }
+    }
 }
 
 impl Default for FontCfg {
     fn default() -> Self {
-        FontCfg { family: None, size: 15.0, weight: 400, bold: true, letter_spacing: 0.0, line_height: 1.0 }
+        FontCfg {
+            family: None,
+            size: 15.0,
+            weight: 400,
+            bold: true,
+            letter_spacing: 0.0,
+            line_height: 1.0,
+            smoothing: Smoothing::Rgb,
+            hinting: true,
+        }
     }
 }
 
@@ -35,11 +71,100 @@ impl FontCfg {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+/// A piece of context the input bar can show, in the order the settings file lists them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Chip {
+    Time,
+    User,
+    /// The conda environment or Python virtual environment the shell is in.
+    Env,
+    Pyenv,
+    /// `user@host`.
+    Host,
+    Dir,
+    Branch,
+    /// Files changed and lines added and removed, from `git diff HEAD`.
+    Changes,
+    Kube,
+}
+
+impl Chip {
+    pub const COUNT: usize = 9;
+    /// Every chip, in the default order.
+    pub const ALL: [Chip; Chip::COUNT] =
+        [Chip::Time, Chip::User, Chip::Env, Chip::Pyenv, Chip::Host, Chip::Dir, Chip::Branch, Chip::Changes, Chip::Kube];
+
+    /// The name used in the settings file.
+    pub fn name(self) -> &'static str {
+        ["time", "user", "env", "pyenv", "host", "dir", "branch", "changes", "kube"][self as usize]
+    }
+
+    pub fn from_name(s: &str) -> Option<Chip> {
+        Chip::ALL.into_iter().find(|c| c.name() == s)
+    }
+}
+
+/// What sits under the grid.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InputCfg {
+    /// Draw the chips on the line above the prompt (`mode = "chips"`) or leave the prompt to the shell
+    /// (`"shell"`, the default).
+    pub inline: bool,
+    /// The chips shown, left to right. One that has nothing to say (no git repository, no
+    /// environment) is skipped.
+    pub chips: Vec<Chip>,
+    /// 24-hour clock; false is `03:48 pm`.
+    pub clock24: bool,
+    /// The cursor's shape until a program asks for another (`DECSCUSR`).
+    pub cursor: CursorKind,
+}
+
+impl Default for InputCfg {
+    fn default() -> Self {
+        InputCfg { inline: false, chips: Chip::ALL.to_vec(), clock24: false, cursor: CursorKind::Block }
+    }
+}
+
+/// The shape of the cursor: a block, a bar before the character, or a line under it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CursorKind {
+    #[default]
+    Block,
+    Bar,
+    Underline,
+}
+
+impl CursorKind {
+    pub const ALL: [CursorKind; 3] = [CursorKind::Block, CursorKind::Bar, CursorKind::Underline];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            CursorKind::Block => "block",
+            CursorKind::Bar => "bar",
+            CursorKind::Underline => "underline",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Config {
     pub font: FontCfg,
+    pub input: InputCfg,
     /// Alpha of the glass body, 0.3 to 1; `None` keeps the backend's default.
     pub opacity: Option<f32>,
+    /// Ask the compositor to blur what is behind the glass (`[window] blur`). Only compositors that offer
+    /// it (KDE, and those with `ext-background-effect-v1`) do; GNOME's Mutter does not.
+    pub blur: bool,
+    /// Show the status bar at the bottom of the window (`[window] status_bar`).
+    pub status_bar: bool,
+    /// The language of the interface (`[ui] language`): the system's, English or Spanish.
+    pub lang: crate::i18n::Setting,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config { font: FontCfg::default(), input: InputCfg::default(), opacity: None, blur: false, status_bar: true, lang: Default::default() }
+    }
 }
 
 /// Where the file is expected, whether it exists or not.
@@ -193,8 +318,22 @@ fn describe(c: &Config) -> String {
     let family = f.family.as_ref().map_or("# family: the default list (JetBrains Mono first)".to_string(), |v| format!("family = {v:?}"));
     let opacity = c.opacity.map_or("# opacity: the backend's default (0.88)".to_string(), |o| format!("opacity = {o}"));
     format!(
-        "[font]\n{family}\nsize = {}\nweight = {}\nbold = {}\nletter_spacing = {}\nline_height = {}\n\n[window]\n{opacity}\n",
-        f.size, f.weight, f.bold, f.letter_spacing, f.line_height,
+        "[font]\n{family}\nsize = {}\nweight = {}\nbold = {}\nletter_spacing = {}\nline_height = {}\nsmoothing = {:?}\nhinting = {}\n\n[window]\n{opacity}\nblur = {}\nstatus_bar = {}\n\n[ui]\nlanguage = {:?}\n\n\
+         [input]\nmode = {:?}\nclock = {:?}\ncursor = {:?}\nchips = {}\n",
+        f.size,
+        f.weight,
+        f.bold,
+        f.letter_spacing,
+        f.line_height,
+        f.smoothing.name(),
+        f.hinting,
+        c.blur,
+        c.status_bar,
+        c.lang.name(),
+        if c.input.inline { "chips" } else { "shell" },
+        if c.input.clock24 { "24h" } else { "12h" },
+        c.input.cursor.name(),
+        chip_list_text(&c.input.chips),
     )
 }
 
@@ -205,6 +344,8 @@ const USAGE: &str = "usage: axon [command]
   config path      print where the settings file is
   config show      print the settings in effect (file and environment), and any mistakes in the file
   config edit      create the file if needed and open it in $VISUAL or $EDITOR
+  shell-init SHELL print what to add to your shell's rc file (bash, zsh or fish) so the prompt chips
+                   work in it: eval \"$(axon shell-init bash)\" (axon starts bash with it already)
   --help, --version
 
 Settings: edit the file, then press Ctrl+Shift+R in a running window to apply it.";
@@ -216,9 +357,21 @@ pub fn command(args: &[String]) -> Option<i32> {
         "--help" | "-h" | "help" => println!("{USAGE}"),
         "--version" | "-V" => println!("axon {}", env!("CARGO_PKG_VERSION")),
         "config" => return Some(config_command(args.get(1).map(String::as_str))),
+        "shell-init" => return Some(shell_init(args.get(1).map(String::as_str))),
         _ => return None,
     }
     Some(0)
+}
+
+fn shell_init(shell: Option<&str>) -> i32 {
+    match shell.and_then(context::shell_init_script) {
+        Some(script) => print!("{script}"),
+        None => {
+            eprintln!("usage: axon shell-init bash|zsh|fish\n\nAdd to ~/.bashrc:  eval \"$(axon shell-init bash)\"\n       ~/.zshrc:   eval \"$(axon shell-init zsh)\"\n       config.fish: axon shell-init fish | source");
+            return 2;
+        }
+    }
+    0
 }
 
 fn config_command(sub: Option<&str>) -> i32 {
@@ -357,6 +510,31 @@ fn number(v: &str, (lo, hi): (f32, f32)) -> Result<f32, String> {
     Ok(n.clamp(lo, hi))
 }
 
+/// `["time", "dir"]`: chip names in double quotes, in the order to show them. A name that is not a
+/// chip is an error for the whole line, so a typo does not silently drop a chip.
+fn chip_list(v: &str) -> Result<Vec<Chip>, String> {
+    let inner = v.strip_prefix('[').and_then(|r| r.strip_suffix(']')).ok_or("expected a list like [\"time\", \"dir\"]")?;
+    let mut out = Vec::new();
+    for item in inner.split(',').map(str::trim).filter(|i| !i.is_empty()) {
+        let name = string(item)?;
+        let chip = Chip::from_name(&name).ok_or_else(|| format!("unknown chip {name:?} (one of: {})", chip_names()))?;
+        if !out.contains(&chip) {
+            out.push(chip);
+        }
+    }
+    Ok(out)
+}
+
+fn chip_names() -> String {
+    Chip::ALL.map(Chip::name).join(", ")
+}
+
+/// The list as the file writes it.
+pub fn chip_list_text(chips: &[Chip]) -> String {
+    let names: Vec<String> = chips.iter().map(|c| format!("{:?}", c.name())).collect();
+    format!("[{}]", names.join(", "))
+}
+
 fn boolean(v: &str) -> Result<bool, String> {
     match v {
         "true" => Ok(true),
@@ -376,7 +554,42 @@ fn apply(cfg: &mut Config, key: &str, v: &str) -> Result<(), String> {
         "font.bold" => cfg.font.bold = boolean(v)?,
         "font.letter_spacing" => cfg.font.letter_spacing = number(v, SPACING)?,
         "font.line_height" => cfg.font.line_height = number(v, LINE_HEIGHT)?,
+        "font.smoothing" => {
+            cfg.font.smoothing = match string(v)?.as_str() {
+                "gray" | "grey" => Smoothing::Gray,
+                "rgb" => Smoothing::Rgb,
+                "bgr" => Smoothing::Bgr,
+                other => return Err(format!("smoothing is \"gray\", \"rgb\" or \"bgr\", not {other:?}")),
+            }
+        }
+        "font.hinting" => cfg.font.hinting = boolean(v)?,
         "window.opacity" => cfg.opacity = Some(number(v, OPACITY)?),
+        "window.blur" => cfg.blur = boolean(v)?,
+        "window.status_bar" => cfg.status_bar = boolean(v)?,
+        "ui.language" => {
+            let name = string(v)?;
+            cfg.lang = crate::i18n::Setting::from_name(&name).ok_or_else(|| format!("language is \"auto\", \"en\" or \"es\", not {name:?}"))?
+        }
+        "input.cursor" => {
+            cfg.input.cursor = match string(v)?.as_str() {
+                "block" => CursorKind::Block,
+                "bar" | "beam" => CursorKind::Bar,
+                "underline" | "line" => CursorKind::Underline,
+                other => return Err(format!("cursor is \"block\", \"bar\" or \"underline\", not {other:?}")),
+            }
+        }
+        "input.mode" => match string(v)?.as_str() {
+            // "bar" is what the first version of the setting was called.
+            "chips" | "bar" => cfg.input.inline = true,
+            "shell" => cfg.input.inline = false,
+            other => return Err(format!("expected \"shell\" or \"chips\", got {other:?}")),
+        },
+        "input.clock" => match string(v)?.as_str() {
+            "12h" => cfg.input.clock24 = false,
+            "24h" => cfg.input.clock24 = true,
+            other => return Err(format!("expected \"12h\" or \"24h\", got {other:?}")),
+        },
+        "input.chips" => cfg.input.chips = chip_list(v)?,
         _ => return Err("unknown setting".into()),
     }
     Ok(())
@@ -414,10 +627,76 @@ mod tests {
                     bold: false,
                     letter_spacing: 1.0,
                     line_height: 1.2,
+                    ..FontCfg::default()
                 },
                 opacity: Some(0.9),
+                input: InputCfg::default(),
+                blur: false,
+                status_bar: true,
+                lang: Default::default(),
             }
         );
+    }
+
+    #[test]
+    fn the_language_is_read_and_a_wrong_one_is_refused() {
+        assert_eq!(parsed("[ui]\nlanguage = \"es\"\n").0.lang, crate::i18n::Setting::Es);
+        assert_eq!(parsed("").0.lang, crate::i18n::Setting::Auto);
+        let (c, w) = parsed("[ui]\nlanguage = \"fr\"\n");
+        assert_eq!(c.lang, crate::i18n::Setting::Auto);
+        assert_eq!(w.len(), 1);
+    }
+
+    #[test]
+    fn the_status_bar_and_the_cursor_are_read() {
+        let (c, w) = parsed("[window]\nstatus_bar = false\n[input]\ncursor = \"bar\"\n");
+        assert!(w.is_empty(), "{w:?}");
+        assert!(!c.status_bar);
+        assert_eq!(c.input.cursor, CursorKind::Bar);
+        let (c, w) = parsed("[input]\ncursor = \"star\"\n");
+        assert_eq!(c.input.cursor, CursorKind::Block, "an unknown shape keeps the default");
+        assert_eq!(w.len(), 1);
+        assert!(parsed("").0.status_bar, "the status bar is on by default");
+    }
+
+    #[test]
+    fn the_input_section_is_read() {
+        let (c, w) = parsed("[input]\nmode = \"bar\"\nclock = \"24h\"\nchips = [\"dir\", \"time\", \"dir\"]\n");
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(c.input, InputCfg { inline: true, chips: vec![Chip::Dir, Chip::Time], clock24: true, ..InputCfg::default() });
+        // Nothing set: the bar is off, every chip is listed, 12-hour clock.
+        let d = InputCfg::default();
+        assert!(!d.inline && !d.clock24 && d.chips == Chip::ALL);
+        assert_eq!(parsed("input.chips = []").0.input.chips, vec![]);
+    }
+
+    #[test]
+    fn input_mistakes_are_named_and_change_nothing() {
+        let (c, w) = parsed("input.mode = \"warp\"\ninput.clock = 24\ninput.chips = [\"dir\", \"nope\"]\ninput.chips = \"dir\"\n");
+        assert_eq!(c.input, InputCfg::default());
+        assert_eq!(w.len(), 4, "{w:?}");
+        assert!(w[0].contains("expected \"shell\" or \"chips\""));
+        assert!(w[2].contains("unknown chip \"nope\""), "{}", w[2]);
+    }
+
+    #[test]
+    fn chip_names_round_trip_through_the_list_text() {
+        for c in Chip::ALL {
+            assert_eq!(Chip::from_name(c.name()), Some(c));
+        }
+        assert_eq!(chip_list(&chip_list_text(&Chip::ALL)).unwrap(), Chip::ALL);
+        assert_eq!(chip_list_text(&[Chip::Dir]), "[\"dir\"]");
+    }
+
+    #[test]
+    fn shell_init_prints_a_script_per_shell_and_refuses_others() {
+        for sh in ["bash", "zsh", "fish"] {
+            let s = context::shell_init_script(sh).unwrap();
+            assert!(s.contains("AXON_CONTEXT") && s.contains("AXON_CHIPS") && s.contains("kubeconfig="), "{sh}");
+        }
+        assert_eq!(shell_init(Some("bash")), 0);
+        assert_eq!(shell_init(Some("tcsh")), 2);
+        assert_eq!(shell_init(None), 2);
     }
 
     #[test]
@@ -535,7 +814,9 @@ mod tests {
         for (sec, key, v) in [
             ("font", "family", "\"Fira Code\""), ("font", "size", "20"), ("font", "weight", "700"),
             ("font", "bold", "false"), ("font", "letter_spacing", "1.5"), ("font", "line_height", "1.25"),
-            ("window", "opacity", "0.7"),
+            ("font", "smoothing", "\"bgr\""), ("font", "hinting", "false"),
+            ("window", "opacity", "0.7"), ("window", "blur", "true"), ("window", "status_bar", "false"), ("ui", "language", "\"es\""), ("input", "cursor", "\"bar\""), ("input", "mode", "\"chips\""), ("input", "clock", "\"24h\""),
+            ("input", "chips", "[\"dir\", \"time\"]"),
         ] {
             text = set_key(&text, sec, key, Some(v));
         }
@@ -544,8 +825,12 @@ mod tests {
         assert_eq!(
             c,
             Config {
-                font: FontCfg { family: Some("Fira Code".into()), size: 20.0, weight: 700, bold: false, letter_spacing: 1.5, line_height: 1.25 },
+                font: FontCfg { family: Some("Fira Code".into()), size: 20.0, weight: 700, bold: false, letter_spacing: 1.5, line_height: 1.25, smoothing: Smoothing::Bgr, hinting: false, ..FontCfg::default() },
                 opacity: Some(0.7),
+                input: InputCfg { inline: true, chips: vec![Chip::Dir, Chip::Time], clock24: true, cursor: CursorKind::Bar, ..InputCfg::default() },
+                blur: true,
+                status_bar: false,
+                lang: crate::i18n::Setting::Es,
             }
         );
     }

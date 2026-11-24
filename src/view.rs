@@ -29,6 +29,8 @@ pub struct View {
     last_sel: Option<SelectionRange>,
     /// Scratch for the rows being built; dead once they are handed to the backend.
     stage: Vec<Cell>,
+    /// Rows the caller wants repainted at the next frame (something is drawn over them).
+    wanted: Vec<usize>,
 }
 
 impl View {
@@ -38,7 +40,13 @@ impl View {
             last_cursor: (Point::default(), CursorShape::Block, true),
             last_sel: None,
             stage: Vec::new(),
+            wanted: Vec::new(),
         }
+    }
+
+    /// Repaints `row` at the next frame even if the terminal did not change it.
+    pub fn invalidate_row(&mut self, row: usize) {
+        self.wanted.push(row);
     }
 
     /// Brings the backend up to date: only rows that changed since the last frame are rebuilt.
@@ -60,6 +68,11 @@ impl View {
             }
         }
         term.reset_damage();
+        for r in self.wanted.drain(..) {
+            if let Some(f) = self.dirty.get_mut(r) {
+                *f = true;
+            }
+        }
 
         // The cursor shape and the selection are not part of `Term`'s damage: compare them
         // with the previous frame and rebuild the rows they touch, old and new.
@@ -110,6 +123,62 @@ impl View {
             self.stage.resize((row - first) * cols, Cell::BLANK);
             build_rows(out, term, first, &mut self.stage, focused);
             out.put_rows(first, row - first, &self.stage);
+        }
+    }
+}
+
+/// How many rows above the prompt's last line its reserved line may be (a prompt of several lines), and
+/// how many rows a typed command may wrap over.
+const PROMPT_LINES: i32 = 4;
+
+/// Where the shell put the line the prompt chips go on, as a viewport row.
+///
+/// The shell's hook (`context.rs`) makes the prompt start with a line of its own holding one concealed
+/// space (SGR 8) in its first column, and end with a concealed space right before where the user types.
+/// So the prompt being typed at is the one whose end marker is on the cursor's row (or on an earlier
+/// row of a command that wrapped), and the chips go on the reserved line above it. Output a program
+/// printed since leaves no marker at the cursor. Only a hook older than the numbered prompts is drawn from this: the rest use `prompt_rows`.
+pub fn prompt_row<L: EventListener>(term: &Term<L>) -> Option<usize> {
+    let grid = term.grid();
+    if grid.display_offset() != 0 {
+        return None;
+    }
+    let cols = term.columns();
+    let marker = |line: i32, col: usize| {
+        let c = &grid[Line(line)][Column(col)];
+        c.c == ' ' && c.flags.contains(Flags::HIDDEN)
+    };
+    let mut row = grid.cursor.point.line.0;
+    let mut end = None;
+    for _ in 0..=PROMPT_LINES {
+        if row < 0 || row >= term.screen_lines() as i32 {
+            return None;
+        }
+        if (0..cols).any(|c| marker(row, c)) {
+            end = Some(row);
+            break;
+        }
+        // Up a row only when the one above wraps into this one.
+        if row == 0 || !grid[Line(row - 1)][Column(cols - 1)].flags.contains(Flags::WRAPLINE) {
+            return None;
+        }
+        row -= 1;
+    }
+    let end = end?;
+    (1..=PROMPT_LINES).find_map(|d| (end - d >= 0 && marker(end - d, 0)).then_some((end - d) as usize))
+}
+
+/// The reserved lines of every prompt on screen, as `(viewport row, prompt number)`, oldest first: a
+/// hidden space in the first column whose colour is the number (`context.rs`, `history.rs`). Unlike
+/// `prompt_row` it finds the prompts of commands that have run, in the scrollback too.
+pub fn prompt_rows<L: EventListener>(term: &Term<L>, out: &mut Vec<(usize, u32)>) {
+    out.clear();
+    let grid = term.grid();
+    let offset = grid.display_offset() as i32;
+    for row in 0..term.screen_lines() {
+        let c = &grid[Line(row as i32 - offset)][Column(0)];
+        if let (' ', true, Color::Spec(rgb)) = (c.c, c.flags.contains(Flags::HIDDEN), c.fg) {
+            out.push((row, (rgb.r as u32) << 16 | (rgb.g as u32) << 8 | rgb.b as u32));
         }
     }
 }
@@ -207,5 +276,93 @@ fn build_rows<L: EventListener>(g: &mut impl Glyphs, term: &Term<L>, first: usiz
                 bg: if bg_default { transparent } else { pack(bg.r, bg.g, bg.b, 255) },
             };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alacritty_terminal::{
+        event::VoidListener,
+        term::Config,
+        vte::ansi::{Processor, StdSyncHandler},
+    };
+
+    use crate::session::Size;
+
+    const MARK: &str = "\x1b[8m \x1b[0m";
+
+    fn term(rows: usize, text: &str) -> Term<VoidListener> {
+        let mut t = Term::new(Config::default(), &Size { cols: 20, rows }, VoidListener);
+        Processor::<StdSyncHandler>::new().advance(&mut t, text.as_bytes());
+        t
+    }
+
+    /// What the hook makes a prompt print: the reserved line, the prompt, the end marker.
+    fn prompt(ps1: &str) -> String {
+        format!("{MARK}\r\n{ps1}{MARK}")
+    }
+
+    #[test]
+    fn every_numbered_prompt_on_screen_is_found_with_its_number() {
+        let numbered = |n: u32| format!("\x1b[8;38;2;{};{};{}m \x1b[0m\r\nme$ {MARK}", n >> 16, n >> 8 & 255, n & 255);
+        let t = term(12, &format!("{}ls\r\nout\r\n{}\r\nout\r\n{}", numbered(1), numbered(258), numbered(70000)));
+        let mut rows = Vec::new();
+        prompt_rows(&t, &mut rows);
+        assert_eq!(rows, [(0, 1), (3, 258), (6, 70000)]);
+        // The plain markers of an older hook, ordinary hidden spaces and coloured text are not numbered prompts.
+        for text in [format!("{MARK}\r\nme$ {MARK}"), "\x1b[38;2;0;0;5m \x1b[0m".to_string(), "\x1b[8;38;2;0;0;5mx\x1b[0m".to_string()] {
+            prompt_rows(&term(5, &text), &mut rows);
+            assert!(rows.is_empty(), "{text:?}");
+        }
+        // Scrolled back, the numbers follow the rows.
+        let mut t = term(5, &format!("{}\r\n\r\n\r\n\r\n\r\n\r\n{}", numbered(1), numbered(2)));
+        prompt_rows(&t, &mut rows);
+        assert_eq!(rows.iter().map(|r| r.1).collect::<Vec<_>>(), [2]);
+        t.scroll_display(alacritty_terminal::grid::Scroll::Delta(4));
+        prompt_rows(&t, &mut rows);
+        assert!(rows.iter().any(|r| r.1 == 1), "{rows:?}");
+    }
+
+    #[test]
+    fn chips_go_on_the_reserved_line_above_the_prompt_being_typed_at() {
+        let t = term(10, &format!("old output\r\n{}", prompt("me$ ")));
+        assert_eq!(prompt_row(&t), Some(1));
+        // Text typed after the marker does not move it.
+        let t = term(10, &format!("{}ls -la", prompt("me$ ")));
+        assert_eq!(prompt_row(&t), Some(0));
+    }
+
+    #[test]
+    fn a_prompt_of_several_lines_and_a_wrapped_command_still_find_it() {
+        let t = term(10, &format!("{MARK}\r\n~/code/project  main\r\nme$ {MARK}"));
+        assert_eq!(prompt_row(&t), Some(0));
+        // A command longer than a row wraps onto the next ones: the marker is on the first.
+        let t = term(10, &format!("x\r\n{}{}", prompt("me$ "), "a".repeat(35)));
+        assert_eq!(prompt_row(&t), Some(1));
+    }
+
+    #[test]
+    fn no_chips_while_a_program_runs_or_without_the_hook() {
+        // The command ran and printed: the cursor is past the output, no marker on its row.
+        let t = term(10, &format!("{}ls\r\nfile-a\r\nfile-b\r\n", prompt("me$ ")));
+        assert_eq!(prompt_row(&t), None);
+        // A prompt without the markers (the hook is not installed).
+        assert_eq!(prompt_row(&term(10, "out\r\nme$ ")), None);
+        // The end marker without a reserved line above it.
+        assert_eq!(prompt_row(&term(10, &format!("me$ {MARK}"))), None);
+        // Ordinary spaces are not markers.
+        assert_eq!(prompt_row(&term(10, " \r\nme$  ")), None);
+    }
+
+    #[test]
+    fn chips_need_the_live_screen_and_a_row_to_stand_on() {
+        // The prompt on the very first row has no room above it for the reserved line.
+        assert_eq!(prompt_row(&term(10, &format!("me$ {MARK}"))), None);
+        // Scrolled back into the history: the prompt is not the one being typed at.
+        let mut t = term(5, &format!("{}\r\n\r\n\r\n\r\n\r\n\r\n{}", prompt("a$ "), prompt("b$ ")));
+        assert!(prompt_row(&t).is_some());
+        t.scroll_display(alacritty_terminal::grid::Scroll::Delta(2));
+        assert_eq!(prompt_row(&t), None);
     }
 }

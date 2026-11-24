@@ -10,7 +10,9 @@
 use crate::cell::{
     Cell, Glyphs, MAX_TILES, T_BAR, T_BEAM, T_BOX, T_FIRST_GLYPH, T_STRIKE, T_UNDER, pack,
 };
-use crate::chrome::{self, REACH, TITLE_CLEAR, TITLE_H, Ui};
+use crate::chrome::{self, REACH, STATUS_H, TITLE_CLEAR, TITLE_H, Ui};
+use alacritty_terminal::vte::ansi::Rgb;
+use crate::{bar, config::Chip, i18n::{Str, tr}, palette, paint::Paint};
 use crate::config::FontCfg;
 use crate::font::{Fonts, GlyphTable, special_tiles};
 use crate::view::Backend;
@@ -18,8 +20,9 @@ use crate::view::Backend;
 pub struct Soft {
     fonts: Fonts,
     glyphs: GlyphTable,
-    /// Coverage bitmaps: tile `t` is `tiles[t * cw * ch..][..cw * ch]` (fixed stride, no atlas
-    /// geometry). Grows as glyphs are baked; the lazy bake goes away with task 12.
+    /// Coverage bitmaps: tile `t` is `tiles[t * 3 * cw * ch..][..3 * cw * ch]` (fixed stride, no atlas
+    /// geometry), three bytes a pixel: the coverage of its red, green and blue stripes (all equal
+    /// for grey text and for the special tiles). Grows as glyphs are baked; the lazy bake goes away with task 12.
     tiles: Vec<u8>,
     next_tile: u32,
     opacity: f32,
@@ -27,10 +30,18 @@ pub struct Soft {
     pub pad: u32,
     /// Where the grid starts: the title bar plus a margin.
     pub top: u32,
+    /// Space below the grid: a margin, or the status bar and a margin.
+    pub bottom: u32,
     ui: Ui,
     title: String,
+    /// What the status bar says: the shell, the git branch (may be empty) and the grid size.
+    status: Status,
     /// The title bar no longer shows `ui` and `title`.
     chrome_dirty: bool,
+    /// The status bar no longer shows `ui` and `status`.
+    status_dirty: bool,
+    /// One glyph's coverage between calls of `paint_text` (the title and the status bar).
+    scratch: Vec<u8>,
     /// Packed RGBA of the cursor overlay.
     pub cursor_color: u32,
     /// Framebuffer size and grid size of the last frame.
@@ -40,6 +51,9 @@ pub struct Soft {
     cols: usize,
     /// The framebuffer no longer matches the glyph tiles or the geometry: repaint every row.
     stale: bool,
+    /// Which grid rows were repainted in the last frame: whatever is drawn over a row (the prompt
+    /// chips) has to be drawn again when the row was.
+    touched: Vec<bool>,
 }
 
 impl Soft {
@@ -52,17 +66,23 @@ impl Soft {
             next_tile: T_FIRST_GLYPH,
             opacity,
             pad: (font_px * 0.9).round() as u32,
-            top: TITLE_H as u32 + (font_px * 0.45).round() as u32,
+            top: 0,
+            bottom: 0,
             ui: Ui::IDLE,
             title: String::new(),
+            status: Status::default(),
             chrome_dirty: true,
+            status_dirty: true,
+            scratch: Vec::new(),
             cursor_color: pack(255, 255, 255, 255),
             w: 0,
             h: 0,
             rows: 0,
             cols: 0,
             stale: true,
+            touched: Vec::new(),
         };
+        s.set_metrics(font_px);
         s.bake_specials();
         s
     }
@@ -106,11 +126,18 @@ impl Soft {
         }
     }
 
+    /// The margins around the grid for a font of `px` pixels.
+    fn set_metrics(&mut self, px: f32) {
+        let gap = (px * 0.45).round() as u32;
+        self.pad = (px * 0.9).round() as u32;
+        self.top = TITLE_H as u32 + gap;
+        self.bottom = if self.ui.status { STATUS_H as u32 + gap } else { self.pad };
+    }
+
     fn reset_tiles(&mut self, px: f32) {
         self.glyphs.clear();
         self.next_tile = T_FIRST_GLYPH;
-        self.pad = (px * 0.9).round() as u32;
-        self.top = TITLE_H as u32 + (px * 0.45).round() as u32;
+        self.set_metrics(px);
         self.tiles.clear();
         self.stale = true;
         self.bake_specials();
@@ -122,12 +149,26 @@ impl Soft {
         if ui == self.ui {
             return;
         }
-        if ui.maximized != self.ui.maximized {
+        if ui.maximized != self.ui.maximized || ui.status != self.ui.status {
             self.stale = true;
         } else {
             self.chrome_dirty = true;
+            self.status_dirty = true;
         }
+        let status_changed = ui.status != self.ui.status;
         self.ui = ui;
+        if status_changed {
+            self.set_metrics(self.fonts.px);
+        }
+    }
+
+    /// What the status bar says; it is repainted when this changes.
+    pub fn set_status(&mut self, shell: &str, branch: &str, cols: usize, rows: usize) {
+        let new = Status { shell: shell.to_string(), branch: branch.to_string(), cols, rows };
+        if new != self.status {
+            self.status = new;
+            self.status_dirty = true;
+        }
     }
 
     pub fn set_title(&mut self, title: &str) {
@@ -139,13 +180,13 @@ impl Soft {
     }
 
     fn tile_len(&self) -> usize {
-        (self.fonts.cell_w * self.fonts.cell_h) as usize
+        (self.fonts.cell_w * self.fonts.cell_h) as usize * 3
     }
 
     fn bake_specials(&mut self) {
         let f = &self.fonts;
         for data in special_tiles(f.cell_w, f.cell_h, f.px, f.ascent) {
-            self.tiles.extend_from_slice(&data);
+            self.tiles.extend(data.iter().flat_map(|&c| [c, c, c]));
         }
     }
 
@@ -155,6 +196,8 @@ impl Soft {
     pub fn begin_frame(&mut self, fb: &mut [u32], w: usize, h: usize, rows: usize, cols: usize) -> bool {
         let full = self.stale || (self.w, self.h, self.rows, self.cols) != (w, h, rows, cols);
         let (ox, oy) = self.origin();
+        self.touched.clear();
+        self.touched.resize(rows, full);
         if full {
             self.stale = false;
             (self.w, self.h, self.rows, self.cols) = (w, h, rows, cols);
@@ -165,11 +208,20 @@ impl Soft {
             self.paint_bg(fb, top, bottom, 0, ox);
             self.paint_bg(fb, top, bottom, w - ox, w);
             self.paint_title(fb);
-        } else if self.chrome_dirty && fb.len() >= self.w * self.h {
-            self.paint_bg(fb, oy, oy + TITLE_H, ox, self.w - ox);
-            self.paint_title(fb);
+            self.paint_status(fb);
+        } else if fb.len() >= self.w * self.h {
+            if self.chrome_dirty {
+                self.paint_bg(fb, oy, oy + TITLE_H, ox, self.w - ox);
+                self.paint_title(fb);
+            }
+            if self.status_dirty && self.ui.status {
+                let (_, wh) = self.window();
+                self.paint_bg(fb, oy + wh - STATUS_H, oy + wh, ox, self.w - ox);
+                self.paint_status(fb);
+            }
         }
         self.chrome_dirty = false;
+        self.status_dirty = false;
         full
     }
 
@@ -181,6 +233,9 @@ impl Soft {
         let (ox, oy) = self.origin();
         let (top, ch) = (oy + self.top as usize, self.fonts.cell_h as usize);
         for (n, cells) in cells.chunks_exact(self.cols).enumerate() {
+            if let Some(t) = self.touched.get_mut(first + n) {
+                *t = true;
+            }
             let y0 = top + (first + n) * ch;
             self.paint_bg(fb, y0, y0 + ch, ox, self.w - ox);
             self.paint_cells(fb, y0, cells);
@@ -190,16 +245,20 @@ impl Soft {
     // ------------------------------------------------------------ painting --
 
     /// Where the window starts in the framebuffer: the shadow margin (`chrome::margins`).
-    fn origin(&self) -> (usize, usize) {
+    pub fn origin(&self) -> (usize, usize) {
         let (ml, mt, _) = chrome::margins(self.ui.maximized);
         (ml, mt)
     }
 
     fn paint_cells(&self, fb: &mut [u32], y0: usize, cells: &[Cell]) {
+        self.paint_cells_at(fb, self.origin().0 + self.pad as usize, y0, cells);
+    }
+
+    /// Cells in a row starting at pixel `(left, y0)` of the framebuffer, not tied to the grid's columns.
+    pub fn paint_cells_at(&self, fb: &mut [u32], left: usize, y0: usize, cells: &[Cell]) {
         let (cw, ch) = (self.fonts.cell_w as usize, self.fonts.cell_h as usize);
-        let len = cw * ch;
+        let len = cw * ch * 3;
         let cursor = unpack(self.cursor_color);
-        let left = self.origin().0 + self.pad as usize;
         for (col, cell) in cells.iter().enumerate() {
             if cell.tf == 0 && cell.bg >> 24 == 0 {
                 continue; // nothing to draw: the background is already there
@@ -222,8 +281,8 @@ impl Soft {
             for y in 0..ch {
                 let row = &mut fb[(y0 + y) * self.w + x0..][..cw];
                 for (x, dst) in row.iter_mut().enumerate() {
-                    let i = y * cw + x;
-                    let mut px = text_px(fg, bg, glyph[i] as u32);
+                    let i = (y * cw + x) * 3;
+                    let mut px = text_px3(fg, bg, [glyph[i] as u32, glyph[i + 1] as u32, glyph[i + 2] as u32]);
                     if flags & 1 != 0 {
                         px = overlay(px, fg, tile(T_UNDER)[i] as u32);
                     }
@@ -239,6 +298,58 @@ impl Soft {
                 }
             }
         }
+    }
+
+    /// The metrics of text at `scale` times the grid's size (see `Fonts::small`).
+    pub fn small(&self, scale: f32) -> crate::font::Small {
+        self.fonts.small(scale)
+    }
+
+    /// `text` in the colour `fg` at the metrics `m`, from pixel `left`, vertically centred on `cy`, bold or not,
+    /// over what is already in `fb`. `scratch` holds one glyph's coverage between calls.
+    pub fn paint_text(&self, fb: &mut [u32], left: usize, cy: usize, text: impl Iterator<Item = char>, fg: u32, bold: bool, m: &crate::font::Small, scratch: &mut Vec<u8>) {
+        let (cw, ch) = (m.cell_w as usize, m.cell_h as usize);
+        let Some(y0) = cy.checked_sub(ch / 2) else { return };
+        let fg = unpack(fg);
+        for (i, c) in text.enumerate() {
+            let x0 = left + i * cw;
+            if x0 + cw > self.w || y0 + ch > self.h {
+                break;
+            }
+            self.fonts.raster_into(scratch, m, c, bold, false);
+            for y in 0..ch {
+                let row = &mut fb[(y0 + y) * self.w + x0..][..cw];
+                for (x, dst) in row.iter_mut().enumerate() {
+                    let i = (y * cw + x) * 3;
+                    let cov = [scratch[i] as u32, scratch[i + 1] as u32, scratch[i + 2] as u32];
+                    if cov != [0; 3] {
+                        *dst = over(text_px3(fg, [0; 4], cov), *dst);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Whether grid row `row` was repainted in the last frame (all of them are after a full repaint).
+    pub fn row_repainted(&self, row: usize) -> bool {
+        self.touched.get(row).copied().unwrap_or(false)
+    }
+
+    /// Where the grid starts, in framebuffer pixels: its left edge (after the padding) and the top of row 0.
+    pub fn grid_origin(&self) -> (usize, usize) {
+        let (ox, oy) = self.origin();
+        (ox + self.pad as usize, oy + self.top as usize)
+    }
+
+    /// The framebuffer size of the last frame.
+    pub fn fb_size(&self) -> (usize, usize) {
+        (self.w, self.h)
+    }
+
+    /// The window's size inside the framebuffer (without the shadow margin) of the last frame.
+    pub fn window(&self) -> (usize, usize) {
+        let (ml, mt, mb) = chrome::margins(self.ui.maximized);
+        (self.w.saturating_sub(2 * ml), self.h.saturating_sub(mt + mb))
     }
 
     /// Background of pixels `x0..x1` of rows `y0..y1`: the glass frame and its shadow
@@ -273,6 +384,7 @@ impl Soft {
     }
 
     /// The title, centred between the buttons and the right margin, over the title bar background.
+    /// A `user@host:` prefix is dim, the rest the foreground colour.
     fn paint_title(&mut self, fb: &mut [u32]) {
         let (cw, ch, w) = (self.fonts.cell_w as usize, self.fonts.cell_h as usize, self.w);
         let (ox, oy) = self.origin();
@@ -280,24 +392,110 @@ impl Soft {
         let room = ww.saturating_sub(2 * TITLE_CLEAR) / cw;
         let title = std::mem::take(&mut self.title);
         let count = title.chars().count().min(room);
-        let y0 = oy + (TITLE_H - ch) / 2;
+        // The title bar is TITLE_H rows, the last of them the hairline.
+        let y0 = oy + (TITLE_H - 1 - ch) / 2;
         let x0 = ox + (ww - count * cw) / 2;
-        let strength = if self.ui.focused { 190 } else { 100 };
-        let len = cw * ch;
+        let strength = if self.ui.focused { 255 } else { 140 };
+        let host_end = title.find(':').filter(|&i| title[..i].contains('@')).map_or(0, |i| title[..=i].chars().count());
+        let len = cw * ch * 3;
         for (n, c) in title.chars().take(count).enumerate() {
             let c = if n + 1 == count && title.chars().count() > count { '\u{2026}' } else { c };
             let tile = self.glyph(c, false, false) as usize;
+            let rgb = if n < host_end { palette::DIM } else { palette::FG };
+            let fg = [rgb.r as u32, rgb.g as u32, rgb.b as u32, 255];
             for y in 0..ch {
                 for x in 0..cw {
-                    let cov = self.tiles[tile * len + y * cw + x] as u32 * strength / 255;
-                    if cov != 0 {
+                    let at = tile * len + (y * cw + x) * 3;
+                    let cov = [0, 1, 2].map(|i| self.tiles[at + i] as u32 * strength / 255);
+                    if cov != [0; 3] {
                         let dst = &mut fb[(y0 + y) * w + x0 + n * cw + x];
-                        *dst = argb(overlay(from_argb(*dst), [235, 235, 235, 255], cov));
+                        *dst = argb(overlay3(from_argb(*dst), fg, cov));
                     }
                 }
             }
         }
         self.title = title;
+    }
+
+    /// The status bar: shell, encoding and branch on the left; key hints and the grid size on the
+    /// right. Hints that do not fit are dropped from the left.
+    fn paint_status(&mut self, fb: &mut [u32]) {
+        if !self.ui.status {
+            return;
+        }
+        let (ox, oy) = self.origin();
+        let (ww, wh) = self.window();
+        let (w, h) = (self.w, self.h);
+        let top = wh - STATUS_H; // the hairline row, in window pixels
+        let m = self.small(0.82);
+        let (cw, tw) = (m.cell_w as usize, m.cell_h as usize);
+        let cy = top + 1 + (STATUS_H - 1) / 2;
+        let rgb = |c: Rgb| [c.r as f32 / 255.0, c.g as f32 / 255.0, c.b as f32 / 255.0];
+        let pack = |c: Rgb| crate::cell::pack(c.r, c.g, c.b, 255);
+        let (dim, fg) = (pack(palette::DIM), pack(palette::FG));
+        let mut scratch = std::mem::take(&mut self.scratch);
+        let status = std::mem::take(&mut self.status);
+        let text = |this: &Self, fb: &mut [u32], x: usize, s: &str, colour: u32, scratch: &mut Vec<u8>| {
+            this.paint_text(fb, ox + x, oy + cy, s.chars(), colour, false, &m, scratch);
+            x + s.chars().count() * cw
+        };
+
+        // Left: a live dot, the shell, the encoding, the branch.
+        let mut x = 14usize;
+        {
+            let mut p = Paint { fb: &mut *fb, w, h, ox: ox as i32, oy: oy as i32, fade: 1.0 };
+            p.disc(x as f32 + 3.0, cy as f32, 6.0, rgb(palette::GREEN), 0.14);
+            p.disc(x as f32 + 3.0, cy as f32, 3.0, rgb(palette::GREEN), 1.0);
+        }
+        x = text(self, fb, x + 12, &status.shell, dim, &mut scratch) + 16;
+        x = text(self, fb, x, "UTF-8", dim, &mut scratch) + 16;
+        if !status.branch.is_empty() {
+            let mut p = Paint { fb: &mut *fb, w, h, ox: ox as i32, oy: oy as i32, fade: 1.0 };
+            bar::icon(&mut p, Chip::Branch, x as f32 + 6.5, cy as f32, 0.9, rgb(palette::DIM));
+            x = text(self, fb, x + 19, &status.branch, dim, &mut scratch) + 16;
+        }
+
+        // Right: the grid size, then as many hints as fit.
+        let size = format!("{}\u{d7}{}", status.cols, status.rows);
+        let size_w = size.chars().count() * cw;
+        let right = ww.saturating_sub(14);
+        text(self, fb, right.saturating_sub(size_w), &size, dim, &mut scratch);
+        let hints: [(&[&str], &str); 4] = [(&["\u{2191}", "\u{2193}"], tr(Str::HintHistory)), (&["Tab"], tr(Str::HintComplete)), (&["Ctrl", "L"], tr(Str::HintClear)), (&["Ctrl", ","], tr(Str::HintSettings))];
+        let cap_w = |k: &str| k.chars().count() * cw + 10;
+        let hint_w = |(keys, label): &(&[&str], &str)| keys.iter().map(|k| cap_w(k) + 6).sum::<usize>() + label.chars().count() * cw;
+        let mut room = right.saturating_sub(size_w + 16).saturating_sub(x + 16);
+        let mut shown = 0;
+        for hint in hints.iter().rev() {
+            let need = hint_w(hint) + 16;
+            if need > room {
+                break;
+            }
+            room -= need;
+            shown += 1;
+        }
+        let mut hx = right.saturating_sub(size_w + 16);
+        for (keys, label) in hints.iter().rev().take(shown) {
+            hx -= hint_w(&(keys, label));
+            let mut at = hx;
+            for k in keys.iter() {
+                let (bw, bh) = (cap_w(k), tw + 3);
+                {
+                    let mut p = Paint { fb: &mut *fb, w, h, ox: ox as i32, oy: oy as i32, fade: 1.0 };
+                    let by = (cy + 1) as i32 - bh as i32 / 2;
+                    p.rrect(at as i32, by, bw as i32, bh as i32, 4.0, [1.0; 3], 0.04);
+                    p.outline(at as i32, by, bw as i32, bh as i32, 4.0, [1.0; 3], 0.07);
+                    for dx in 3..bw as i32 - 3 {
+                        p.put(at as i32 + dx, by + bh as i32 - 2, [1.0; 3], 0.07); // the thicker bottom edge
+                    }
+                }
+                text(self, fb, at + 5, k, fg, &mut scratch);
+                at += bw + 6;
+            }
+            text(self, fb, at, label, dim, &mut scratch);
+            hx -= 16;
+        }
+        self.scratch = scratch;
+        self.status = status;
     }
 }
 
@@ -318,22 +516,32 @@ impl Glyphs for Soft {
         }
         let tile = self.next_tile;
         self.next_tile += need;
-        let bmp = self.fonts.raster(c, bold, wide);
+        let mut bmp = Vec::new();
+        self.fonts.raster_into(&mut bmp, &self.fonts.grid(), c, bold, wide);
         let (cw, ch) = (self.fonts.cell_w as usize, self.fonts.cell_h as usize);
         if wide {
             for half in 0..2 {
                 for y in 0..ch {
-                    let from = y * cw * 2 + half * cw;
-                    self.tiles.extend_from_slice(&bmp[from..from + cw]);
+                    let from = (y * cw * 2 + half * cw) * 3;
+                    self.tiles.extend_from_slice(&bmp[from..from + cw * 3]);
                 }
             }
         } else {
             self.tiles.extend_from_slice(&bmp);
         }
-        debug_assert_eq!(self.tiles.len(), self.next_tile as usize * cw * ch);
+        debug_assert_eq!(self.tiles.len(), self.next_tile as usize * cw * ch * 3);
         self.glyphs.set(c, style, tile);
         tile
     }
+}
+
+/// What the status bar says.
+#[derive(Default, PartialEq)]
+struct Status {
+    shell: String,
+    branch: String,
+    cols: usize,
+    rows: usize,
 }
 
 // ------------------------------------------------------------ pixel maths --
@@ -363,6 +571,25 @@ fn text_px(fg: [u32; 4], bg: [u32; 4], c: u32) -> [u32; 4] {
     let a = bg[3] + div255((255 - bg[3]) * c);
     let m = |i: usize| (fg[i] * c * 255 + bg[i] * bg[3] * (255 - c) + 32512) / 65025;
     [m(0), m(1), m(2), a]
+}
+
+/// `text_px` with a coverage for each of the red, green and blue stripes of the pixel (LCD text). The
+/// alpha follows the strongest one, so no colour channel can exceed it; with three equal coverages the
+/// result is exactly `text_px`.
+fn text_px3(fg: [u32; 4], bg: [u32; 4], c: [u32; 3]) -> [u32; 4] {
+    let a = bg[3] + div255((255 - bg[3]) * c[0].max(c[1]).max(c[2]));
+    let m = |i: usize| (fg[i] * c[i] * 255 + bg[i] * bg[3] * (255 - c[i]) + 32512) / 65025;
+    [m(0), m(1), m(2), a]
+}
+
+/// `overlay` with a coverage per stripe.
+fn overlay3(dst: [u32; 4], color: [u32; 4], c: [u32; 3]) -> [u32; 4] {
+    let cmax = c[0].max(c[1]).max(c[2]);
+    if cmax == 0 {
+        return dst;
+    }
+    let m = |i: usize| (div255(color[i] * c[i]) + div255(dst[i] * (255 - c[i]))).min(255);
+    [m(0), m(1), m(2), (cmax + div255(dst[3] * (255 - cmax))).min(255)]
 }
 
 /// shader.wgsl `overlay`: `color` at coverage `c` over the premultiplied `dst`.
@@ -411,6 +638,27 @@ impl Backend for Target<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn three_equal_coverages_are_the_grey_result() {
+        for c in [0, 1, 77, 128, 254, 255] {
+            for bg in [[0, 0, 0, 0], [10, 20, 30, 255], [10, 20, 30, 224]] {
+                assert_eq!(text_px3([200, 100, 50, 255], bg, [c; 3]), text_px([200, 100, 50, 255], bg, c));
+            }
+            assert_eq!(overlay3([10, 20, 30, 255], [200, 100, 50, 255], [c; 3]), overlay([10, 20, 30, 255], [200, 100, 50, 255], c));
+        }
+    }
+
+    #[test]
+    fn stripes_with_different_coverage_colour_the_edge_and_never_exceed_the_alpha() {
+        // Only the red stripe covered, over glass: red at its own strength, and alpha at least that.
+        let p = text_px3([255, 255, 255, 255], [0, 0, 0, 0], [200, 0, 0]);
+        assert_eq!((p[0], p[1], p[2]), (200, 0, 0));
+        for c in [[0, 90, 255], [255, 0, 3], [17, 130, 255]] {
+            let p = text_px3([255, 255, 255, 255], [0, 0, 0, 0], c);
+            assert!(p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3], "{p:?}");
+        }
+    }
 
     #[test]
     fn full_coverage_is_the_foreground() {

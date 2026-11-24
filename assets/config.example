@@ -26,6 +26,49 @@
 # Row height as a multiple of the font's own height (0.8 to 3).
 # line_height = 1.0
 
+# How the edges of the letters are drawn: "rgb" uses the red, green and blue stripes of an LCD panel (as
+# GNOME and most terminals do; sharper), "bgr" is the same for panels with the stripes the other way
+# round, "gray" uses grey levels only (no colour fringes; for screenshots or unusual panels).
+# smoothing = "rgb"
+
+# Snap the baseline, x-height and cap height of the letters to whole pixel rows, so horizontal strokes
+# are crisp instead of spread over two rows. Set false to draw the outlines exactly as designed.
+# hinting = true
+
 [window]
 # How opaque the glass is, 0.3 to 1. There is no blur on GNOME, so below ~0.85 what is behind shows.
 # opacity = 0.88
+
+# Ask the compositor to blur what is behind the glass. It is a separate thing from opacity: opacity says
+# how much of the window shows through, blur says how sharp it is. It needs a compositor that offers it
+# (KDE Plasma, or any with the ext-background-effect protocol); GNOME's Mutter does not, and there this
+# changes nothing. Most visible below ~0.85 opacity. The compositor chooses the blur's strength.
+# blur = false
+
+# The status bar at the bottom of the window: shell, encoding, git branch (with the chips on), key hints and the
+# size of the grid. It takes 28 px: turn it off for the last row.
+# status_bar = true
+
+[ui]
+# The language of the window's text (the settings screen, the status bar): "auto" follows your locale
+# (LC_ALL, LC_MESSAGES, LANG), "en" is English, "es" is Spanish. This file and the command line stay in English.
+# language = "auto"
+
+[input]
+# What goes on the line above your prompt. "shell" leaves the prompt as your shell draws it. "chips" puts a
+# row of context chips (time, user, directory, git branch...) there, right above where you type: the shell
+# still edits the line, axon adds the chips. axon starts bash with the hook it needs; for zsh and fish (or a
+# bash whose rc file replaces PROMPT_COMMAND) add one line to the shell's rc file:
+#   eval "$(axon shell-init bash)"        # zsh: eval "$(axon shell-init zsh)"; fish: axon shell-init fish | source
+# mode = "shell"
+
+# 12-hour ("03:48 pm") or 24-hour ("15:48") clock in the time chip.
+# clock = "12h"
+
+# The cursor's shape until a program asks for another: "block", "bar" or "underline".
+# cursor = "block"
+
+# The chips to show, left to right. One with nothing to say (no git repository, no virtual environment)
+# is skipped. Available: time, user, env (conda or venv), pyenv, host (user@host), dir, branch,
+# changes (files and lines changed in git), kube (the current kubectl context).
+# chips = ["time", "user", "env", "pyenv", "host", "dir", "branch", "changes", "kube"]

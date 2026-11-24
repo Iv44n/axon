@@ -20,11 +20,17 @@ Add it in `input.rs` (`encode_key`, a pure function of a resolved xkb key). Cove
 1. `config.rs` is the file (`~/.config/axon/config.toml`, own parser, [0016](../../../knowledge/decisions/0016-config-file-font-settings.md)). Add the field to `Config` / `FontCfg`, its range constant, a line in `apply`, a test in `config.rs`, and a commented line in `assets/config.example` and the README.
 2. Never read config on the hot path: it loads at startup and on `Ctrl+Shift+R` (`App::reload` in `wlapp.rs`); a setting that changes the glyph bitmaps goes through `Fonts` (`set_px` / `raster`), so tiles are rebuilt and the renderers stay unchanged.
 3. The environment variables win over the file (`env_overrides`).
-4. A setting the user should drag also gets a row in `settings.rs`: a `Row` variant (in `ALL`, `ROWS`, `label`, `range`), `Draft::get` / `set` / `text`, and a line in `changes()` with its file key. Its tests (`changes_lists_only_what_differs...`) need the new row.
+4. A setting the user should drag also gets a row in `settings.rs`: a `Row` variant (in `FONT_ROWS` or `INPUT_ROWS`, `label`, `range`, `is_number`), `Draft::get` / `set` / `text`, and a line in `changes()` with its file key. Its tests (`changes_lists_only_what_differs...`) need the new row.
 5. `axon config` writes `assets/config.example` as is (a test parses it with every line uncommented): keep it in step, and add the key to `describe` (`config show`).
 
+## New chip for the prompt chips
+1. `config::Chip`: add the variant to the enum, `COUNT`, `ALL` and the `name` list (the file's word for it). `Chip::ALL` order is the default order and the settings screen's grid order (3 per row).
+2. `context.rs`: fill `Context.text[Chip::X as usize]` in `gather` from a pure function (tested) that reads a file or `/proc`; empty means "nothing to show". Anything slow (a process, a network) stays on the thread `gather` already runs on; what only the shell knows goes through `axon shell-init` (`SHELL_*` in `config.rs`) and `parse_report`.
+3. `bar.rs`: a colour in `COLORS` and an icon arm in `icon` (14 px, outline only, built from `stroke`, `box_outline`, `Paint::shape`; its test (`every_icon_draws_something...`) covers it.
+4. `assets/config.example`, the README chip table, and a scene in `src/design.rs` (`sample_context`).
+
 ## Color theme
-Edit only `palette.rs` (`FG`, `BG`, `CURSOR`, `SELECTION_BG`, the `ANSI` table) and the gradient/border in `fs_bg`. Follow `axon-design-language`. Check the contrast of `ANSI[0]`/`ANSI[8]` on `BG`.
+Edit only `palette.rs` (`FG`, `BG`, `DIM`, `ACCENT`, the hues, `CURSOR`, `SELECTION_BG`, the `ANSI` table; the chip colours in `bar::colors` read them) and the gradient/border in `fs_bg`. Follow `axon-design-language`. Check the contrast of `ANSI[0]`/`ANSI[8]` on `BG`.
 
 ## Mouse support for applications (vim, tmux)
 Done for the `wl` backend: `mouse.rs` is the pure encoder (`encode(mode, Event, Mods, col, row)`: modes 1000/1002/1003, SGR 1006, UTF-8 1005, classic), tested without a window. `wlapp.rs` calls it from `report_button`, `on_pointer_move` (only when the cell changes) and `on_scroll`, and starts no selection while a program has the mouse (Shift gives it back). To add an event, extend `mouse::Event` and its test.
@@ -41,3 +47,6 @@ Done for the `wl` backend: `mouse.rs` is the pure encoder (`encode(mode, Event, 
 - [ ] Tested in the real window (keyboard, resize, HiDPI scaling if applicable).
 - [ ] Idle still at 0% CPU.
 - [ ] Skills/`CLAUDE.md` updated if a rule or module changed; `knowledge/` updated if a task, decision or measurement changed.
+
+## A new text in the interface
+Add one line to `strings!` in `src/i18n.rs` with both languages and draw it with `tr(Str::Name)`; never a literal in `settings.rs`, `soft.rs` or `bar.rs`. Check the Spanish length against its box on the design board (`*-es` scenes). Config keys, CLI output and hooks are not translated (ADR 0022).

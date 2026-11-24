@@ -4,6 +4,7 @@
 use std::{
     collections::VecDeque,
     os::fd::{AsFd, OwnedFd},
+    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -27,21 +28,27 @@ use rustix::{
 };
 
 use crate::{
+    bar,
+    history::{self, History, Hook},
+    i18n::{self, Str, tr},
     cell::pack,
     chrome::{self, EDGE_BOTTOM, EDGE_LEFT, EDGE_RIGHT, EDGE_TOP, Hit, Ui},
-    config::{self, Config, FontCfg},
+    config::{self, Chip, Config, FontCfg},
+    context::{self, Context, Probe},
     input, mouse, palette, session,
     settings::{self, Effect, Settings},
-    soft::{Soft, Target},
+    soft::Soft,
     view::View,
     wl::{Event, Wl, cursor},
     xkb::{Key, Xkb},
 };
 
-/// `BTN_LEFT` from `linux/input-event-codes.h`.
 /// How long a redraw may wait for the compositor's frame callback or buffer release before axon
 /// assumes it was lost (suspend and resume, a hidden window) and draws anyway.
 const STALL: Duration = Duration::from_millis(250);
+/// The prompt chips are re-read at most this often while the terminal prints.
+const CONTEXT_EVERY: Duration = Duration::from_millis(500);
+/// `BTN_LEFT` from `linux/input-event-codes.h`.
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 const BTN_MIDDLE: u32 = 0x112;
@@ -85,6 +92,8 @@ struct Proxy {
     wake: Arc<OwnedFd>,
     pending: Arc<AtomicBool>,
     queue: Arc<Mutex<VecDeque<TermEvent>>>,
+    /// What the shell's hook said, with the moment the PTY thread read it: commands are timed there.
+    hooks: Arc<Mutex<VecDeque<(Instant, Hook)>>>,
 }
 
 impl Proxy {
@@ -102,12 +111,33 @@ impl EventListener for Proxy {
                     self.wake();
                 }
             }
+            // The shell's hook talks through window titles: they are timed and kept out of the title.
+            TermEvent::Title(t) if history::parse(&t).is_some() => {
+                if let Some(h) = history::parse(&t) {
+                    self.hooks.lock().unwrap().push_back((Instant::now(), h));
+                    self.wake();
+                }
+            }
             e => {
                 self.queue.lock().unwrap().push_back(e);
                 self.wake();
             }
         }
     }
+}
+
+/// When the input bar's chips are re-read, and the thread that does it.
+struct Refresh {
+    /// A refresh is wanted from this moment on.
+    due: Option<Instant>,
+    last: Instant,
+    /// `git diff` last ran at this moment.
+    git_at: Instant,
+    running: Arc<AtomicBool>,
+    /// Where the thread leaves its result.
+    done: Arc<Mutex<Option<Context>>>,
+    /// The time chip needs a repaint at this moment (the minute changes).
+    clock_at: Option<Instant>,
 }
 
 /// A key being held: sent again at `at`, then every `1 / rate` seconds.
@@ -144,6 +174,18 @@ struct App {
     waiting: Option<Instant>,
     /// The settings screen, while it is open.
     panel: Option<Box<Settings>>,
+    /// The prompt chips: what they say now, whether that changed since the last frame, the row they
+    /// are on, the shell they read (process id, the file it reports to, the flag that turns them on)
+    /// and the refresh in progress.
+    ctx: Context,
+    /// What each prompt said and how its command ended (the chips' status).
+    history: History,
+    ctx_dirty: bool,
+    chips: bar::Chips,
+    shell: u32,
+    report: Option<PathBuf>,
+    flag: Option<PathBuf>,
+    refresh: Refresh,
     dirty: bool,
     quit: bool,
     mouse: (f32, f32),
@@ -159,6 +201,15 @@ struct App {
     /// Key repeat: keys per second (0 = off) and initial delay, as the compositor says.
     rate: i32,
     delay: i32,
+}
+
+impl Drop for App {
+    /// The files the shell and this window talk through belong to this window.
+    fn drop(&mut self) {
+        for f in [&self.report, &self.flag].into_iter().flatten() {
+            let _ = std::fs::remove_file(f);
+        }
+    }
 }
 
 /// Runs the app. Returns false, with nothing shown, if this backend cannot start here (no Wayland
@@ -181,6 +232,7 @@ pub fn run() -> bool {
 impl App {
     fn new() -> std::io::Result<App> {
         let cfg = config::load();
+        i18n::set(cfg.lang.resolve_here());
         let base_px = cfg.font.size;
         let opacity = cfg.opacity.unwrap_or(chrome::OPACITY);
         let mut soft = Soft::new(&cfg.font, opacity);
@@ -192,7 +244,7 @@ impl App {
         let mut xkb = Some(Xkb::load().ok_or_else(|| std::io::Error::other("libxkbcommon.so.0 not found, the keyboard would not work"))?);
         // The first configure decides the size; 0 x 0 means the compositor has no opinion.
         let (mut w, mut h) = (1000, 640);
-        let mut ui = Ui::IDLE;
+        let mut ui = Ui { status: cfg.status_bar, ..Ui::IDLE };
         let (mut rate, mut delay) = (25, 600);
         'first: loop {
             wl.wait(None)?;
@@ -220,9 +272,19 @@ impl App {
         }
 
         let wake = Arc::new(eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)?);
-        let proxy = Proxy { wake, pending: Arc::new(AtomicBool::new(false)), queue: Arc::default() };
-        let (cols, rows) = session::grid_size(w, h, cw, ch, soft.pad, soft.top);
-        let (term, pty) = session::spawn(proxy.clone(), cols, rows, cw, ch, 0);
+        let proxy = Proxy { wake, pending: Arc::new(AtomicBool::new(false)), queue: Arc::default(), hooks: Arc::default() };
+        let (cols, rows) = session::grid_size(w, h, cw, ch, soft.pad, soft.top, soft.bottom);
+        // The files the shell and axon talk through (`context.rs`): what the shell reports, and the flag
+        // that says the prompt chips are on.
+        let (report, flag) = (context::report_path(std::process::id()), context::flag_path(std::process::id()));
+        if let Some(dir) = report.as_deref().and_then(std::path::Path::parent) {
+            context::remove_stale_reports(dir);
+        }
+        let shell_path = std::env::var("SHELL").unwrap_or_default();
+        let inherited = std::env::var("PROMPT_COMMAND").ok();
+        let env = context::shell_env(&shell_path, report.as_deref(), flag.as_deref(), inherited.as_deref()).into_iter().collect();
+        let (term, pty, shell) = session::spawn(proxy.clone(), cols, rows, cw, ch, 0, env, cfg.input.cursor);
+        let cfg_chips = cfg.input.inline && !cfg.input.chips.is_empty();
         let mut app = App {
             wl,
             soft,
@@ -244,6 +306,21 @@ impl App {
             cfg,
             opacity,
             panel: None,
+            ctx: Context::default(),
+            history: History::default(),
+            ctx_dirty: true,
+            chips: bar::Chips::default(),
+            shell,
+            report,
+            flag,
+            refresh: Refresh {
+                due: cfg_chips.then(Instant::now),
+                last: Instant::now(),
+                git_at: Instant::now(),
+                running: Arc::new(AtomicBool::new(false)),
+                done: Arc::default(),
+                clock_at: None,
+            },
             dirty: true,
             waiting: None,
             quit: false,
@@ -259,6 +336,7 @@ impl App {
             delay,
         };
         app.set_geometry();
+        app.sync_flag();
         // A debugging aid: start with the settings screen open (screenshots, memory measurements).
         if std::env::var_os("AXON_SETTINGS").is_some() {
             app.toggle_settings();
@@ -274,7 +352,7 @@ impl App {
             // Block until the compositor, the PTY thread or a held key needs us; and, when a redraw is
             // stuck waiting for the compositor, only until it is clear that it will not answer.
             let now = Instant::now();
-            let timeout = [self.repeat.as_ref().map(|r| r.at), self.waiting.map(|t| t + STALL)]
+            let timeout = [self.repeat.as_ref().map(|r| r.at), self.waiting.map(|t| t + STALL), self.refresh.due, self.refresh.clock_at]
                 .into_iter()
                 .flatten()
                 .min()
@@ -293,6 +371,10 @@ impl App {
             if wake_ready {
                 let _ = read(wake.as_fd(), &mut [0u8; 8]);
                 self.dirty = true;
+                // The terminal printed something: the directory or the branch may have changed.
+                if self.proxy.pending.load(Ordering::Acquire) {
+                    self.context_due(Instant::now());
+                }
             }
             if wl_ready {
                 self.wl.read_events()?;
@@ -302,6 +384,7 @@ impl App {
                 self.wl_event(ev);
             }
             self.tick_repeat();
+            self.tick_context();
             if self.waiting.is_some_and(|t| t.elapsed() >= STALL) {
                 self.wl.give_up_waiting();
                 self.waiting = None;
@@ -323,29 +406,50 @@ impl App {
         // The buffer is the window plus the margin its shadow is drawn in.
         let (ml, mt, mb) = chrome::margins(self.ui.maximized);
         let (w, h) = (self.w as usize + 2 * ml, self.h as usize + mt + mb);
+        let chips_on = self.chips_on();
         let Some(fb) = self.wl.framebuffer(w, h) else {
             self.waiting.get_or_insert_with(Instant::now);
             return;
         };
         self.waiting = None;
         self.proxy.pending.store(false, Ordering::Release);
+        let branch = if chips_on { self.ctx.get(Chip::Branch) } else { "" };
+        let shell = std::env::var("SHELL").ok();
+        let shell = shell.as_deref().and_then(|s| s.rsplit('/').next()).unwrap_or("shell");
+        self.soft.set_status(shell, branch, self.cols, self.rows);
         self.soft.set_ui(self.ui);
         if self.panel.is_some() {
             self.soft.invalidate(); // the panel is painted over a complete grid, every time
         }
         let mut t = self.term.lock();
-        self.view.build(&mut t, self.ui.focused, &mut Target { soft: &mut self.soft, fb: &mut *fb, w, h });
+        let chips = &self.cfg.input.chips;
+        self.chips.frame(chips_on, self.ctx_dirty, &self.history, chips, &mut t, &mut self.view, &mut self.soft, fb, (w, h), self.ui.focused);
         drop(t);
-        if let Some(p) = &self.panel {
+        self.ctx_dirty = false;
+        let mut animating = false;
+        if let Some(p) = self.panel.as_mut() {
+            animating = p.step(Instant::now());
             p.draw(fb, w, h, (ml, mt), (self.w, self.h), self.ui.maximized);
+            p.draw_preview(&self.soft, &self.ctx, fb, (self.w, self.h));
         }
         self.wl.present();
-        self.dirty = false;
+        // A fade in progress asks for the next frame itself; at rest nothing does (idle is 0 % CPU).
+        self.dirty = animating;
     }
 
     /// Events from the terminal thread. The queue lock is not held while one is handled: the PTY
     /// thread sends events while holding the terminal lock, and handling may take it.
     fn term_events(&mut self) {
+        loop {
+            let Some((at, hook)) = self.proxy.hooks.lock().unwrap().pop_front() else { break };
+            match hook {
+                Hook::Start => self.history.start(at),
+                Hook::Prompt { n, status } => {
+                    self.history.prompt(n, status, at, &self.ctx);
+                    self.dirty = true;
+                }
+            }
+        }
         loop {
             let Some(e) = self.proxy.queue.lock().unwrap().pop_front() else { break };
             match e {
@@ -453,16 +557,106 @@ impl App {
         let (ml, mt, _) = chrome::margins(self.ui.maximized);
         let grab = if self.ui.maximized { None } else { Some(chrome::EDGE_OUT as i32) };
         self.wl.set_geometry(ml as i32, mt as i32, self.w as i32, self.h as i32, grab);
+        self.set_blur();
+    }
+
+    /// Asks the compositor to blur behind the window when the settings say so (its rounded outline).
+    fn set_blur(&mut self) {
+        if !self.cfg.blur {
+            return self.wl.set_blur(&[]);
+        }
+        let (ml, mt, _) = chrome::margins(self.ui.maximized);
+        let radius = if self.ui.maximized { 0 } else { chrome::RADIUS as i32 };
+        let (rects, n) = chrome::blur_strips(ml as i32, mt as i32, self.w as i32, self.h as i32, radius);
+        self.wl.set_blur(&rects[..n]);
     }
 
     /// Grid size for the window size, after a resize or a new font size.
     fn relayout(&mut self) {
-        let (c, r) = session::grid_size(self.w, self.h, self.cw, self.ch, self.soft.pad, self.soft.top);
+        let (c, r) = session::grid_size(self.w, self.h, self.cw, self.ch, self.soft.pad, self.soft.top, self.soft.bottom);
         if (c, r) != (self.cols, self.rows) {
             (self.cols, self.rows) = (c, r);
             session::resize(&self.term, &self.pty, c, r, self.cw, self.ch);
         }
+        self.ctx_dirty = true;
         self.dirty = true;
+    }
+
+    // ------------------------------------------------------- prompt chips --
+
+    /// Whether the chips are shown: asked for and with at least one chip to show.
+    fn chips_on(&self) -> bool {
+        self.cfg.input.inline && !self.cfg.input.chips.is_empty()
+    }
+
+    /// Puts the flag file where the shell's hook looks: it exists while the chips are on.
+    fn sync_flag(&self) {
+        let Some(f) = &self.flag else { return };
+        if self.chips_on() {
+            let _ = std::fs::write(f, b"");
+        } else {
+            let _ = std::fs::remove_file(f);
+        }
+    }
+
+    /// Asks for the chips to be read again: at once, or at most `CONTEXT_EVERY` after the last time.
+    fn context_due(&mut self, now: Instant) {
+        if !self.chips_on() {
+            return;
+        }
+        let at = now.max(self.refresh.last + CONTEXT_EVERY);
+        self.refresh.due = Some(self.refresh.due.map_or(at, |d| d.min(at)));
+    }
+
+    /// Takes in a finished refresh, starts one that is due, and keeps the minute timer.
+    fn tick_context(&mut self) {
+        if let Some(c) = self.refresh.done.lock().unwrap().take() {
+            if c.git_ran {
+                self.refresh.git_at = Instant::now();
+            }
+            if c != self.ctx {
+                self.ctx = c;
+                self.history.set_ctx(&self.ctx);
+                self.ctx_dirty = true;
+                self.dirty = true;
+            }
+        }
+        if !self.chips_on() {
+            (self.refresh.due, self.refresh.clock_at) = (None, None);
+            return;
+        }
+        let now = Instant::now();
+        if self.refresh.clock_at.is_none_or(|t| now >= t) && self.cfg.input.chips.contains(&Chip::Time) {
+            if self.refresh.clock_at.is_some() {
+                self.context_due(now);
+            }
+            self.refresh.clock_at = Some(now + context::until_next_minute());
+        }
+        if self.refresh.due.is_some_and(|d| now >= d) {
+            if self.refresh.running.swap(true, Ordering::AcqRel) {
+                self.refresh.due = Some(now + Duration::from_millis(200)); // one at a time
+                return;
+            }
+            self.refresh.due = None;
+            self.refresh.last = now;
+            let probe = Probe {
+                pid: self.shell,
+                report: self.report.clone(),
+                clock24: self.cfg.input.clock24,
+                prev: self.ctx.clone(),
+                git_age: now.saturating_duration_since(self.refresh.git_at),
+            };
+            let (done, running, proxy) = (self.refresh.done.clone(), self.refresh.running.clone(), self.proxy.clone());
+            let spawned = std::thread::Builder::new().name("context".into()).spawn(move || {
+                let c = context::gather(&probe);
+                *done.lock().unwrap() = Some(c);
+                running.store(false, Ordering::Release);
+                proxy.wake();
+            });
+            if spawned.is_err() {
+                self.refresh.running.store(false, Ordering::Release);
+            }
+        }
     }
 
     // ----------------------------------------------------------- settings --
@@ -474,7 +668,9 @@ impl App {
             self.selecting = false;
             self.term.lock().selection = None;
             let font = FontCfg { size: self.base_px, ..self.cfg.font.clone() };
-            self.panel = Some(Box::new(Settings::open(&font, self.opacity)));
+            let mut s = Settings::open(&font, self.opacity, &self.cfg.input).with_blur(self.cfg.blur, self.wl.blur_supported()).with_lang(self.cfg.lang);
+            s.start_faded();
+            self.panel = Some(Box::new(s));
             self.repeat = None;
             self.dirty = true;
         }
@@ -494,10 +690,42 @@ impl App {
     fn apply(&mut self, d: &settings::Draft) {
         self.base_px = d.font.size;
         self.opacity = d.opacity;
+        if self.cfg.lang != d.lang {
+            self.cfg.lang = d.lang;
+            i18n::set(d.lang.resolve_here());
+        }
+        if self.cfg.blur != d.blur {
+            self.cfg.blur = d.blur;
+            self.set_blur();
+        }
         self.soft.update_fonts(&d.font);
         self.soft.set_opacity(d.opacity);
         (self.cw, self.ch) = self.soft.cell();
+        self.set_input(&d.input);
         self.relayout();
+    }
+
+    /// Switches the prompt chips to `input`: the flag the shell's hook looks at is put right and the
+    /// chips are read now, not after the next output.
+    fn set_input(&mut self, input: &config::InputCfg) {
+        if *input == self.cfg.input {
+            return;
+        }
+        let clock_changed = input.clock24 != self.cfg.input.clock24;
+        if input.cursor != self.cfg.input.cursor {
+            session::set_cursor(&self.term, input.cursor);
+        }
+        self.cfg.input = input.clone();
+        self.refresh.clock_at = None;
+        if self.chips_on() {
+            self.refresh.due = Some(Instant::now());
+            if clock_changed {
+                self.ctx = Context::default(); // the clock text is rebuilt by the refresh
+                self.history.set_ctx(&self.ctx);
+            }
+        }
+        self.ctx_dirty = true;
+        self.sync_flag();
     }
 
     fn panel_effect(&mut self, e: Effect) {
@@ -529,12 +757,15 @@ impl App {
             Ok(_) => {
                 p.saved();
                 self.cfg.font = p.draft.font.clone();
+                self.cfg.input = p.draft.input.clone();
                 self.cfg.opacity = Some(p.draft.opacity);
+                self.cfg.blur = p.draft.blur;
+                self.cfg.lang = p.draft.lang;
                 self.cfg_px = p.draft.font.size;
                 self.close_settings(false);
             }
             Err(e) => {
-                p.notice = Some(format!("not saved: {e}"));
+                p.notice = Some(format!("{}{e}", tr(Str::NotSaved)));
                 self.dirty = true;
             }
         }
@@ -545,7 +776,8 @@ impl App {
     fn panel_button(&mut self, pressed: bool) -> bool {
         let Some(p) = self.panel.as_mut() else { return false };
         if !pressed {
-            p.release();
+            let e = p.release();
+            self.panel_effect(e);
             return false;
         }
         if self.hover != Hit::Client {
@@ -559,13 +791,23 @@ impl App {
     /// Reads the configuration again (Ctrl+Shift+R): fonts, spacing and opacity change in place.
     fn reload(&mut self) -> bool {
         let cfg = config::load();
+        i18n::set(cfg.lang.resolve_here());
+        session::set_cursor(&self.term, cfg.input.cursor);
         self.cfg = cfg.clone();
+        self.ui.status = cfg.status_bar;
+        self.soft.set_ui(self.ui);
+        self.set_blur();
         self.opacity = cfg.opacity.unwrap_or(chrome::OPACITY);
         self.base_px = cfg.font.size;
         self.cfg_px = cfg.font.size;
         self.soft.set_fonts(&cfg.font);
         self.soft.set_opacity(cfg.opacity.unwrap_or(chrome::OPACITY));
         (self.cw, self.ch) = self.soft.cell();
+        self.refresh.clock_at = None;
+        if self.chips_on() {
+            self.refresh.due = Some(Instant::now());
+        }
+        self.sync_flag();
         self.relayout();
         true
     }

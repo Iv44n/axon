@@ -1,12 +1,17 @@
 //! axon — minimalist GPU terminal.
+mod bar;
 mod cell;
 mod chrome;
 mod config;
+mod context;
 mod design;
 mod font;
 mod gpu;
+mod history;
+mod i18n;
 mod input;
 mod mouse;
+mod paint;
 mod palette;
 mod session;
 mod settings;
@@ -131,8 +136,8 @@ impl State {
         let (w, h) = gpu.size();
         let (cw, ch) = gpu.cell();
         let pad = gpu.pad as u32;
-        let (cols, rows) = session::grid_size(w, h, cw, ch, pad, pad);
-        let (term, notifier) = session::spawn(listener, cols, rows, cw, ch, u64::from(window.id()));
+        let (cols, rows) = session::grid_size(w, h, cw, ch, pad, pad, pad);
+        let (term, notifier, _) = session::spawn(listener, cols, rows, cw, ch, u64::from(window.id()), Default::default(), Default::default());
 
         window.request_redraw();
         State {
@@ -159,7 +164,7 @@ impl State {
         let (w, h) = self.gpu.size();
         let (cw, ch) = self.gpu.cell();
         let pad = self.gpu.pad as u32;
-        let (cols, rows) = session::grid_size(w, h, cw, ch, pad, pad);
+        let (cols, rows) = session::grid_size(w, h, cw, ch, pad, pad, pad);
         if cols != self.cols || rows != self.rows {
             self.cols = cols;
             self.rows = rows;
@@ -247,6 +252,8 @@ impl ApplicationHandler<Ev> for App {
         match ev {
             Ev::Wake => s.window.request_redraw(),
             Ev::Term(e) => match e {
+                // The prompt chips' hook (`history.rs`) talks through titles; this backend has no chips.
+                TermEvent::Title(t) if history::parse(&t).is_some() => {}
                 TermEvent::Title(t) => s.window.set_title(&t),
                 TermEvent::ResetTitle => s.window.set_title("axon"),
                 TermEvent::PtyWrite(t) => s.write(t.into_bytes()),

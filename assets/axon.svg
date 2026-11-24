@@ -1,26 +1,24 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
-  <!-- Black-and-white glass window: rounded pane, light rim, title bar with three buttons, prompt. -->
+  <!-- Dark glass window after the terminal.html look: hairline under the title bar, traffic-light buttons,
+       two outline chips on the line above the prompt, an amber prompt chevron and a cursor. -->
   <defs>
     <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#2a2a2a"/>
-      <stop offset="1" stop-color="#0b0b0b"/>
+      <stop offset="0" stop-color="#202023"/>
+      <stop offset="1" stop-color="#0b0b0c"/>
     </linearGradient>
     <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#fff" stop-opacity="0.55"/>
-      <stop offset="1" stop-color="#fff" stop-opacity="0.12"/>
-    </linearGradient>
-    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#fff" stop-opacity="0.16"/>
-      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+      <stop offset="0" stop-color="#fff" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0.08"/>
     </linearGradient>
   </defs>
   <rect x="16" y="24" width="224" height="208" rx="34" fill="url(#body)"/>
-  <rect x="16" y="24" width="224" height="104" rx="34" fill="url(#sheen)"/>
   <rect x="17" y="25" width="222" height="206" rx="33" fill="none" stroke="url(#rim)" stroke-width="2"/>
-  <path d="M17 80h222" stroke="#fff" stroke-opacity="0.12" stroke-width="2"/>
-  <circle cx="52" cy="52" r="10" fill="#fff" fill-opacity="0.78"/>
-  <circle cx="84" cy="52" r="10" fill="#fff" fill-opacity="0.55"/>
-  <circle cx="116" cy="52" r="10" fill="#fff" fill-opacity="0.34"/>
-  <path d="M56 118l38 30-38 30" fill="none" stroke="#f2f2f2" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M112 186h54" fill="none" stroke="#f2f2f2" stroke-width="14" stroke-linecap="round"/>
+  <path d="M17 80h222" stroke="#fff" stroke-opacity="0.10" stroke-width="2"/>
+  <circle cx="52" cy="52" r="9" fill="#ff5f57"/>
+  <circle cx="82" cy="52" r="9" fill="#febc2e"/>
+  <circle cx="112" cy="52" r="9" fill="#28c840"/>
+  <rect x="42" y="98" width="58" height="26" rx="9" fill="#3ddc84" fill-opacity="0.10" stroke="#3ddc84" stroke-opacity="0.65" stroke-width="2.5"/>
+  <rect x="108" y="98" width="88" height="26" rx="9" fill="#d86bdc" fill-opacity="0.10" stroke="#d86bdc" stroke-opacity="0.65" stroke-width="2.5"/>
+  <path d="M56 148l32 26-32 26" fill="none" stroke="#ffb454" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M110 202h50" fill="none" stroke="#f4f4f5" stroke-width="15" stroke-linecap="round"/>
 </svg>

@@ -149,6 +149,9 @@
   <section><h2>Settings screen</h2>
     <p>Opened with the gear at the right end of the title bar or <code>Ctrl+,</code>. A modal glass panel over the dimmed grid; the title bar stays live. Values change the window as they are dragged; <b>Save</b> writes <code>config.toml</code> (comments kept), <b>Cancel</b> or <kbd>Esc</kbd> puts everything back. The panel's own text is fixed at 13 px so it does not move while the font size is edited.</p>
     <div class="grid" data-group="settings"></div></section>
+  <section><h2>Prompt chips</h2>
+    <p><code>[input] mode = "chips"</code> draws a row of context chips on the line above the prompt you are typing at: time, user, conda or venv environment, pyenv, user@host, directory, git branch, git changes (files, lines added, lines removed) and the Kubernetes context. The shell reserves that line (a concealed space in its first column) and axon draws the pills over it, so they sit exactly where you type, move with the prompt and disappear while a program runs. They use the grid's own font, so they cost no memory. The chips listed in <code>chips = [...]</code> appear in that order; one with nothing to say is skipped, one that does not fit is shortened with an ellipsis and then dropped. The pills are two pixels shorter than the row so they never touch the lines around them. The colours are the one splash of colour in the chrome, and opt-in.</p>
+    <div class="grid" data-group="prompt chips"></div></section>
   <section><h2>Font</h2>
     <p>What <code>[font]</code> in <code>~/.config/axon/config.toml</code> changes: <code>weight</code>, <code>letter_spacing</code> and <code>line_height</code>. The default is weight 400, spacing 0 and height 1.0 (the first frame above). Weight is synthesized until the own font reader can read the variable axis.</p>
     <div class="grid" data-group="font"></div></section>

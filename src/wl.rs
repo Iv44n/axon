@@ -80,6 +80,11 @@ enum Kind {
     DataDeviceManager,
     DataDevice,
     DataSource,
+    /// `ext_background_effect_manager_v1`, its per-surface object, and KDE's older blur pair.
+    BgEffectManager,
+    BgEffect,
+    KdeBlurManager,
+    KdeBlur,
 }
 
 /// Object ids the server allocates (the offers of `wl_data_device`) start here; they are not
@@ -134,6 +139,8 @@ struct Globals {
     seat: (u32, u32),
     cursor_shape: (u32, u32),
     data_device_manager: (u32, u32),
+    bg_effect: (u32, u32),
+    kde_blur: (u32, u32),
 }
 
 /// A request argument. `Fd` travels in ancillary data, not in the byte stream.
@@ -211,6 +218,14 @@ pub struct Wl {
     compositor: u32,
     shm: u32,
     wm_base: u32,
+    /// Compositor blur: the manager and surface object of `ext-background-effect-v1`, or KDE's pair; its
+    /// capability bits (1 = blur); the region asked for, as rectangles (empty = no blur).
+    bg_manager: u32,
+    bg_effect: u32,
+    kde_manager: u32,
+    kde_blur: u32,
+    bg_caps: u32,
+    blur_want: Vec<[i32; 4]>,
     surface: u32,
     xdg_surface: u32,
     toplevel: u32,
@@ -270,6 +285,12 @@ impl Wl {
             free: Vec::new(),
             globals: Globals::default(),
             registry: 0,
+            bg_manager: 0,
+            bg_effect: 0,
+            kde_manager: 0,
+            kde_blur: 0,
+            bg_caps: 0,
+            blur_want: Vec::new(),
             compositor: 0,
             shm: 0,
             wm_base: 0,
@@ -341,6 +362,15 @@ impl Wl {
         wl.send(wl.toplevel, 2, [Arg::S(title)]); // set_title
         wl.send(wl.toplevel, 3, [Arg::S(app_id)]); // set_app_id
         wl.send(wl.toplevel, 8, [Arg::I(MIN_SIZE.0), Arg::I(MIN_SIZE.1)]); // set_min_size
+        if wl.globals.bg_effect.0 != 0 {
+            let b = wl.globals.bg_effect;
+            wl.bg_manager = wl.bind(b.0, "ext_background_effect_manager_v1", 1, Kind::BgEffectManager);
+            wl.bg_effect = wl.new_obj(Kind::BgEffect);
+            wl.send(wl.bg_manager, 1, [Arg::U(wl.bg_effect), Arg::U(wl.surface)]); // get_background_effect
+        } else if wl.globals.kde_blur.0 != 0 {
+            let b = wl.globals.kde_blur;
+            wl.kde_manager = wl.bind(b.0, "org_kde_kwin_blur_manager", 1, Kind::KdeBlurManager);
+        }
         wl.send(wl.surface, 6, []); // commit: asks for the first configure
         wl.flush()?;
         Ok(wl)
@@ -382,6 +412,60 @@ impl Wl {
                 self.send(region, 0, []); // destroy; the id comes back with delete_id
             }
             None => self.send(self.surface, 5, [Arg::U(0)]), // set_input_region(null): everything
+        }
+    }
+
+    /// Whether the compositor can blur what is behind the window (the settings screen says so when not).
+    pub fn blur_supported(&self) -> bool {
+        (self.bg_effect != 0 && self.bg_caps & 1 != 0) || self.kde_manager != 0
+    }
+
+    /// Asks for what is behind the given rectangles of the surface to be blurred; none turns it off.
+    /// Takes effect with the next commit, and only where the compositor offers it.
+    pub fn set_blur(&mut self, rects: &[[i32; 4]]) {
+        if self.blur_want != rects {
+            self.blur_want.clear();
+            self.blur_want.extend_from_slice(rects);
+            self.apply_blur();
+        }
+    }
+
+    fn apply_blur(&mut self) {
+        let on = !self.blur_want.is_empty();
+        let region = if on && self.blur_supported() {
+            let region = self.new_obj(Kind::Region);
+            self.send(self.compositor, 1, [Arg::U(region)]); // create_region
+            for i in 0..self.blur_want.len() {
+                let [x, y, w, h] = self.blur_want[i];
+                self.send(region, 1, [Arg::I(x), Arg::I(y), Arg::I(w), Arg::I(h)]); // add
+            }
+            region
+        } else {
+            0
+        };
+        if self.bg_effect != 0 {
+            if self.bg_caps & 1 == 0 {
+                return; // asking before the compositor says it can blur is a protocol error
+            }
+            self.send(self.bg_effect, 1, [Arg::U(region)]); // set_blur_region (null: none)
+        } else if self.kde_manager != 0 {
+            if region == 0 {
+                if self.kde_blur != 0 {
+                    self.send(self.kde_manager, 1, [Arg::U(self.surface)]); // unset
+                    self.send(self.kde_blur, 2, []); // release
+                    self.kde_blur = 0;
+                }
+                return;
+            }
+            if self.kde_blur == 0 {
+                self.kde_blur = self.new_obj(Kind::KdeBlur);
+                self.send(self.kde_manager, 0, [Arg::U(self.kde_blur), Arg::U(self.surface)]); // create
+            }
+            self.send(self.kde_blur, 1, [Arg::U(region)]); // set_region
+            self.send(self.kde_blur, 0, []); // commit
+        }
+        if region != 0 {
+            self.send(region, 0, []); // destroy; the id comes back with delete_id
         }
     }
 
@@ -653,8 +737,15 @@ impl Wl {
                     "wl_seat" => self.globals.seat = (name, version),
                     "wp_cursor_shape_manager_v1" => self.globals.cursor_shape = (name, version),
                     "wl_data_device_manager" => self.globals.data_device_manager = (name, version),
+                    "ext_background_effect_manager_v1" => self.globals.bg_effect = (name, version),
+                    "org_kde_kwin_blur_manager" => self.globals.kde_blur = (name, version),
                     _ => {}
                 }
+            }
+            (Kind::BgEffectManager, 0) => {
+                // capabilities: what the compositor can do; the blur region may be set only if it blurs.
+                self.bg_caps = a.u32();
+                self.apply_blur();
             }
             (Kind::Sync, 0) => self.sync_done = true,
             (Kind::Frame, 0) => {

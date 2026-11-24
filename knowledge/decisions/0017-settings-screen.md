@@ -8,7 +8,7 @@ related: [0016-config-file-font-settings.md, 0015-continuous-glass.md, 0014-clie
 
 **Decision:** a gear at the right end of the title bar (or `Ctrl+,`) opens a modal glass panel over the dimmed grid
 (`src/settings.rs`). It edits the [0016](0016-config-file-font-settings.md) settings: font family (a picker over the
-installed monospaced fonts), size, weight, bold, letter spacing, line height, opacity. Changes show on the window
+installed monospaced fonts), size, weight, bold, letter spacing, line height, opacity (and, since [0019](0019-window-blur.md), a blur switch). Changes show on the window
 as they are made (dragging a slider is live); **Save** writes `config.toml`, **Cancel**, `Esc`, the gear or `Ctrl+,`
 put back what the screen opened with.
 

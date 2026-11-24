@@ -1,43 +1,59 @@
 ---
 name: axon-design-language
-description: axon's visual language (black-and-white glass, rounded window, title bar with round buttons) - palette, frame, cursor, typography and what NOT to do. Use it when changing colors, effects, typography or any aesthetic detail.
+description: axon's visual language (dark glass after the terminal.html reference: amber accent, hairlines, coloured window buttons, status bar, chips, settings) - palette, frame, cursor, typography and what NOT to do. Use it when changing colors, effects, typography or any aesthetic detail.
 ---
 
 # Design language
 
-**Principles:** black and white, translucent glass, rounded, **continuous**: the window is one surface, the
-title bar is the same glass as the grid (integrated, like Ghostty, WezTerm and Warp), nothing separates regions
-and the edge is the same all the way round. Colour only where a program asks for it.
-Decision records: `knowledge/decisions/0015` (continuous glass), `0014` (shadow, design board), `0012` (superseded look). The frame lives in
-`src/chrome.rs`; the palette in `src/palette.rs`. **Look before and after every visual change** on the design
-board: `scripts/design.sh --baseline` (keeps the current frames), change the code, `scripts/design.sh`, open
-`design/board.html` (backdrops, 1x/2x/4x pixel zoom, baseline/split compare). Its frames come from the real renderer.
+**Principles:** dark translucent glass, rounded, one amber accent and six clear hues, hairlines instead of panes.
+The look is the `terminal.html` reference the user supplied (ADR 0021, which supersedes the black-and-white
+identity of 0012 and the no-separators rule of 0015): title bar and status bar share the glass of the grid, divided from it
+by a 1 px hairline. Decision records: `knowledge/decisions/0021` (this look), `0020` (text), `0015`, `0014` (shadow, design
+board). The frame lives in `src/chrome.rs` and `src/soft.rs`; the tokens in `src/palette.rs`. **Look before and after every
+visual change** on the design board: `scripts/design.sh --baseline` (keeps the current frames), change the code,
+`scripts/design.sh`, open `design/board.html` (backdrops, 1x/2x/4x pixel zoom, baseline/split compare). Its frames come
+from the real renderer.
 
 ## Palette (source of truth: `src/palette.rs`)
-- Glass body: near-black `#090909` at `AXON_OPACITY` (`chrome::OPACITY` = 0.88 on `wl`), the desktop shows
-  through. No compositor blur on GNOME: below ~0.85 the text of a window behind is readable through ours.
-- Text `#f2f2f2`; cursor `#ffffff`; selection `#4a4a4a`; default background cells transparent.
-- ANSI: black `#2c2c2e`, white `#d0d0d0`, bright black `#8e8e93`, bright white `#ffffff`; the six hues are
-  muted (`red #e5736f`, `green #8fd19e`, `yellow #e3c98a`, `blue #7aa7e0`, `magenta #c4a0d8`, `cyan #86c9d0`).
-  Making them gray is one array in `palette.rs`.
+- Glass body `#0b0b0c` at `AXON_OPACITY` (`chrome::OPACITY` = 0.88 on `wl`); the desktop shows through. No compositor blur
+  on GNOME: below ~0.85 the text of a window behind is readable through ours.
+- Text `#d9d9de`; secondary (`DIM`) `#74747d`; cursor `#f4f4f5`; selection `#4a3d27`; default background cells transparent.
+- One accent, amber `#ffb454` (`ACCENT`): the prompt `$`, slider fill, switch on, the chosen radio, "Unsaved changes", focus.
+- Hues: green `#3ddc84`, red `#ff5d5d`, magenta `#d86bdc`, yellow `#f6b73c`, blue `#6aa9ff`, cyan `#4fd6d0`: the ANSI 1-6 slots and the
+  chip colours. ANSI grey (8) is `#7e7e87` (4.5:1 on the glass; `DIM` is 4.25:1, fine for chrome only).
 
 ## Frame (`chrome.rs`, all computed per pixel)
 - Rounded rectangle, radius 14 px, anti-aliased; square when maximized, fullscreen or tiled.
-- Shadow in a margin around the window (Mutter draws none for us): black, spread 26 px, cast 8 px down,
-  55% at most with a cubic falloff; it alone outlines the window on a light desktop. The margin is outside the
-  window geometry (`set_window_geometry`); only an 8 px band of it takes the pointer (resize), the rest lets
-  clicks through. None when square.
-- Glass: one tint everywhere, no sheen, no gradient. Edge: a 1 px outline of 8% white, identical on all four
-  sides and anti-aliased round the corners; none when square.
-- Title bar 38 px: not drawn, only a drag area. The title centred in `#ebebeb` at 75% (40% when unfocused). Buttons on the left, macOS order: close, minimize, maximize; 13 px discs, 20 px apart.
-  Resting light gray; the pointer over the group shows the glyphs (x, -, +) and turns the hovered disc near white;
-  pressed is dimmer; an unfocused window dims them.
-- Settings gear: at the right end of the title bar (24.5 px from the edge), a ring with eight teeth in white at 55% (28% unfocused); hovered it gets a round 12% highlight and goes to 95%. It is its own hover state (`Hit::Settings`, `Ui.hover == 4`), the three discs do not show glyphs for it.
-- Settings screen (`settings.rs`, ADR 0017): a modal panel 460 px wide, centred under the title bar, near-opaque (9% white-ish black) with a 1 px 10% white outline and its own soft shadow, over the grid dimmed by 50% black; the title bar is not dimmed. Rows of 38 px: label at 62% white, a slider (4 px track at 16%, fill at 72%, 12 px white knob) with its value right-aligned, the font picker as two chevron buttons around the name, a pill switch. The number at a slider's right is a click target (hover: 10% white box); typing turns it into a darker field with the text and a 2 px caret (selected: 22% white behind the text). Buttons 30 px high: Defaults and Cancel at 10% white, Save white with dark text. Text 13 px, regular, white at 90%; headings bold. Nothing coloured. Rendered by the real renderer on the design board (`settings*` scenes).
-- Grid padding: 0.9 x font size on the sides and below, title bar + 0.45 x font size above.
+- Shadow in a margin around the window (Mutter draws none for us): black, spread 26 px, cast 8 px down, 55% at most with a
+  cubic falloff. The margin is outside the window geometry; only an 8 px band of it takes the pointer (resize). None when square.
+- Glass: one tint (`GLASS`), outline of 7% white on the outermost pixel (none when square), a 1 px 5% light just inside the top edge.
+- Title bar 42 px (`TITLE_H`): a 3.5% white light fading out downward, a 7% hairline on its last row. The title is centred in the grid
+  font: `user@host:` in `DIM`, the rest in the text colour (100%, 55% unfocused). Buttons on the left, macOS order, 12 px discs 20 px apart,
+  centred at y = 21: resting grey `#3a3a3e` (55% unfocused); the pointer over any of them colours all three (close `#ff5f57`, minimize
+  `#febc2e`, maximize `#28c840`) and shows dark glyphs (x, -, a square); pressed is dimmer.
+- Settings button: a 28 px square at the right end (centre 28 px from the edge) with a two-slider icon in `DIM`; hovered it turns to the text
+  colour on a rounded 7% white highlight (12% pressed). Its own hover state (`Hit::Settings`, `Ui.hover == 4`).
+- Status bar 28 px (`STATUS_H`, `Ui.status`, `[window] status_bar`): 2% white tint, a 7% hairline on its first row; a green dot with a faint
+  halo and the shell, `UTF-8`, the branch (icon and name, with the chips on) at 82% of the font size in `DIM`; on the right the grid size and
+  the hints (`↑↓ history`, `Tab complete`, `Ctrl L clear`, `Ctrl , settings`) as keycaps (4% fill, 7% outline, a thicker foot) followed by a
+  label, dropped from the left when they do not fit. It takes grid rows (`Soft.bottom`).
+- Prompt chips (`bar.rs`, ADR 0018): on the reserved line above the prompt being typed at, each an 8 px-radius pill 90% of the row high,
+  10% fill of its hue, 58% outline, an outline icon (1.5-unit strokes on the reference's 16-unit grid, never filled shapes), regular text in
+  the grid font in the hue. Hues: time red, user green, env cyan, pyenv amber, host grey `#a1a1aa`, dir magenta, branch yellow, changes
+  `#ff8a4c`, kube blue. The chips are 90% of the grid font size and 8 px apart (at 14 px); cut with `…` then dropped from the end. The shell's
+  own `$` is bold amber (hook). Chips stay on every prompt (history ring) and, once its command ran, the right end of the line shows a green check or a red cross with the exit status when not 0, then the duration in `FAINT` (`12ms`, `1.4s`, `2m 5s`), at 80% of the chip font. Judge it on the `chips*` scenes.
+- Settings screen (`settings.rs`, ADR 0017/0021): a modal panel 500 px wide, `#141416`, radius 16, 9% white outline, its own shadow, over the
+  grid dimmed by 50%; the title bar is not dimmed. Top to bottom: title and hint; the **live preview** (black 40%, 7% outline: chips and a
+  prompt line in the font being edited); tabs in a rounded 5% container with a 10% marker that slides (0.22 s); rows of 40 px (label in
+  `DIM`, text colour when hovered or selected; hover 4% white); sliders with a 4 px `#2c2c31` track, amber fill and a 14 px `#f4f4f5`
+  knob; amber pill switches; radios with a `#5a5a62` ring that turns amber with a dot; the font picker as two buttons around a name box;
+  the chip grid (on = hue at 12% with a 45% outline and a dot; off = grey, hollow dot); a quiet 3% note box; a footer under a hairline:
+  Reset, "Unsaved changes" in amber, Cancel (7% white), Save (`#f4f4f5`, dark text). The clock and chips rows are 38% and inert with the shell's
+  own prompt. Controls fade (`Paint.fade`, 0.12-0.16 s). Judge it on the `settings*` scenes.
+- Grid padding: 0.9 x font size on the sides, title bar + 0.45 x font size above, status bar + 0.45 x font size below.
 
 ## Rules
-1. Neutral chrome. Any new colour needs a reason a program or the user gave; no accent colour.
+1. One accent (amber) and six hues, all from `palette.rs`; a new colour needs a reason the user gave. Chrome stays dark and quiet.
 2. Everything in the frame is a function of position and `Ui`: no textures, masks or caches (rule 5).
 3. A frame change repaints only what it touches: title bar for hover/focus/title, whole frame for maximize.
 4. Cursor: solid white block; hollow when unfocused; no blinking by default (idle cost).
@@ -45,10 +61,12 @@ board: `scripts/design.sh --baseline` (keeps the current frames), change the cod
 6. Animations: only if they last < 200 ms and return to idle. Never infinite loops.
 7. Minimum 4.5:1 contrast for the main text and for `ANSI[8]` (gray) on the glass body.
 8. Sharpness: `chrome::pixel` samples at `x + 0.5`, so anything that should be crisp (button discs, 1 px strokes) is centred on `n + 0.5`, never on an integer. Text is plain source-over; glyph coverage is raised to 0.70 when a tile is baked (`font.rs`). Squaring coverage, or centring on a pixel border, is what made the first version look soft.
+9. Text sharpness (ADR 0020): glyphs are supersampled 6x, vertically hinted (`Vmap`: baseline, x-height, cap height snapped to whole rows) and drawn with LCD sub-pixel coverage (`[font] smoothing`, `hinting`). Never go back to grey, unhinted `fontdue` coverage for the grid; check `text-plain`, `text-gray` and `text-unhinted` in the design board after touching `font.rs`.
+10. The settings screen uses one proportional UI font (`UiFont`) at 13.5 px; the grid and the title bar stay monospaced. Controls fade (`Paint.fade`, 0.12-0.16 s) and frames are requested only while a fade runs.
 
 ## What NOT to do
-- Separators between regions (title bar hairline, lighter panes), anything on the edge that is brighter in one
+- Lighter panes or opaque blocks (hairlines and faint tints are the only dividers), anything on the edge that is brighter in one
   place than another (it gathers in the corners), opaque blocks where a program paints the background colour.
 - Scanlines, CRT noise, permanently pulsing glows, hard or offset-only shadows, fake blur (there is no portable blur).
-- Colour in the chrome, gradients that need a stored image, buttons that animate forever.
+- Gradients that need a stored image, buttons or a cursor that animate forever (a blinking cursor wakes the process: idle = 0% CPU).
 - Changing the palette or the frame without updating this document and `chrome.rs` tests.

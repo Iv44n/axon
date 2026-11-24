@@ -8,7 +8,7 @@ use std::{
 
 use fontdue::{Font, FontSettings};
 
-use crate::config::FontCfg;
+use crate::config::{FontCfg, Smoothing};
 
 // ------------------------------------------------------------------ fonts --
 
@@ -48,6 +48,8 @@ pub struct Fonts {
     /// Pixels to shift primary-font glyphs right so that they stay centred in a cell wider or
     /// narrower than their advance (`letter_spacing`).
     dx: i32,
+    /// Where the horizontal features land at this size (hinting).
+    vmap: Vmap,
 }
 
 fn load_font(path: &Path) -> Option<Font> {
@@ -257,14 +259,15 @@ pub fn expand_home(p: &str) -> PathBuf {
 /// Changes the weight of a drawn glyph from the regular 400. Heavier smears the coverage one pixel
 /// to the right, by a fraction when the weight is between steps (700 is exactly one pixel, 900
 /// is two); lighter raises coverage to a power, which thins the soft edges first.
-fn embolden(buf: &mut [u8], w: usize, weight: u16) {
+fn embolden(buf: &mut [u8], w: usize, weight: u16, sx: usize) {
     if weight >= 400 {
+        // One pixel is `sx` samples across.
         let mut left = (weight - 400) as f32 / 300.0;
         while left > 0.0 {
             let k = left.min(1.0);
             for row in buf.chunks_exact_mut(w) {
-                for x in (1..w).rev() {
-                    let prev = (row[x - 1] as f32 * k) as u8;
+                for x in (sx..w).rev() {
+                    let prev = (row[x - sx] as f32 * k) as u8;
                     row[x] = row[x].max(prev);
                 }
             }
@@ -314,7 +317,7 @@ impl Fonts {
             .map(|&(path, ranges)| Fallback { path, ranges, font: OnceCell::new() })
             .collect();
 
-        let mut fonts = Fonts { primary, fallbacks, cfg: cfg.clone(), px: cfg.size, cell_w: 1, cell_h: 1, ascent: 0, dx: 0 };
+        let mut fonts = Fonts { primary, fallbacks, cfg: cfg.clone(), px: cfg.size, cell_w: 1, cell_h: 1, ascent: 0, dx: 0, vmap: Vmap::NONE };
         fonts.set_px(cfg.size);
         fonts
     }
@@ -333,6 +336,7 @@ impl Fonts {
 
     /// Recomputes the cell metrics for a new size; no font file is read again.
     pub fn set_px(&mut self, px: f32) {
+        self.vmap = Vmap::of(&self.primary, px);
         let lm = self.primary.horizontal_line_metrics(px).expect("font has no line metrics");
         self.px = px;
         // The spacing is set at the configured size and follows zooming proportionally.
@@ -356,11 +360,48 @@ impl Fonts {
         })
     }
 
-    /// Rasterizes a glyph into a `cell_w * (1|2)` x `cell_h` bitmap.
+    /// Rasterizes a glyph into a `cell_w * (1|2)` x `cell_h` grey bitmap (what the wgpu path reads).
     pub fn raster(&self, c: char, bold: bool, wide: bool) -> Vec<u8> {
-        let w = (self.cell_w * if wide { 2 } else { 1 }) as i32;
-        let h = self.cell_h as i32;
-        let mut buf = vec![0u8; (w * h) as usize];
+        let mut buf = Vec::new();
+        self.raster_with(&mut buf, &self.grid(), c, bold, wide, Smoothing::Gray);
+        buf.chunks_exact(3).map(|p| p[0]).collect()
+    }
+
+    /// The grid's metrics as `Small` takes them.
+    pub fn grid(&self) -> Small {
+        Small { px: self.px, cell_w: self.cell_w, cell_h: self.cell_h, ascent: self.ascent, dx: self.dx, vmap: self.vmap }
+    }
+
+    /// The cell metrics at `scale` times the current size (the prompt chips use 0.9): the same font
+    /// and spacing rules as the grid, but the row is the font's own height, without `line_height`.
+    pub fn small(&self, scale: f32) -> Small {
+        let px = (self.px * scale).max(1.0);
+        let lm = self.primary.horizontal_line_metrics(px).expect("font has no line metrics");
+        let spacing = self.cfg.letter_spacing * px / self.cfg.size;
+        let advance = self.primary.metrics('M', px).advance_width.round();
+        let cell_w = (advance + spacing.round()).max(1.0) as u32;
+        Small {
+            px,
+            cell_w,
+            cell_h: (lm.ascent - lm.descent).ceil().max(1.0) as u32,
+            ascent: lm.ascent.round() as i32,
+            dx: (cell_w as i32 - advance as i32) / 2,
+            vmap: Vmap::of(&self.primary, px),
+        }
+    }
+
+    /// Like `raster` at the metrics `m`, with the configured smoothing, into `buf` (cleared and resized;
+    /// nothing is allocated once it is big enough). Three bytes a pixel: the coverage of its red, green
+    /// and blue subpixels (all equal for grey smoothing).
+    pub fn raster_into(&self, buf: &mut Vec<u8>, m: &Small, c: char, bold: bool, wide: bool) {
+        self.raster_with(buf, m, c, bold, wide, self.cfg.smoothing);
+    }
+
+    fn raster_with(&self, buf: &mut Vec<u8>, m: &Small, c: char, bold: bool, wide: bool, smoothing: Smoothing) {
+        let w = (m.cell_w * if wide { 2 } else { 1 }) as usize;
+        let h = m.cell_h as usize;
+        buf.clear();
+        buf.resize(w * h * 3, 0);
 
         let (font, fb) = if self.primary.lookup_glyph_index(c) != 0 {
             (&self.primary, false)
@@ -369,27 +410,274 @@ impl Fonts {
         } else {
             (&self.primary, false)
         };
-        let (m, bmp) = font.rasterize(c, self.px);
-        let xoff = if fb { ((w as f32 - m.advance_width) / 2.0).round() as i32 } else { self.dx };
-        for r in 0..m.height as i32 {
-            let y = self.ascent - m.ymin - m.height as i32 + r;
-            if y < 0 || y >= h {
+        // The glyph is drawn `SS` times bigger than needed and averaged down: every output sample is the
+        // exact area its box covers, whatever the box is (a pixel, a third of one for LCD, a row that
+        // hinting stretched). `sx` samples across a pixel: 3 for LCD.
+        let sx = if smoothing == Smoothing::Gray { 1 } else { 3 };
+        let (g, big) = font.rasterize(c, m.px * SS as f32);
+        let (gw, gh) = (g.width, g.height);
+        let ss = SS as i32;
+        // The glyph's left edge and the row heights of its bitmap, in 1/SS pixels from the cell origin / baseline.
+        let advance = g.advance_width / SS as f32;
+        let xoff = if fb { ((w as f32 - advance) / 2.0).round() as i32 } else { m.dx };
+        let x0 = xoff * ss + g.xmin;
+        let top = g.ymin + gh as i32;
+        let hint = self.cfg.hinting && !fb;
+        let mut cells = vec![0u8; w * sx * h];
+        let mut strip = vec![0f32; gw];
+        let mut acc = vec![0f32; w * sx];
+        for y in 0..h {
+            // This cell row covers heights [v, v + 1] above the baseline, which hinting maps from a
+            // different span of the outline.
+            let v = (m.ascent - y as i32 - 1) as f32;
+            let (a, b) = if hint { (m.vmap.unmap_high(v), m.vmap.unmap_low(v + 1.0)) } else { (v, v + 1.0) };
+            let (a, b) = (a * SS as f32, b * SS as f32);
+            if b <= a || b <= g.ymin as f32 || a >= top as f32 {
                 continue;
             }
-            for col in 0..m.width as i32 {
-                let x = m.xmin + col + xoff;
-                if x < 0 || x >= w {
-                    continue;
+            strip.fill(0.0);
+            let (r0, r1) = ((top as f32 - b).max(0.0).floor() as usize, ((top as f32 - a).ceil() as usize).min(gh));
+            for r in r0..r1 {
+                // Bitmap row r covers heights [top - r - 1, top - r].
+                let (lo, hi) = ((top - r as i32 - 1) as f32, (top - r as i32) as f32);
+                let wgt = (hi.min(b) - lo.max(a)).max(0.0);
+                if wgt > 0.0 {
+                    for (acc, &cov) in strip.iter_mut().zip(&big[r * gw..][..gw]) {
+                        *acc += cov as f32 * wgt;
+                    }
                 }
-                buf[(y * w + x) as usize] = bmp[(r * m.width as i32 + col) as usize];
+            }
+            acc.fill(0.0);
+            let norm = (b - a) * (SS as f32 / sx as f32);
+            for (i, &sum) in strip.iter().enumerate() {
+                let x = x0 + i as i32;
+                if x >= 0 && x < (w * SS) as i32 {
+                    acc[(x as usize * sx) / SS] += sum;
+                }
+            }
+            for (cell, &sum) in cells[y * w * sx..][..w * sx].iter_mut().zip(&acc) {
+                *cell = (sum / norm).round().min(255.0) as u8;
             }
         }
         let weight = if bold && self.cfg.bold { (self.cfg.weight + 300).min(900) } else { self.cfg.weight };
-        embolden(&mut buf, w as usize, weight);
-        for c in buf.iter_mut() {
-            *c = contrast(*c);
+        embolden(&mut cells, w * sx, weight, sx);
+        for y in 0..h {
+            let src = &cells[y * w * sx..][..w * sx];
+            let dst = &mut buf[y * w * 3..][..w * 3];
+            if sx == 1 {
+                for (x, &v) in src.iter().enumerate() {
+                    dst[x * 3..][..3].fill(contrast(v));
+                }
+            } else {
+                for x in 0..w {
+                    for ch in 0..3 {
+                        // FreeType's default LCD filter over the five nearest subpixels.
+                        let at = (x * 3 + ch) as i32;
+                        let mut sum = 0u32;
+                        for (t, k) in LCD_FIR.iter().enumerate() {
+                            let i = at + t as i32 - 2;
+                            if i >= 0 && (i as usize) < src.len() {
+                                sum += src[i as usize] as u32 * k;
+                            }
+                        }
+                        let v = contrast((sum / 256).min(255) as u8);
+                        dst[x * 3 + if smoothing == Smoothing::Bgr { 2 - ch } else { ch }] = v;
+                    }
+                }
+            }
         }
-        buf
+    }
+}
+
+/// How many times bigger than the target size a glyph is rasterized before it is averaged down.
+const SS: usize = 6;
+
+/// FreeType's default LCD filter (`FT_LCD_FILTER_DEFAULT`), the weights of five neighbouring subpixels.
+const LCD_FIR: [u32; 5] = [0x08, 0x4D, 0x56, 0x4D, 0x08];
+
+/// Cell metrics at some size: what `Fonts` keeps for the grid, for text at another size.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Small {
+    pub px: f32,
+    pub cell_w: u32,
+    pub cell_h: u32,
+    pub ascent: i32,
+    dx: i32,
+    vmap: Vmap,
+}
+
+/// Where the horizontal features of the font land at a size, and where they are snapped to: the
+/// baseline, the x-height, the cap height, the ascender and the descender. Heights in pixels above
+/// the baseline. This is what FreeType's "slight" hinting does (vertical only, so the shapes and
+/// advances do not change), done by hand.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Vmap {
+    n: usize,
+    from: [f32; Vmap::MAX],
+    to: [f32; Vmap::MAX],
+}
+
+impl Vmap {
+    const MAX: usize = 10;
+
+    /// The identity: nothing is snapped.
+    pub const NONE: Vmap = Vmap { n: 0, from: [0.0; Vmap::MAX], to: [0.0; Vmap::MAX] };
+
+    /// Measured on flat and round letters of `font` at `px`: a round letter overshoots a flat one by a
+    /// fraction of a pixel, and both land on the same whole row.
+    pub fn of(font: &Font, px: f32) -> Vmap {
+        let top = |c| font.metrics(c, px).bounds;
+        let (bot, hi) = (|c| top(c).ymin, |c| top(c).ymin + top(c).height);
+        // (lowest, highest) source height of each zone, snapped to one whole row.
+        let zones = [
+            (bot('p'), bot('p')),
+            (bot('o').min(0.0), 0.0f32),
+            (hi('x').min(hi('o')), hi('x').max(hi('o'))),
+            (hi('H').min(hi('O')), hi('H').max(hi('O'))),
+            (hi('l'), hi('l')),
+        ];
+        let mut v = Vmap::NONE;
+        let mut last = f32::NEG_INFINITY;
+        for (lo, up) in zones {
+            // The flat edge decides the row; a zone that would cross or touch the previous one is skipped.
+            // The row a zone lands on is its flat edge, rounded; the zone is widened to the grid the glyph is
+            // drawn on (`SS` samples a pixel), so a sample row cut by the edge never leaks into the row above.
+            let target = if up == 0.0 { 0.0 } else { lo.round() };
+            let g = SS as f32;
+            let (lo, up) = ((lo * g - 1e-3).floor() / g, (up * g + 1e-3).ceil() / g);
+            if lo <= last || v.n + 2 > Vmap::MAX || !(lo.is_finite() && up.is_finite()) {
+                continue;
+            }
+            v.from[v.n] = lo;
+            v.to[v.n] = target;
+            v.from[v.n + 1] = up;
+            v.to[v.n + 1] = target;
+            v.n += 2;
+            last = up;
+        }
+        v
+    }
+
+    /// Hinted height of source height `y`.
+    #[cfg(test)]
+    fn map(&self, y: f32) -> f32 {
+        if self.n == 0 {
+            return y;
+        }
+        if y <= self.from[0] {
+            return y + self.to[0] - self.from[0];
+        }
+        let n = self.n;
+        if y >= self.from[n - 1] {
+            return y + self.to[n - 1] - self.from[n - 1];
+        }
+        let i = (1..n).find(|&i| y < self.from[i]).unwrap_or(n - 1);
+        let (f0, f1, t0, t1) = (self.from[i - 1], self.from[i], self.to[i - 1], self.to[i]);
+        if f1 <= f0 { t0 } else { t0 + (y - f0) / (f1 - f0) * (t1 - t0) }
+    }
+
+    /// The highest source height that lands at or below hinted height `v`: the top of a collapsed zone
+    /// when `v` is its row, so a round letter's overshoot is left out of the row above it.
+    pub fn unmap_high(&self, v: f32) -> f32 {
+        let n = self.n;
+        if n == 0 {
+            return v;
+        }
+        if v < self.to[0] {
+            return self.from[0] + v - self.to[0];
+        }
+        let i = (0..n).rev().find(|&i| self.to[i] <= v).unwrap_or(0);
+        if i == n - 1 {
+            return self.from[i] + v - self.to[i];
+        }
+        let (t0, t1) = (self.to[i], self.to[i + 1]);
+        self.from[i] + (v - t0) / (t1 - t0) * (self.from[i + 1] - self.from[i])
+    }
+
+    /// The lowest source height that lands at or above hinted height `v`.
+    pub fn unmap_low(&self, v: f32) -> f32 {
+        let n = self.n;
+        if n == 0 {
+            return v;
+        }
+        let Some(i) = (0..n).find(|&i| self.to[i] >= v) else {
+            return self.from[n - 1] + v - self.to[n - 1];
+        };
+        if i == 0 {
+            return self.from[0] + v - self.to[0];
+        }
+        let (t0, t1) = (self.to[i - 1], self.to[i]);
+        self.from[i - 1] + (v - t0) / (t1 - t0) * (self.from[i] - self.from[i - 1])
+    }
+}
+
+// -------------------------------------------------------------- ui font --
+
+/// A proportional font for the interface around the terminal (the settings screen), where the grid's
+/// monospace font reads as code. Loaded when the screen opens and dropped when it closes: it is ~5 MB of
+/// parsed outlines that the terminal itself never needs.
+pub struct UiFont {
+    font: Font,
+}
+
+/// Families tried in order: the desktop's own where it has one, then common good ones.
+const UI_FAMILIES: [&str; 6] = ["Ubuntu Sans", "Inter", "Cantarell", "Noto Sans", "Open Sans", "DejaVu Sans"];
+
+impl UiFont {
+    /// The first of `UI_FAMILIES` installed (a regular, upright file), or none.
+    pub fn load() -> Option<UiFont> {
+        UI_FAMILIES.iter().find_map(|f| find_family(f)).and_then(|p| load_font(&p)).map(|font| UiFont { font })
+    }
+
+    /// Width in pixels of `s` at `px`.
+    pub fn width(&self, s: &str, px: f32) -> i32 {
+        self.pen(s, px).last().unwrap_or(0.0).round() as i32
+    }
+
+    /// The pen position before each character of `s`, and after the last, in pixels.
+    fn pen<'a>(&'a self, s: &'a str, px: f32) -> impl Iterator<Item = f32> + 'a {
+        let mut x = 0.0f32;
+        std::iter::once(0.0).chain(s.chars().map(move |c| {
+            x += self.font.metrics(c, px).advance_width;
+            x
+        }))
+    }
+
+    /// Height of a capital letter at `px`, to centre text on its middle.
+    pub fn cap_height(&self, px: f32) -> f32 {
+        let b = self.font.metrics('H', px).bounds;
+        b.ymin + b.height
+    }
+
+    /// Calls `put(x, y, coverage)` for every inked pixel of `s` at `px`, its pen starting at `(x, baseline)`.
+    /// `bold` thickens the strokes by synthesis (the font file's variable axis is not read).
+    pub fn draw(&self, s: &str, px: f32, x: i32, baseline: i32, bold: bool, mut put: impl FnMut(i32, i32, u8)) {
+        let pens: Vec<f32> = self.pen(s, px).collect();
+        for (c, &pen) in s.chars().zip(&pens) {
+            if c == ' ' {
+                continue;
+            }
+            let (g, mut bmp) = self.font.rasterize(c, px);
+            let mut w = g.width;
+            if bold && w > 0 {
+                // One extra column on the right, then the smear (`embolden` at weight 600).
+                let mut wide = vec![0u8; (w + 1) * g.height];
+                for (r, row) in bmp.chunks(w).enumerate() {
+                    wide[r * (w + 1)..][..w].copy_from_slice(row);
+                }
+                embolden(&mut wide, w + 1, 640, 1);
+                (bmp, w) = (wide, w + 1);
+            }
+            let gx = x + pen.round() as i32 + g.xmin;
+            for (r, row) in bmp.chunks(w.max(1)).enumerate().take(g.height) {
+                let gy = baseline - g.ymin - g.height as i32 + r as i32;
+                for (col, &cov) in row.iter().enumerate() {
+                    if cov != 0 {
+                        put(gx + col as i32, gy, contrast(cov));
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -470,6 +758,82 @@ mod tests {
         let mut cfg = FontCfg::default();
         f(&mut cfg);
         Fonts::new(&cfg)
+    }
+
+    /// Rows of the glyph's bitmap (grey) as the coverage of each row's strongest pixel, top to bottom.
+    fn row_peaks(f: &Fonts, c: char) -> Vec<u8> {
+        let w = f.cell_w as usize;
+        f.raster(c, false, false).chunks(w).map(|r| *r.iter().max().unwrap()).collect()
+    }
+
+    #[test]
+    fn hinting_puts_flat_tops_and_the_baseline_on_whole_rows() {
+        for px in [13.0, 14.0, 15.0, 16.0, 18.0] {
+            let hinted = fonts(|c| c.size = px);
+            let plain = fonts(|c| {
+                c.size = px;
+                c.hinting = false;
+            });
+            for ch in ['x', 'H', 'z'] {
+                let (h, p) = (row_peaks(&hinted, ch), row_peaks(&plain, ch));
+                let first = |v: &[u8]| v.iter().position(|&m| m > 0).unwrap();
+                let last = |v: &[u8]| v.iter().rposition(|&m| m > 0).unwrap();
+                // The top and bottom rows of a flat letter are as strong as the middle of a stem...
+                assert!(h[first(&h)] >= 200 && h[last(&h)] >= 200, "{ch} at {px}: top {} bottom {}", h[first(&h)], h[last(&h)]);
+                // ...and hinting never makes a letter taller or shorter by more than a row.
+                assert!((last(&h) - first(&h)).abs_diff(last(&p) - first(&p)) <= 1, "{ch} at {px}");
+            }
+        }
+    }
+
+    #[test]
+    fn hinting_leaves_the_ink_about_the_same() {
+        let sum = |f: &Fonts, c| f.raster(c, false, false).iter().map(|&v| v as u32).sum::<u32>() as f32;
+        let hinted = fonts(|_| {});
+        let plain = fonts(|c| c.hinting = false);
+        for c in ['a', 'e', 'g', 'W', '8', 'f'] {
+            let (a, b) = (sum(&hinted, c), sum(&plain, c));
+            assert!((a / b - 1.0).abs() < 0.12, "{c}: {a} against {b}");
+        }
+    }
+
+    #[test]
+    fn lcd_text_has_a_coverage_per_stripe_and_grey_text_one() {
+        let at = |s| {
+            let f = fonts(|c| c.smoothing = s);
+            let mut buf = Vec::new();
+            f.raster_into(&mut buf, &f.grid(), 'l', false, false);
+            buf
+        };
+        let (gray, rgb, bgr) = (at(Smoothing::Gray), at(Smoothing::Rgb), at(Smoothing::Bgr));
+        assert!(gray.chunks(3).all(|p| p[0] == p[1] && p[1] == p[2]), "grey is one value");
+        assert!(rgb.chunks(3).any(|p| p[0] != p[2]), "LCD differs across the stripes of an edge");
+        // The same ink: BGR is RGB with the stripes read the other way round.
+        assert!(rgb.chunks(3).zip(bgr.chunks(3)).all(|(a, b)| a[0] == b[2] && a[1] == b[1] && a[2] == b[0]));
+        // And it has as much ink as grey text, give or take the filter.
+        let ink = |v: &[u8]| v.iter().map(|&c| c as f32).sum::<f32>();
+        assert!((ink(&rgb) / ink(&gray) - 1.0).abs() < 0.1, "{} against {}", ink(&rgb), ink(&gray));
+    }
+
+    #[test]
+    fn the_vertical_map_is_monotone_and_inverts() {
+        let f = fonts(|_| {});
+        let v = f.grid().vmap;
+        let mut last = f32::NEG_INFINITY;
+        for i in -40..160 {
+            let y = i as f32 / 10.0;
+            let m = v.map(y);
+            assert!(m >= last - 1e-4, "map goes down at {y}");
+            last = m;
+        }
+        // The rows of a hinted size land on whole pixels: the baseline, the x-height, the cap height.
+        for y in [0.0, 8.37, 10.95] {
+            let m = v.map(y);
+            assert!((m - m.round()).abs() < 1e-3, "{y} maps to {m}");
+        }
+        for target in [-2.0f32, 0.5, 3.0, 7.7, 9.5] {
+            assert!((v.map(v.unmap_low(target)) - target).abs() < 1e-3 || (v.map(v.unmap_high(target)) - target).abs() < 1e-3);
+        }
     }
 
     fn ink(f: &Fonts, c: char, bold: bool) -> u32 {

@@ -1,7 +1,7 @@
 ---
 type: task
 status: in-progress
-updated: 2026-11-22
+updated: 2026-11-24
 related: [phases.md]
 ---
 # Next steps
@@ -16,6 +16,8 @@ If a task needs design notes, create `plan/<task>.md` and link it from its line.
 - [x] 4. `view.rs`: move `build()` out of `main.rs` (done 2026-11-22, shared by both renderers)
 - [x] 5. `session.rs`: `Term` and the PTY thread behind `session::spawn` (done 2026-11-22; the `Proxy` stays per backend)
 - [x] 6. xterm 1000/1002/1003 mouse reporting with SGR, UTF-8 and classic encodings: `mouse.rs`, wired in `wlapp.rs` (done 2026-11-23; `winit` fallback has none) → `axon-extend` skill
+- [x] 6b. Window blur setting (`[window] blur`), a request to the compositor, [0019](../decisions/0019-window-blur.md)
+- [~] 6a. Input customization (Warp's *Input* settings): phase 1, the prompt chips and the Input tab, done 2026-11-24 ([0018](../decisions/0018-input-bar.md)); phase 2, an own line editor (*Input type* "Warp") with OSC 133 shell integration, only when asked
 - [ ] 7. Decide whether inline images and a blinking cursor are requirements → [risks](../risks/INDEX.md)
 - [ ] 8. Tabs and panes: one `Session` per pane; the renderer does not change
 - [x] 9. Idle RAM target: the user accepted [0011](../decisions/0011-software-render-wl-shm.md) (software rendering on `wl_shm`; the graphics stack alone maps ~94 MB, the spike reached 8.7 MB without it) (done 2026-11-22)

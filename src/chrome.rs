@@ -6,10 +6,11 @@
 //! outline, the three window buttons and the title floating on it, and a soft shadow in a margin
 //! around the window (Mutter draws none for client-decorated windows).
 //!
-//! Continuous on purpose, like the integrated title bars of Ghostty, WezTerm and Warp: the title
-//! bar is the same surface as the grid (no lighter pane, no separator), and nothing on the edge
-//! changes along it, so no line gathers in the corners (`knowledge/decisions/0015`). Black and
-//! white; the only colour on screen is what programs ask for.
+//! One glass for the whole window (`knowledge/decisions/0015`), now with the structure of the
+//! `terminal.html` reference (ADR 0021): a hairline under the title bar and above the status bar,
+//! a faint top-light on the title bar, grey window buttons that take their traffic-light colour
+//! when the pointer is over them, and a sliders icon for the settings. Nothing on the edge changes
+//! along it, so no line gathers in the corners.
 //!
 //! Coordinates: `pixel` works in buffer pixels (window plus shadow margin, see `margins`); `hit`
 //! works in window pixels, so it can be negative over the margin.
@@ -24,13 +25,21 @@ pub const RADIUS: f32 = 14.0;
 pub const SHADOW_BLUR: usize = 26;
 pub const SHADOW_DY: usize = 8;
 const SHADOW_ALPHA: f32 = 0.55;
-/// The glass tint (premultiplied by the opacity) and the white of the 1 px outline: the same all
-/// around the window, so it reads as the glass's edge, not as a line of its own.
-const GLASS: f32 = 0.035;
-const OUTLINE: f32 = 0.08;
-/// Height of the title bar: where the buttons and the title sit and the window can be dragged.
-/// Not drawn: it is the same glass as the rest. The terminal grid starts below it.
-pub const TITLE_H: usize = 38;
+/// The glass tint (premultiplied by the opacity: `#0b0b0c`) and the white of the 1 px outline: the
+/// same all around the window, so it reads as the glass's edge, not as a line of its own.
+const GLASS: f32 = 0.043;
+const OUTLINE: f32 = 0.07;
+/// White of the hairlines (under the title bar, above the status bar), of the title bar's top light
+/// (at its top, fading to nothing), of the 1 px highlight inside the top edge and of the status bar.
+const LINE: f32 = 0.07;
+const TITLE_LIGHT: f32 = 0.035;
+const TOP_LIGHT: f32 = 0.05;
+const STATUS_LIGHT: f32 = 0.02;
+/// Height of the title bar (its last row is the hairline): where the buttons and the title sit and
+/// the window can be dragged. The terminal grid starts below it.
+pub const TITLE_H: usize = 42;
+/// Height of the status bar at the bottom of the window (its first row is the hairline).
+pub const STATUS_H: usize = 28;
 /// Pixels from an edge beyond which the background no longer varies along a row.
 pub const REACH: usize = 32;
 /// Left edge of the area the title text must stay clear of; the right side mirrors it.
@@ -38,12 +47,20 @@ pub const TITLE_CLEAR: usize = 90;
 
 // Pixels are sampled at their centre (`x + 0.5`), so the button centres sit on `n + 0.5`: a 13 px
 // disc then ends exactly on pixel borders and a 1 px stroke through the centre fills one row.
-const BTN_R: f32 = 6.5;
-const BTN_X0: f32 = 20.5;
+const BTN_R: f32 = 6.0;
+const BTN_X0: f32 = 20.0;
 const BTN_DX: f32 = 20.0;
-const BTN_CY: f32 = 19.5;
-/// The gear's centre is this far from the right edge of the window.
-const GEAR_FROM_RIGHT: f32 = 24.5;
+const BTN_CY: f32 = 21.0;
+/// The settings button is a 28 px square whose centre is this far from the right edge of the window.
+const GEAR_FROM_RIGHT: f32 = 28.0;
+const GEAR_HALF: f32 = 14.0;
+/// Resting grey of the window buttons and the colours they take under the pointer (`#3a3a3e`,
+/// close `#ff5f57`, minimize `#febc2e`, maximize `#28c840`).
+const BTN_REST: [f32; 3] = [0.227, 0.227, 0.243];
+const BTN_HOT: [[f32; 3]; 3] = [[1.0, 0.373, 0.341], [0.996, 0.737, 0.18], [0.157, 0.784, 0.251]];
+/// The icon of the settings button: dim, and the foreground colour under the pointer.
+const ICON_DIM: [f32; 3] = [0.455, 0.455, 0.490];
+const ICON_FG: [f32; 3] = [0.851, 0.851, 0.871];
 /// Grab zone inside a window edge, the one outside it (over the shadow), and the longer zone that
 /// turns an edge into a corner.
 const EDGE: f32 = 4.0;
@@ -94,10 +111,12 @@ pub struct Ui {
     pub focused: bool,
     /// Maximized, fullscreen or tiled: square corners, no rim, no shadow, no resize edges.
     pub maximized: bool,
+    /// The status bar is shown: its hairline and its faint tint belong to the frame.
+    pub status: bool,
 }
 
 impl Ui {
-    pub const IDLE: Ui = Ui { hover: 0, down: false, focused: true, maximized: false };
+    pub const IDLE: Ui = Ui { hover: 0, down: false, focused: true, maximized: false, status: true };
 }
 
 fn button_center(i: u8) -> (f32, f32) {
@@ -152,7 +171,7 @@ pub fn hit(x: f32, y: f32, w: u32, h: u32, maximized: bool) -> Hit {
             return hit;
         }
     }
-    if (x - (w - GEAR_FROM_RIGHT)).hypot(y - BTN_CY) <= 11.0 {
+    if (x - (w - GEAR_FROM_RIGHT)).abs() <= GEAR_HALF && (y - BTN_CY).abs() <= GEAR_HALF {
         return Hit::Settings;
     }
     if y < TITLE_H as f32 { Hit::Title } else { Hit::Client }
@@ -196,26 +215,34 @@ fn seg(px: f32, py: f32, a: (f32, f32), b: (f32, f32)) -> f32 {
     (px - a.0 - dx * t).hypot(py - a.1 - dy * t)
 }
 
-/// Coverage of a line about 1.2 px wide at distance `d` from its axis: a stroke through a pixel
-/// centre fills that pixel and leaves a faint halo on its neighbours.
+/// Coverage of a 1.3 px stroke at distance `d` from its axis (the lines of the window glyphs).
 fn line(d: f32) -> f32 {
-    (1.1 - d).clamp(0.0, 1.0)
+    (0.65 + 0.5 - d).clamp(0.0, 1.0)
 }
 
-/// The glyph on button `i` (close, minimize, maximize) at `(px, py)`.
+/// The glyph on button `i` (close, minimize, maximize) at `(px, py)`: a cross, a dash, a square.
 fn glyph(i: u8, px: f32, py: f32) -> f32 {
     let (cx, cy) = button_center(i);
-    let k = 2.7;
+    let k = 2.2;
     match i {
         1 => line(seg(px, py, (cx - k, cy - k), (cx + k, cy + k))).max(line(seg(px, py, (cx - k, cy + k), (cx + k, cy - k)))),
-        2 => line(seg(px, py, (cx - 3.0, cy), (cx + 3.0, cy))),
-        _ => line(seg(px, py, (cx - 3.0, cy), (cx + 3.0, cy))).max(line(seg(px, py, (cx, cy - 3.0), (cx, cy + 3.0)))),
+        2 => line(seg(px, py, (cx - k, cy), (cx + k, cy))),
+        _ => {
+            let q = 1.75;
+            let d = (px - cx).abs().max((py - cy).abs()) - q;
+            line(d)
+        }
     }
+}
+
+/// A colour `c` (0..1) at opacity `a`, premultiplied.
+fn tint(c: [f32; 3], a: f32) -> P {
+    P { r: c[0] * a, g: c[1] * a, b: c[2] * a, a }
 }
 
 /// The three buttons over `base`, at pixel centre `(px, py)`.
 fn buttons(mut base: P, px: f32, py: f32, ui: &Ui) -> P {
-    // Hovering one of the three shows the glyphs of all three; the gear is its own thing.
+    // Hovering one of the three colours all three and shows their glyphs; the sliders are their own thing.
     let group = (1..=3).contains(&ui.hover);
     if px > BTN_X0 + 2.0 * BTN_DX + BTN_R + 2.0 || (py - BTN_CY).abs() > BTN_R + 2.0 {
         return base;
@@ -227,56 +254,52 @@ fn buttons(mut base: P, px: f32, py: f32, ui: &Ui) -> P {
             continue;
         }
         let cov = (0.5 - d).clamp(0.0, 1.0);
-        let hovered = ui.hover == i;
-        // Resting discs are light gray glass; a hovered group shows its glyphs and the one
-        // under the pointer turns near white.
-        let alpha = match (ui.focused, ui.hover != 0, hovered, ui.down && hovered) {
-            (_, _, true, true) => 0.62,
-            (_, _, true, false) => 0.92,
-            (_, true, false, _) if group => 0.46,
-            (_, true, false, _) => 0.34,
-            (true, false, false, _) => 0.34,
-            (false, false, false, _) => 0.17,
-        };
-        base = P::white(alpha * cov).over(base);
-        // A faint dark ring inside the disc gives it an edge.
-        let ring = (1.0 - (-d).clamp(0.0, 1.0)) * cov;
-        base = P::black(ring * 0.20).over(base);
+        let pressed = ui.down && ui.hover == i;
+        let (colour, a) = if group { (BTN_HOT[i as usize - 1], if pressed { 0.72 } else { 1.0 }) } else { (BTN_REST, if ui.focused { 1.0 } else { 0.55 }) };
+        base = tint(colour, a * cov).over(base);
         if group {
-            base = P::black(glyph(i, px, py) * 0.78).over(base);
+            base = P::black(glyph(i, px, py) * 0.65).over(base);
         }
     }
     base
 }
 
-/// Coverage of the gear icon at offset `(dx, dy)` from its centre: a ring with eight teeth, 13 px wide.
-fn gear(dx: f32, dy: f32) -> f32 {
-    let r = dx.hypot(dy);
-    let ring = (0.5 - (r - 4.4)).clamp(0.0, 1.0) * (0.5 + (r - 2.4)).clamp(0.0, 1.0);
-    let tooth = (((8.0 * dy.atan2(dx)).cos() + 0.25) * 3.0).clamp(0.0, 1.0);
-    let teeth = tooth * (0.5 - (r - 6.6)).clamp(0.0, 1.0) * (0.5 + (r - 3.8)).clamp(0.0, 1.0);
-    ring.max(teeth)
+/// Coverage of a ring of radius `r` and stroke `t` around `(cx, cy)`.
+fn ring(px: f32, py: f32, cx: f32, cy: f32, r: f32, t: f32) -> f32 {
+    (t / 2.0 + 0.5 - ((px - cx).hypot(py - cy) - r).abs()).clamp(0.0, 1.0)
 }
 
-/// The settings gear over `base` at window pixel `(px, py)`: a faint white icon, brighter on a
-/// round highlight when the pointer is over it.
+/// Coverage of the settings icon (two sliders, on a 16 px grid) at offset `(dx, dy)` from its centre.
+fn sliders(dx: f32, dy: f32) -> f32 {
+    let (x, y) = (dx + 8.0, dy + 8.0);
+    let l = |a: (f32, f32), b: (f32, f32)| (0.75 + 0.5 - seg(x, y, a, b)).clamp(0.0, 1.0);
+    l((2.5, 4.5), (8.5, 4.5))
+        .max(l((11.5, 4.5), (13.5, 4.5)))
+        .max(l((2.5, 11.5), (4.5, 11.5)))
+        .max(l((7.5, 11.5), (13.5, 11.5)))
+        .max(ring(x, y, 10.0, 4.5, 1.5, 1.5))
+        .max(ring(x, y, 6.0, 11.5, 1.5, 1.5))
+}
+
+/// The settings button over `base` at window pixel `(px, py)`: a dim sliders icon that turns to the
+/// foreground colour on a rounded highlight when the pointer is over it.
 fn gear_button(base: P, px: f32, py: f32, wf: f32, ui: &Ui) -> P {
     let (dx, dy) = (px - (wf - GEAR_FROM_RIGHT), py - BTN_CY);
-    if dx.abs() > 12.0 || dy.abs() > 12.0 {
+    if dx.abs() > GEAR_HALF + 1.0 || dy.abs() > GEAR_HALF + 1.0 {
         return base;
     }
     let hovered = ui.hover == 4;
     let mut p = base;
     if hovered {
-        let d = dx.hypot(dy) - 11.0;
-        p = P::white(if ui.down { 0.20 } else { 0.12 } * (0.5 - d).clamp(0.0, 1.0)).over(p);
+        let d = rounded_rect(dx + GEAR_HALF, dy + GEAR_HALF, 2.0 * GEAR_HALF, 2.0 * GEAR_HALF, 8.0);
+        p = P::white(if ui.down { 0.12 } else { 0.07 } * (0.5 - d).clamp(0.0, 1.0)).over(p);
     }
-    let alpha = match (hovered, ui.focused) {
-        (true, _) => 0.95,
-        (false, true) => 0.55,
-        (false, false) => 0.28,
+    let (colour, a) = match (hovered, ui.focused) {
+        (true, _) => (ICON_FG, 1.0),
+        (false, true) => (ICON_DIM, 1.0),
+        (false, false) => (ICON_DIM, 0.55),
     };
-    P::white(alpha * gear(dx, dy)).over(p)
+    tint(colour, a * sliders(dx, dy)).over(p)
 }
 
 /// Signed distance from `(px, py)` to a `w` x `h` rectangle at the origin with corner radius `r`:
@@ -285,6 +308,28 @@ pub fn rounded_rect(px: f32, py: f32, w: f32, h: f32, r: f32) -> f32 {
     let qx = (px - w * 0.5).abs() - (w * 0.5 - r);
     let qy = (py - h * 0.5).abs() - (h * 0.5 - r);
     qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - r
+}
+
+/// Most rectangles `blur_strips` returns: two per corner row and the middle.
+pub const BLUR_STRIPS: usize = RADIUS as usize * 2 + 1;
+
+/// The window's rounded outline at `(x, y, w, h)` as rectangles, for the compositor's blur region: one
+/// strip per row of each rounded corner (the first and last `radius` rows) and one for the middle.
+/// Returns them and how many there are.
+pub fn blur_strips(x: i32, y: i32, w: i32, h: i32, radius: i32) -> ([[i32; 4]; BLUR_STRIPS], usize) {
+    let mut out = [[0; 4]; BLUR_STRIPS];
+    let r = radius.clamp(0, RADIUS as i32).min(h / 2).min(w / 2);
+    let mut n = 0;
+    for i in 0..r {
+        // Row i from the edge: the corner circle leaves this much out on each side.
+        let dy = (r - i) as f32 - 0.5;
+        let inset = r - ((r * r) as f32 - dy * dy).max(0.0).sqrt().round() as i32;
+        out[n] = [x + inset, y + i, w - 2 * inset, 1];
+        out[n + 1] = [x + inset, y + h - 1 - i, w - 2 * inset, 1];
+        n += 2;
+    }
+    out[n] = [x, y + r, w, h - 2 * r];
+    (out, n + 1)
 }
 
 /// Alpha of the shadow at window pixel `(px, py)`: soft, cast `SHADOW_DY` down, already at about
@@ -314,12 +359,28 @@ pub fn pixel(x: usize, y: usize, w: usize, h: usize, opacity: f32, ui: &Ui) -> u
         return q(shade) << 24;
     }
 
-    // One glass everywhere: the title bar is not a pane of its own.
+    // One glass; the title bar and the status bar only add light and a hairline to it.
     let a0 = opacity.clamp(0.0, 1.0);
     let mut p = P { r: GLASS * a0, g: GLASS * a0, b: GLASS * a0, a: a0 };
     // The outline: the outermost pixel, the same everywhere (none when square).
     if !ui.maximized {
         p = P::white(OUTLINE * (1.5 + d).clamp(0.0, 1.0)).over(p);
+        if (1.0..2.0).contains(&py) && d <= -1.0 {
+            p = P::white(TOP_LIGHT).over(p); // the 1 px light inside the top edge
+        }
+    }
+    if py < TITLE_H as f32 {
+        // A top light that fades out down the title bar, and the hairline that ends it.
+        p = P::white(TITLE_LIGHT * (1.0 - py / TITLE_H as f32)).over(p);
+        if py >= TITLE_H as f32 - 1.0 {
+            p = P::white(LINE).over(p);
+        }
+    }
+    if ui.status && py >= hf - STATUS_H as f32 {
+        p = P::white(STATUS_LIGHT).over(p);
+        if py < hf - STATUS_H as f32 + 1.0 {
+            p = P::white(LINE).over(p);
+        }
     }
     p = buttons(p, px, py, ui);
     p = gear_button(p, px, py, wf, ui);
@@ -332,6 +393,31 @@ pub fn pixel(x: usize, y: usize, w: usize, h: usize, opacity: f32, ui: &Ui) -> u
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn blur_strips_follow_the_rounded_outline() {
+        let (x, y, w, h) = (26, 18, 300, 200);
+        let (rects, n) = super::blur_strips(x, y, w, h, super::RADIUS as i32);
+        assert_eq!(n, super::BLUR_STRIPS);
+        let area: i32 = rects[..n].iter().map(|r| r[2] * r[3]).sum();
+        // A rounded rectangle has (4 - pi) r^2 less area than the plain one.
+        let full = w * h;
+        let lost = (full - area) as f32;
+        let expect = (4.0 - std::f32::consts::PI) * super::RADIUS * super::RADIUS;
+        assert!((lost - expect).abs() < expect * 0.12, "lost {lost}, expected about {expect}");
+        for r in &rects[..n] {
+            assert!(r[0] >= x && r[1] >= y && r[0] + r[2] <= x + w && r[1] + r[3] <= y + h, "{r:?} leaves the window");
+            assert!(r[2] > 0 && r[3] > 0);
+            assert_eq!(r[0] - x, x + w - (r[0] + r[2]), "{r:?} is not symmetric");
+        }
+        // The top row is inset the most; the strips are exactly the window when square (maximized).
+        assert!(rects[0][0] > rects[n - 3][0]);
+        let (sq, n) = super::blur_strips(0, 0, 100, 50, 0);
+        assert_eq!((n, sq[0]), (1, [0, 0, 100, 50]));
+        // A window smaller than its corners does not make a negative strip.
+        let (tiny, n) = super::blur_strips(0, 0, 10, 6, super::RADIUS as i32);
+        assert!(tiny[..n].iter().all(|r| r[2] > 0 && r[3] >= 0));
+    }
+
     use super::*;
 
     const UI: Ui = Ui::IDLE;
@@ -370,19 +456,30 @@ mod tests {
     }
 
     #[test]
-    fn the_glass_is_continuous_and_the_outline_uniform() {
-        // The title bar is the same glass as the grid, top to bottom.
+    fn the_glass_is_one_surface_with_hairlines_between_the_bars_and_the_grid() {
+        // Away from the bars the glass is the same top to bottom.
         let body = at(400, 300, &UI);
-        for y in [2, 12, TITLE_H - 1, TITLE_H, 100, WIN.1 - 2] {
+        for y in [TITLE_H, 100, WIN.1 - STATUS_H - 2] {
             assert_eq!(at(400, y, &UI), body, "row {y}");
         }
+        // The hairline closes the title bar and opens the status bar; both are lighter than the glass.
+        let lum = |p: u32| (p >> 8) & 255;
+        assert!(lum(at(400, TITLE_H - 1, &UI)) > lum(at(400, TITLE_H - 3, &UI)));
+        assert!(lum(at(400, WIN.1 - STATUS_H, &UI)) > lum(at(400, WIN.1 - STATUS_H + 2, &UI)));
+        assert!(lum(at(400, WIN.1 - STATUS_H + 2, &UI)) > lum(body), "the status bar is tinted");
+        // The title bar's top light fades out downward.
+        assert!(lum(at(400, 3, &UI)) > lum(at(400, TITLE_H - 3, &UI)));
+        // Without a status bar the bottom is plain glass.
+        let none = Ui { status: false, ..UI };
+        assert_eq!(at(400, WIN.1 - STATUS_H, &none), at(400, 300, &none));
         // The outline is the same on all four sides, and only one pixel deep.
-        let edge = at(400, 0, &UI);
-        assert_ne!(edge, body);
-        assert_eq!(at(400, WIN.1 - 1, &UI), edge);
-        assert_eq!(at(0, 300, &UI), edge);
-        assert_eq!(at(WIN.0 - 1, 300, &UI), edge);
+        let edge = at(400, 200, &UI);
+        let side = at(0, 300, &UI);
+        assert_ne!(side, body);
+        assert_eq!(at(WIN.0 - 1, 300, &UI), side);
         assert_eq!(at(1, 300, &UI), body);
+        assert_eq!(at(400, WIN.1 - 1, &none), side);
+        let _ = edge;
     }
 
     #[test]
@@ -406,20 +503,23 @@ mod tests {
         let (cx, cy) = button_center(1);
         let blue = |x: f32, ui: &Ui| at(x as usize, cy as usize, ui) & 255;
         let hover = Ui { hover: 1, ..UI };
-        // Off the glyph, the disc is lighter under the pointer; at the centre the glyph makes it darker.
-        assert!(blue(cx - 4.0, &hover) > blue(cx - 4.0, &UI));
-        assert!(blue(cx, &hover) < blue(cx, &UI));
+        // Resting discs are grey; under the pointer the close button turns red (blue falls) and its
+        // glyph is darker than the disc at the centre.
+        let green = |x: f32, ui: &Ui| at(x as usize, cy as usize, ui) >> 8 & 255;
+        assert!(green(cx - 4.0, &hover) > 0 && blue(cx - 4.0, &hover) > blue(cx - 4.0, &UI) / 2);
+        assert!(green(cx - 4.0, &hover) > green(cx - 4.0, &UI), "red is a bright colour");
+        assert!(green(cx, &hover) < green(cx - 4.0, &hover), "the glyph is darker than the disc");
     }
 
     #[test]
     fn hit_testing_finds_buttons_title_edges_and_client() {
         let h = |x, y| hit(x, y, 800, 600, false);
-        assert_eq!(h(20.0, 19.0), Hit::Close);
-        assert_eq!(h(40.0, 19.0), Hit::Minimize);
-        assert_eq!(h(60.0, 19.0), Hit::Maximize);
-        assert_eq!(h(400.0, 19.0), Hit::Title);
-        assert_eq!(h(800.0 - 24.5, 19.0), Hit::Settings);
-        assert_eq!(h(800.0 - 40.0, 19.0), Hit::Title);
+        assert_eq!(h(20.0, 21.0), Hit::Close);
+        assert_eq!(h(40.0, 21.0), Hit::Minimize);
+        assert_eq!(h(60.0, 21.0), Hit::Maximize);
+        assert_eq!(h(400.0, 21.0), Hit::Title);
+        assert_eq!(h(800.0 - 28.0, 21.0), Hit::Settings);
+        assert_eq!(h(800.0 - 50.0, 21.0), Hit::Title);
         assert_eq!(Hit::Settings.button(), 4);
         assert_eq!(h(400.0, 300.0), Hit::Client);
         assert_eq!(h(2.0, 300.0), Hit::Edge(EDGE_LEFT));
@@ -436,28 +536,23 @@ mod tests {
     }
 
     #[test]
-    fn the_gear_is_drawn_lights_up_on_hover_and_leaves_the_window_buttons_alone() {
-        let alpha = |ui: &Ui, x: usize, y: usize| {
-            let (ml, mt, _) = margins(ui.maximized);
-            let (bw, bh) = (WIN.0 + 2 * ml, WIN.1 + mt + margins(ui.maximized).2);
-            pixel(ml + x, mt + y, bw, bh, 0.88, ui) >> 24
-        };
+    fn the_settings_button_is_drawn_lights_up_on_hover_and_leaves_the_window_buttons_alone() {
         let lum = |ui: &Ui, x: usize, y: usize| {
             let (ml, mt, mb) = margins(ui.maximized);
             let (bw, bh) = (WIN.0 + 2 * ml, WIN.1 + mt + mb);
             pixel(ml + x, mt + y, bw, bh, 0.88, ui) >> 8 & 255
         };
-        // The icon's ring sits 3.5 px from its centre (x = 775.5, y = 19.5).
-        let ring = (779, 19);
-        let off = lum(&UI, 700, 19);
-        assert!(lum(&UI, ring.0, ring.1) > off + 40, "ring is lighter than the glass");
+        // The icon's first slider line runs along y = 16.5 + 4.5 - 8 + ... : find its ink by scanning the button.
+        let (cx, cy) = (WIN.0 - 28, 21usize);
+        let ink = |ui: &Ui| (cx - 8..cx + 8).flat_map(|x| (cy - 8..cy + 8).map(move |y| (x, y))).map(|(x, y)| lum(ui, x, y)).max().unwrap();
+        let off = lum(&UI, 700, 21);
+        assert!(ink(&UI) > off + 40, "the icon is lighter than the glass");
         let hover = Ui { hover: 4, ..UI };
-        assert!(lum(&hover, ring.0, ring.1) > lum(&UI, ring.0, ring.1), "hover brightens it");
-        assert!(lum(&hover, 784, 19) > lum(&UI, 784, 19), "and lights a round highlight around it");
-        // Hovering the gear does not make the three discs show their glyphs.
+        assert!(ink(&hover) > ink(&UI), "hover brightens it");
+        assert!(lum(&hover, cx + 12, cy) > lum(&UI, cx + 12, cy), "and lights a rounded highlight around it");
+        // Hovering it does not colour the three discs.
         for x in 14..70 {
-            assert_eq!(lum(&hover, x, 19), lum(&UI, x, 19), "x = {x}");
+            assert_eq!(lum(&hover, x, 21), lum(&UI, x, 21), "x = {x}");
         }
-        assert_eq!(alpha(&UI, 700, 19), alpha(&UI, 400, 19));
     }
 }

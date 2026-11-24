@@ -1,4 +1,4 @@
-//! Black-and-white glass palette and ANSI -> RGB color resolution.
+//! Palette of the `terminal.html` reference (ADR 0021) and ANSI -> RGB colour resolution.
 use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::vte::ansi::{Color, Rgb};
 
@@ -6,18 +6,31 @@ const fn hex(v: u32) -> Rgb {
     Rgb { r: (v >> 16) as u8, g: (v >> 8) as u8, b: v as u8 }
 }
 
-pub const FG: Rgb = hex(0xf2f2f2);
-pub const BG: Rgb = hex(0x0a0a0a);
-pub const CURSOR: Rgb = hex(0xffffff);
-pub const SELECTION_BG: Rgb = hex(0x4a4a4a);
+/// The tokens of the `terminal.html` reference (ADR 0021): a near-black ground, a soft foreground,
+/// a dim grey for secondary text, one amber accent and six clear hues.
+pub const FG: Rgb = hex(0xd9d9de);
+pub const BG: Rgb = hex(0x0b0b0c);
+pub const CURSOR: Rgb = hex(0xf4f4f5);
+pub const SELECTION_BG: Rgb = hex(0x4a3d27);
+/// Secondary text of the chrome: the host in the title, the status bar, hints, settings labels.
+pub const DIM: Rgb = hex(0x74747d);
+/// Tertiary text: the duration of a command.
+pub const FAINT: Rgb = hex(0x4a4a52);
+/// The one accent: the prompt `$`, the sliders, the switch, the selected radio.
+pub const ACCENT: Rgb = hex(0xffb454);
+pub const GREEN: Rgb = hex(0x3ddc84);
+pub const RED: Rgb = hex(0xff5d5d);
+pub const MAGENTA: Rgb = hex(0xd86bdc);
+pub const YELLOW: Rgb = hex(0xf6b73c);
+pub const BLUE: Rgb = hex(0x6aa9ff);
+pub const CYAN: Rgb = hex(0x4fd6d0);
 
-/// Black and white first; the eight hues are muted so programs that ask for colour stay readable
-/// without breaking the monochrome glass. Index 8 (gray) keeps 4.5:1 on `BG`.
+/// The reference's hues in the ANSI slots programs use. Index 8 (gray) is a step lighter than `DIM` (`#74747d` is 4.25:1 on `BG`, fine for chrome text) so programs' grey text keeps 4.5:1.
 const ANSI: [Rgb; 16] = [
-    hex(0x2c2c2e), hex(0xe5736f), hex(0x8fd19e), hex(0xe3c98a),
-    hex(0x7aa7e0), hex(0xc4a0d8), hex(0x86c9d0), hex(0xd0d0d0),
-    hex(0x8e8e93), hex(0xff8f8a), hex(0xa9e5b5), hex(0xf2dca4),
-    hex(0x9cc2f2), hex(0xdcbdea), hex(0xa5dfe4), hex(0xffffff),
+    hex(0x2c2c30), RED, GREEN, YELLOW,
+    BLUE, MAGENTA, CYAN, FG,
+    hex(0x7e7e87), hex(0xff8a8a), hex(0x7aeaa6), hex(0xffd073),
+    hex(0x9cc4ff), hex(0xe891ec), hex(0x82e8e3), hex(0xffffff),
 ];
 
 fn dim(c: Rgb) -> Rgb {
@@ -63,6 +76,11 @@ pub fn resolve(c: Color, colors: &Colors) -> Rgb {
         }
         Color::Indexed(i) => colors[i as usize].unwrap_or_else(|| indexed(i)),
     }
+}
+
+/// `0..=1` channels of a colour, for the painters that blend in floating point.
+pub fn unit(c: Rgb) -> [f32; 3] {
+    [c.r as f32 / 255.0, c.g as f32 / 255.0, c.b as f32 / 255.0]
 }
 
 pub fn dimmed(c: Rgb) -> Rgb {

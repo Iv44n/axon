@@ -20,8 +20,12 @@ use alacritty_terminal::{
 };
 
 use crate::{
+    bar,
     chrome::{self, Ui},
-    config::FontCfg,
+    config::{Chip, FontCfg, Smoothing},
+    context::Context,
+    history::History,
+    i18n::{self, Lang},
     palette, session,
     settings::{self, Settings},
     soft::{Soft, Target},
@@ -30,7 +34,7 @@ use crate::{
 
 /// Window size of every scene, in logical pixels (the frame adds the shadow margin around it).
 const W: u32 = 900;
-const H: u32 = 520;
+const H: u32 = 620;
 const PX: f32 = 15.0;
 const OPACITY: f32 = chrome::OPACITY;
 
@@ -61,6 +65,32 @@ black red green yellow blue magenta cyan white\r\n\
 \x20selected text shows the selection colour\r\n\
 \x1b[1;32muser@axon\x1b[0m:\x1b[1;34m~\x1b[0m$ ";
 
+/// What the shell's hook makes of the demo session: every prompt becomes a reserved line above, numbered in the
+/// colour of its concealed cell, and a bare `$` with the concealed space after it (`context::BASH_HOOK`); the
+/// last one has `typed` after it.
+fn with_hook(typed: &str) -> String {
+    const PROMPT: &str = "\x1b[1;32muser@axon\x1b[0m:\x1b[1;34m~/lab/apps/axon\x1b[0m$ ";
+    let mut out = String::new();
+    for (n, part) in SHELL.split(PROMPT).enumerate() {
+        if n > 0 {
+            out.push_str(&format!("\x1b[8;38;2;0;0;{n}m \x1b[0m\r\n$\x1b[8m \x1b[0m"));
+        }
+        out.push_str(part);
+    }
+    out + typed
+}
+
+/// The records of the demo session's prompts: the first command ran in 12 ms, the second failed after 1.5 s.
+fn demo_history(ctx: &Context) -> History {
+    let (mut h, t) = (History::default(), std::time::Instant::now());
+    h.prompt(1, 0, t, ctx);
+    h.start(t);
+    h.prompt(2, 0, t + std::time::Duration::from_millis(12), ctx);
+    h.start(t + std::time::Duration::from_millis(20));
+    h.prompt(3, 127, t + std::time::Duration::from_millis(1520), ctx);
+    h
+}
+
 struct Scene {
     name: &'static str,
     label: &'static str,
@@ -70,13 +100,43 @@ struct Scene {
     font: FontCfg,
     /// Open the settings screen over the grid, with this row selected and this under the pointer.
     settings: Option<(usize, settings::Hit, &'static str)>,
+    /// The settings page shown.
+    page: settings::Page,
+    /// A chip held mid-drag in the settings screen, and where the pointer is on the panel.
+    hold: Option<(Chip, (i32, i32))>,
+    /// The blur switch: on, and whether the compositor offers blur.
+    blur: (bool, bool),
     title: &'static str,
     input: &'static str,
+    /// The language of the interface texts.
+    lang: Lang,
     /// Select `len` cells of this grid line, starting at column 1.
     select: Option<(i32, usize)>,
+    /// The prompt chips: what they say, and which are listed. The last prompt of `input` is marked
+    /// the way the shell's hook marks it (`prompt`).
+    bar: Option<(Context, Vec<Chip>)>,
 }
 
-const TITLE: &str = "~/lab/apps/axon: cargo build --release";
+/// What the bar says in the board's scenes: made-up values, the same on every machine.
+fn sample_context() -> Context {
+    let mut c = Context::default();
+    for (chip, t) in [
+        (Chip::Time, "03:48 pm"),
+        (Chip::User, "alice"),
+        (Chip::Env, "condaenv"),
+        (Chip::Pyenv, "3.12.1"),
+        (Chip::Host, "alice@axon"),
+        (Chip::Dir, "~/lab/apps/axon"),
+        (Chip::Branch, "feature/input-bar"),
+        (Chip::Changes, "3 • +10 -2"),
+        (Chip::Kube, "kube-context"),
+    ] {
+        c.text[chip as usize] = t.to_string();
+    }
+    c
+}
+
+const TITLE: &str = "ivan@axon: ~/lab/apps/axon";
 
 fn scenes() -> Vec<Scene> {
     let base = |name, label, group, ui| Scene {
@@ -87,10 +147,20 @@ fn scenes() -> Vec<Scene> {
         opacity: OPACITY,
         font: FontCfg::sized(PX),
         settings: None,
+        page: settings::Page::Font,
+        blur: (false, true),
+        hold: None,
         title: TITLE,
         input: SHELL,
         select: None,
+        bar: None,
+        lang: Lang::En,
     };
+    let bar = |chips: &[Chip]| Some((sample_context(), chips.to_vec()));
+    let hooked: &'static str = Box::leak(with_hook("").into_boxed_str());
+    let typing: &'static str = Box::leak(with_hook("git commit -m \"wire the chips to the prompt\"").into_boxed_str());
+    let bar_cursor: &'static str = Box::leak(format!("{SHELL}\x1b[6 q").into_boxed_str());
+    let underline_cursor: &'static str = Box::leak(format!("{SHELL}\x1b[4 q").into_boxed_str());
     let font = |weight, letter_spacing, line_height| FontCfg { weight, letter_spacing, line_height, ..FontCfg::sized(PX) };
     vec![
         base("rest", "Focused, at rest", "window", Ui::IDLE),
@@ -107,6 +177,44 @@ fn scenes() -> Vec<Scene> {
         Scene { settings: Some((2, settings::Hit::Slider(settings::Row::Weight, 0.4), "")), ..base("settings-slider", "Dragging the weight slider", "settings", Ui::IDLE) },
         Scene { settings: Some((4, settings::Hit::Panel, "-1.5")), ..base("settings-typing", "Typing a number into a box", "settings", Ui::IDLE) },
         Scene { settings: Some((6, settings::Hit::Save, "")), font: font(500, 1.0, 1.0), opacity: 0.80, ..base("settings-save", "Pointer over Save, other values changed", "settings", Ui::IDLE) },
+        Scene { bar: bar(&Chip::ALL), input: hooked, ..base("chips", "Every chip: the longest are cut, then the last dropped", "prompt chips", Ui::IDLE) },
+        Scene { bar: bar(&[Chip::Time, Chip::Dir, Chip::Branch, Chip::Changes]), input: typing, ..base("chips-few", "Four chips, a command being typed", "prompt chips", Ui::IDLE) },
+        Scene { bar: bar(&Chip::ALL), input: hooked, font: FontCfg::sized(20.0), ..base("chips-large", "At 20 px", "prompt chips", Ui::IDLE) },
+        Scene { bar: bar(&[Chip::Dir, Chip::Branch]), input: typing, opacity: 0.80, ..base("chips-80", "Opacity 0.80", "prompt chips", Ui::IDLE) },
+        Scene { ..base("chips-off", "Chips off: the prompt as the shell draws it", "prompt chips", Ui::IDLE) },
+        Scene { input: bar_cursor, ..base("cursor-bar", "Cursor as a bar (DECSCUSR 6, or [input] cursor = \"bar\")", "window", Ui::IDLE) },
+        Scene { input: underline_cursor, ..base("cursor-underline", "Cursor as an underline", "window", Ui::IDLE) },
+        base("no-status", "Status bar off ([window] status_bar = false)", "window", Ui { status: false, ..Ui::IDLE }),
+        Scene { settings: Some((7, settings::Hit::Toggle(settings::Row::Blur), "")), blur: (true, false), opacity: 0.80, ..base("settings-blur", "Blur on, but the compositor (GNOME) offers none", "settings", Ui::IDLE) },
+        Scene { settings: Some((0, settings::Hit::Tab(settings::Page::Input), "")), page: settings::Page::Input, ..base("settings-input", "Settings, Input page (bar off)", "settings", Ui::IDLE) },
+        Scene {
+            settings: Some((2, settings::Hit::Chip(Chip::Dir), "")),
+            page: settings::Page::Input,
+            bar: bar(&[Chip::Time, Chip::Dir, Chip::Branch, Chip::Changes]),
+            input: hooked,
+            ..base("settings-chips", "Input page: bar on, four chips, pointer over dir", "settings", Ui::IDLE)
+        },
+        Scene { lang: Lang::Es, settings: Some((0, settings::Hit::Panel, "")), ..base("settings-es", "Settings in Spanish: Font page", "language", Ui::IDLE) },
+        Scene {
+            lang: Lang::Es,
+            settings: Some((2, settings::Hit::Chip(Chip::Dir), "")),
+            page: settings::Page::Input,
+            bar: bar(&[Chip::Time, Chip::Dir, Chip::Branch, Chip::Changes]),
+            input: hooked,
+            ..base("settings-es-input", "Settings in Spanish: Input page", "language", Ui::IDLE)
+        },
+        Scene { lang: Lang::Es, bar: bar(&Chip::ALL), input: hooked, ..base("chips-es", "Status bar hints in Spanish", "language", Ui::IDLE) },
+        Scene { font: FontCfg { smoothing: Smoothing::Gray, ..FontCfg::sized(PX) }, ..base("text-gray", "Grey smoothing, hinted", "font", Ui::IDLE) },
+        Scene { font: FontCfg { hinting: false, ..FontCfg::sized(PX) }, ..base("text-unhinted", "LCD smoothing, no hinting", "font", Ui::IDLE) },
+        Scene { font: FontCfg { smoothing: Smoothing::Gray, hinting: false, ..FontCfg::sized(PX) }, ..base("text-plain", "Grey smoothing, no hinting (how it was)", "font", Ui::IDLE) },
+        Scene {
+            settings: Some((2, settings::Hit::Panel, "")),
+            page: settings::Page::Input,
+            bar: bar(&[Chip::Time, Chip::Dir, Chip::Branch, Chip::Changes]),
+            input: hooked,
+            hold: Some((Chip::Branch, (330, 190))),
+            ..base("settings-chip-drag", "Input page: a chip held mid-drag", "settings", Ui::IDLE)
+        },
         Scene { font: font(300, 0.0, 1.0), ..base("font-light", "Weight 300 (light)", "font", Ui::IDLE) },
         Scene { font: font(500, 0.0, 1.0), ..base("font-medium", "Weight 500 (medium)", "font", Ui::IDLE) },
         Scene { font: font(400, 1.0, 1.0), ..base("font-spaced", "Letter spacing +1 px", "font", Ui::IDLE) },
@@ -116,12 +224,13 @@ fn scenes() -> Vec<Scene> {
 
 /// Renders a scene; returns the frame (premultiplied `Argb8888`) and its size.
 fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
+    i18n::set(s.lang);
     let mut soft = Soft::new(&s.font, s.opacity);
     soft.cursor_color = crate::cell::pack(palette::CURSOR.r, palette::CURSOR.g, palette::CURSOR.b, 255);
     soft.set_title(s.title);
     soft.set_ui(s.ui);
     let (cw, ch) = soft.cell();
-    let (cols, rows) = session::grid_size(W, H, cw, ch, soft.pad, soft.top);
+    let (cols, rows) = session::grid_size(W, H, cw, ch, soft.pad, soft.top, soft.bottom);
     let mut term = Term::new(Config::default(), &session::Size { cols, rows }, VoidListener);
     let mut p: Processor = Processor::new();
     p.advance(&mut term, s.input.as_bytes());
@@ -133,17 +242,29 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
     let (ml, mt, mb) = chrome::margins(s.ui.maximized);
     let (w, h) = (W as usize + 2 * ml, H as usize + mt + mb);
     let mut fb = vec![0u32; w * h];
-    View::new().build(&mut term, s.ui.focused, &mut Target { soft: &mut soft, fb: &mut fb, w, h });
+    soft.set_status("zsh", "main", cols, rows);
+    let (ctx, chips) = s.bar.clone().unwrap_or_default();
+    bar::Chips::default().frame(s.bar.is_some(), true, &demo_history(&ctx), &chips, &mut term, &mut View::new(), &mut soft, &mut fb, (w, h), s.ui.focused);
     if let Some((sel, hover, typing)) = s.settings {
         // Fixed fonts, not whatever is installed: the board must look the same on every machine.
         let families = vec![("DejaVu Sans Mono".to_string(), "/x/a.ttf".into()), ("JetBrains Mono".to_string(), "/x/b.ttf".into())];
-        let mut panel = Settings::new(&s.font, s.opacity, families);
+        let input = match &s.bar {
+            Some((_, chips)) => crate::config::InputCfg { inline: true, chips: chips.clone(), clock24: false, ..Default::default() },
+            None => crate::config::InputCfg::default(),
+        };
+        let mut panel = Settings::new(&s.font, s.opacity, families).with_input(&input).with_blur(s.blur.0, s.blur.1).with_ui_font();
+        panel.page = s.page;
+        if let Some((chip, at)) = s.hold {
+            panel.hold(chip, at);
+        }
         (panel.sel, panel.hover) = (sel, hover);
         for c in typing.chars() {
             panel.key(&crate::xkb::Key { text: c.to_string(), ..Default::default() });
         }
         panel.draw(&mut fb, w, h, (ml, mt), (W, H), s.ui.maximized);
+        panel.draw_preview(&soft, &ctx, &mut fb, (W, H));
     }
+    i18n::set(Lang::En);
     (fb, w, h)
 }
 
@@ -162,7 +283,7 @@ fn incremental_repaint_matches_a_full_one() {
     ];
     let new = |s: &Soft| {
         let (cw, ch) = s.cell();
-        let (cols, rows) = session::grid_size(W, H, cw, ch, s.pad, s.top);
+        let (cols, rows) = session::grid_size(W, H, cw, ch, s.pad, s.top, s.bottom);
         Term::new(Config::default(), &session::Size { cols, rows }, VoidListener)
     };
     let mut soft = Soft::new(&FontCfg::sized(PX), OPACITY);
@@ -191,6 +312,62 @@ fn incremental_repaint_matches_a_full_one() {
         View::new().build(&mut fresh_term, ui.focused, &mut Target { soft: &mut fresh, fb: &mut full, w, h });
         let diff = fb.iter().zip(&full).filter(|(a, b)| a != b).count();
         assert_eq!(diff, 0, "step {n}: {diff} pixels differ from a full repaint");
+    }
+}
+
+/// The prompt chips are drawn over rows the terminal did not change, so painting row by row must still
+/// give exactly what painting everything gives: when a prompt moves or scrolls away, when text is typed after
+/// it, when a command's result arrives, when the newest prompt's chips change and when they are switched
+/// off and on. Old prompts keep their chips and their status.
+#[test]
+fn chips_repaint_incrementally_like_a_full_frame() {
+    let prompt = |n: u32| format!("\x1b[8;38;2;0;0;{n}m \x1b[0m\r\nme$ \x1b[8m \x1b[0m");
+    let mut other = sample_context();
+    other.text[Chip::Dir as usize] = "~/elsewhere".into();
+    let chips = [Chip::Time, Chip::Dir, Chip::Branch, Chip::Changes];
+    // (what the terminal prints, chips on, a prompt that came with the status of the command before it, the newest chips change)
+    let steps: Vec<(String, bool, Option<(u32, i32)>, bool)> = vec![
+        (format!("first\r\n{}", prompt(1)), true, Some((1, 0)), false),
+        ("ls -la".into(), true, None, false),
+        (format!("\r\nout-a\r\nout-b\r\n{}", prompt(2)), true, Some((2, 0)), false),
+        (String::new(), true, None, true),
+        ("\r\n".repeat(30) + &prompt(3), true, Some((3, 127)), false),
+        (String::new(), false, None, false),
+        ("x".into(), true, None, false),
+        (format!("\r\n\x1b[2J\x1b[H{}", prompt(4)), true, Some((4, 0)), false),
+    ];
+    let make = || {
+        let soft = Soft::new(&FontCfg::sized(PX), OPACITY);
+        let (cw, ch) = soft.cell();
+        let (cols, rows) = session::grid_size(W, H, cw, ch, soft.pad, soft.top, soft.bottom);
+        (soft, Term::new(Config::default(), &session::Size { cols, rows }, VoidListener))
+    };
+    let (mut soft, mut term) = make();
+    let (mut view, mut chips_state, mut history) = (View::new(), bar::Chips::default(), History::default());
+    let (w, h) = (W as usize + 2 * chrome::margins(false).0, H as usize + chrome::margins(false).1 + chrome::margins(false).2);
+    let mut fb = vec![0xdead_beefu32; w * h];
+    let mut seen = String::new();
+    let t0 = std::time::Instant::now();
+    for (i, (out, on, came, change)) in steps.iter().enumerate() {
+        seen.push_str(out);
+        Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::new().advance(&mut term, out.as_bytes());
+        if let Some((n, status)) = *came {
+            if n > 1 {
+                history.start(t0);
+            }
+            history.prompt(n, status, t0 + std::time::Duration::from_millis(100 * n as u64), &sample_context());
+        }
+        if *change {
+            history.set_ctx(&other);
+        }
+        chips_state.frame(*on, false, &history, &chips, &mut term, &mut view, &mut soft, &mut fb, (w, h), true);
+
+        let (mut fsoft, mut fterm) = make();
+        Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::new().advance(&mut fterm, seen.as_bytes());
+        let mut full = vec![0u32; w * h];
+        bar::Chips::default().frame(*on, true, &history, &chips, &mut fterm, &mut View::new(), &mut fsoft, &mut full, (w, h), true);
+        let diff = fb.iter().zip(&full).filter(|(a, b)| a != b).count();
+        assert_eq!(diff, 0, "step {i}: {diff} pixels differ from a full repaint");
     }
 }
 
@@ -424,4 +601,33 @@ fn png_header_and_checksums() {
     assert_eq!(&p[12..16], b"IHDR");
     assert_eq!(adler32(b"Wikipedia"), 0x11e6_0398);
     assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
+}
+
+/// The status bar costs rows, draws text and a hairline in the bottom strip, and leaves the rest alone.
+#[test]
+fn the_status_bar_takes_rows_and_draws_its_text_in_the_bottom_strip() {
+    let (on, off) = (Soft::new(&FontCfg::sized(PX), OPACITY), {
+        let mut s = Soft::new(&FontCfg::sized(PX), OPACITY);
+        s.set_ui(Ui { status: false, ..Ui::IDLE });
+        s
+    });
+    let (cw, ch) = on.cell();
+    let rows = |s: &Soft| session::grid_size(W, H, cw, ch, s.pad, s.top, s.bottom).1;
+    assert!(rows(&on) < rows(&off), "{} rows with the bar, {} without", rows(&on), rows(&off));
+    assert_eq!(on.bottom as usize, chrome::STATUS_H + (PX * 0.45).round() as usize);
+
+    let frame = |name: &str| {
+        let s = scenes().into_iter().find(|s| s.name == name).unwrap();
+        let (fb, w, _) = render(&s);
+        (fb, w)
+    };
+    let (with, w) = frame("rest");
+    let (without, _) = frame("no-status");
+    let (_, _, mb) = chrome::margins(false);
+    let h = with.len() / w;
+    let strip = (h - mb - chrome::STATUS_H)..(h - mb);
+    let diff = |rows: std::ops::Range<usize>| rows.flat_map(|y| (0..w).map(move |x| y * w + x)).filter(|&i| with[i] != without[i]).count();
+    assert!(diff(strip.clone()) > 800, "the strip has text and keycaps: {} pixels differ", diff(strip.clone()));
+    // The two windows have different grids, so the area above the bar is not compared; the title bar is the same.
+    assert_eq!(diff(20..chrome::TITLE_H - 4), 0, "the title bar does not depend on the status bar");
 }
