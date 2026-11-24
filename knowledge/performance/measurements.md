@@ -16,6 +16,7 @@ adapter chosen with `PowerPreference::LowPower`. Window 1000x640, idle shell (`s
 
 | Date | Terminal | Commit | Idle CPU | Startup | Latency | `cat` 100 MB | RSS | PSS | Notes |
 |---|---|---|---|---|---|---|---|---|---|
+| 2026-11-24 | axon `wl` (default), changes chip reported by the shell's hook (axon runs no git) | 71e95ca+ | 0.0% | - | - | 1.68 s | 15 MB | 11 MB | anon 6; binary 7,694,984 B (-1.1 KB vs the hardened-git build: the git call, the 3 s timer and `parse_numstat` are gone, the hook text grew); after the `cat`: 43 MB; `winit` 150 MB, flood 1.31 s |
 | 2026-11-24 | axon `wl` (default), i18n (English and Spanish) | f886e67+ | 0.0% | - | - | 1.69 s | 15 MB | 11 MB | anon 6; binary 7,694,728 B (+11.7 KB: both string tables, the Language row); after the `cat`: 44 MB; `winit` 150 MB, flood 1.28 s |
 | 2026-11-24 | axon `wl` (default), per-command status (history ring, prompt_rows scan) | f886e67+ | 0.0% | - | - | 1.77 s | 15 MB | 10 MB | anon 6; binary 7,683,016 B (+18 KB: `history.rs`, `prompt_rows`, hook text); after the `cat`: 43 MB; `winit` 148 MB, flood 1.33 s; the ring holds at most 256 contexts (~100 KB when full); flood run-to-run noise is ±0.1 s |
 | 2026-11-24 | axon `wl` (default), UI after terminal.html (status bar, hairlines, outline icons, preview) | f886e67+ | 0.0% | - | - | 1.66 s | 14 MB | 10 MB | anon 6; binary 7,665,336 B (+48 KB vs the text-quality row: status bar, 16-unit icon paths, preview, tab marker, cursor config); idle 0 ticks in 5 s; after the `cat`: 40 MB; `winit` 145 MB, flood 1.24 s |

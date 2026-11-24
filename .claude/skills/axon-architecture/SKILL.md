@@ -38,7 +38,7 @@ poll wakes wlapp ─► View::build ─► soft.rs rows ─► wl_shm buffer ─
 | `i18n.rs` | every string the window draws in English and Spanish (`strings!` builds the key enum and both tables), `tr`, the `Setting`/`Lang` of `[ui] language`; no dependencies | — |
 | `history.rs` | the prompt chips' memory: the hook's title escapes (`parse`), a ring of records (chips as they were, exit status, duration) found again by the prompt number in the reserved line | `context` |
 | `bar.rs` | the prompt chips: pure `layout` (which chips fit, cutting and dropping), icons, `paint` with the grid's own font via `Soft::paint_cells_at`, and `Chips::frame` (grid plus chips on the shell's reserved prompt line, repainted like a full frame) | `config` (`Chip`), `context`, `paint`, `soft`, `view`, `chrome` |
-| `context.rs` | what the chips say (`gather` on a thread: `/proc`, `.git/HEAD`, `git diff --numstat`, kubeconfig, shell report file) plus the pure formatters, all tested | `config` (`Chip`) |
+| `context.rs` | what the chips say (`gather` on a thread: `/proc`, `.git/HEAD`, kubeconfig, shell report file with the `git diff --numstat` totals; axon itself never runs git) plus the pure formatters, all tested | `config` (`Chip`) |
 | `config.rs` | settings file (`config.toml`), own parser, `FontCfg`, env overrides; read at startup and on reload | — |
 | `mouse.rs` | mouse reports for programs (xterm 1000/1002/1003; SGR, UTF-8, classic): pure `encode`, own tests | `xkb` (`Mods`), alacritty (`TermMode`) |
 | `view.rs` | grid -> cells: `View::build(term, focused, &mut impl Backend)`, damage, cursor and selection rows | `cell`, `palette`, alacritty |

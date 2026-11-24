@@ -95,7 +95,7 @@ it adds context above it. **The chips replace your prompt's own text** (`user@ho
 | `user`, `host` | `alice`, `alice@machine` | `$USER`, `/proc/sys/kernel/hostname` |
 | `dir` | `~/Desktop` (the last three parts if longer) | `/proc/<shell>/cwd`: right with no help from the shell |
 | `branch` | `main`, or a short hash when detached | `.git/HEAD`, worktrees and submodules included |
-| `changes` | `3 • +10 -2`: files, lines added, lines removed | `git diff HEAD --numstat` (with the repository's own hooks and filters off), on a thread, when the directory changes and at most every 3 s |
+| `changes` | `3 • +10 -2`: files, lines added, lines removed | `git diff HEAD --numstat`, run by the shell's hook at each prompt (with the repository's own hooks and filters off, under `timeout 0.5`), so it needs the hook (`axon shell-init`; bash gets it from axon) |
 | `pyenv` | `3.12.1` | `$PYENV_VERSION`, else the nearest `.python-version`, else `~/.pyenv/version` |
 | `kube` | `prod-eu` | `current-context` of `$KUBECONFIG` or `~/.kube/config` |
 | `env` | the conda environment or virtualenv | the shell's own variables, through the hook below |
@@ -218,7 +218,7 @@ Last measured: 2026-11-24, on top of `02c3490` plus mouse reporting, the config 
 
 | Binary | Cold release build |
 |---|---|
-| 7.3 MiB (7,617,368 bytes) | 96 s |
+| 7.3 MiB (7,694,984 bytes) | 96 s |
 
 **Idle memory and CPU** (`AXON_BACKEND` selects the backend; `wl` is the own Wayland client with the CPU renderer and the
 default on Wayland, `winit` is the `winit` + `wgpu` fallback)
@@ -240,8 +240,8 @@ the target: the Vulkan loader and the drivers map ~94 MB.
 
 | Backend | Time | RSS afterwards |
 |---|---|---|
-| `wl` | 1.69 s | 44 MB |
-| `winit` | 1.28 s | 179 MB |
+| `wl` | 1.68 s | 43 MB |
+| `winit` | 1.31 s | 178 MB |
 
 Not measured yet: startup time, input latency, and a comparison with Alacritty, Ghostty and foot (not installed here).
 
@@ -249,6 +249,7 @@ Not measured yet: startup time, input latency, and a comparison with Alacritty, 
 
 | Date | Change | Binary | Idle RSS `winit` | Idle RSS `wl` |
 |---|---|---|---|---|
+| 2026-11-24 | The changes chip comes from the shell's hook (`git diff` with the repository's hooks and filters off, `timeout 0.5`), axon no longer runs git: `safe.directory` works, the 3 s timer and the git thread are gone | 7,694,984 B | 150 MB | 15 MB |
 | 2026-11-24 | Interface in English and Spanish (`i18n.rs`, `[ui] language`, a Language row in the settings) | 7,694,728 B | 150 MB | 15 MB |
 | 2026-11-24 | Per-command status (`history.rs`): the hook's title escapes timed on the PTY thread, a ring of 256 prompt records, chips kept on every prompt with a check or cross and the duration | 7,694,728 B | 148 MB | 15 MB |
 | 2026-11-24 | UI after `terminal.html` (ADR 0021): new palette, hairlines, coloured window buttons, status bar, outline chip icons from the reference, settings with live preview, sliding tabs and cursor shape | 7,694,728 B | 145 MB | 14 MB |

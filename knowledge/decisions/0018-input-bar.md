@@ -49,23 +49,34 @@ old prompts keep a blank line. Marks are invisible, one column each, copied as s
   the row the chips arrive on, leave and change on (`View::invalidate_row`) and draws them again only on rows that were
   repainted (`Soft::row_repainted`). `chips_repaint_incrementally_like_a_full_frame` checks it pixel for pixel over a moving
   prompt, typing, scrolling, a chip change, off and on; two deliberate mutations of the invalidation make it fail.
-- *Nothing blocking on the UI thread.* `context::gather` reads `/proc`, `.git/HEAD` and small files and may run `git`,
-  so it runs on a short-lived thread (`Refresh` in `wlapp.rs`), one at a time, and hands the result back through a slot
+- *Nothing blocking on the UI thread.* `context::gather` reads `/proc`, `.git/HEAD` and small files (axon never runs
+  `git`, see below), so it runs on a short-lived thread (`Refresh` in `wlapp.rs`), one at a time, and hands the result back through a slot
   and the eventfd. It starts when the terminal printed something (at most every 500 ms; the trailing one is scheduled,
-  so the last prompt is always read) and when the minute changes. `git diff HEAD --numstat` runs when the directory
-  changes and at most every 3 s. A 100 MB flood in a repository: 1.74 s with chips (1.72 s without), one `git` call.
+  so the last prompt is always read) and when the minute changes. A 100 MB flood in a repository: 1.74 s with chips
+  (1.72 s without).
 - *Idle is still zero.* The only timer is the minute boundary, and only while the `time` chip is shown.
 - *No dependency.* Time comes from `localtime_r` (declared by hand; `std` has no time zone), the rest from files.
 
 **Where each chip's data comes from:** directory `/proc/<shell>/cwd`; branch `.git/HEAD` (worktrees and submodules);
-changes `git diff HEAD --numstat`; pyenv `$PYENV_VERSION`, else the nearest `.python-version`, else
+changes `git diff HEAD --numstat` run by the shell's hook; pyenv `$PYENV_VERSION`, else the nearest `.python-version`, else
 `~/.pyenv/version`; kube `current-context` of `$KUBECONFIG` or `~/.kube/config`; conda and virtualenv from the hook.
 
-**Untrusted repositories (security review, 2026-11-24):** git runs what a repository's own config names: `core.fsmonitor`
-is a command that `git diff` executes, and `diff.external` or a textconv filter run programs on the files. Entering a
-freshly cloned repository must not run anything, so the changes chip calls git with `-c core.fsmonitor=false`,
-`-c core.hooksPath=/dev/null`, `--no-ext-diff` and `--no-textconv`. A test makes a repository whose config points both
-at a script and checks that the script does not run (plain `git diff` does run it).
+**Untrusted repositories (security review, 2026-11-24; revised the same day):** git runs what a repository's own config
+names: `core.fsmonitor` is a command that `git diff` executes, `diff.external`, textconv and `clean` filters run programs
+on the files, and a `.gitattributes`, a `core.attributesFile` or a `.git/info/attributes` can name those filters. Entering
+a freshly cloned repository must not run anything. The first version ran git from axon with `GIT_CONFIG_GLOBAL=/dev/null`
+to isolate the user's config too, and that broke `safe.directory` (a repository somebody else owns, trusted in the user's
+own `~/.gitconfig`, got no chip). So axon no longer runs git at all: the shell's hook does (`context::changes_sh`, and the
+zsh and fish variants), in the user's git environment, so `safe.directory` applies, and with every protection kept:
+`-c core.fsmonitor=false`, `-c core.hooksPath=/dev/null`, `-c core.attributesFile=/dev/null`,
+`--attr-source=<empty tree>` (attributes come from nowhere, not the work tree), `--no-ext-diff`, `--no-textconv`,
+`GIT_OPTIONAL_LOCKS=0`, and no chip when `.git/info/attributes` exists (it cannot be switched off). It runs only while the
+chips are on, before the prompt is drawn, under `timeout 0.5` (a huge repository costs the chip, not the prompt), and the
+result goes to the report file as `changes=files added removed`. Tests run the real bash hook (zsh and fish when
+installed) over hostile repositories (a script that must not run, with plain `git diff` as the control), `info/attributes`,
+a foreign-owned repository with and without `safe.directory` (`GIT_TEST_ASSUME_DIFFERENT_OWNER`), a git that hangs, and
+no repository. Cost: the changes chip needs the hook (`axon shell-init` in zsh and fish; bash gets it from axon), and is
+read at the prompt, not while a program runs (the chips are not shown then anyway).
 
 **Fitting:** the pill is two pixels shorter than the row, so it never touches the lines above and below. Chips that do not
 fit the width are shortened with `…` (longest first, never below 8 characters) and then dropped from the end

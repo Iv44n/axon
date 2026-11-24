@@ -83,7 +83,7 @@ pub enum Chip {
     Host,
     Dir,
     Branch,
-    /// Files changed and lines added and removed, from `git diff HEAD`.
+    /// Files changed and lines added and removed, from `git diff HEAD` (run by the shell's hook).
     Changes,
     Kube,
 }

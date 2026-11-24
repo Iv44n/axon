@@ -131,8 +131,6 @@ struct Refresh {
     /// A refresh is wanted from this moment on.
     due: Option<Instant>,
     last: Instant,
-    /// `git diff` last ran at this moment.
-    git_at: Instant,
     running: Arc<AtomicBool>,
     /// Where the thread leaves its result.
     done: Arc<Mutex<Option<Context>>>,
@@ -316,7 +314,6 @@ impl App {
             refresh: Refresh {
                 due: cfg_chips.then(Instant::now),
                 last: Instant::now(),
-                git_at: Instant::now(),
                 running: Arc::new(AtomicBool::new(false)),
                 done: Arc::default(),
                 clock_at: None,
@@ -611,9 +608,6 @@ impl App {
     /// Takes in a finished refresh, starts one that is due, and keeps the minute timer.
     fn tick_context(&mut self) {
         if let Some(c) = self.refresh.done.lock().unwrap().take() {
-            if c.git_ran {
-                self.refresh.git_at = Instant::now();
-            }
             if c != self.ctx {
                 self.ctx = c;
                 self.history.set_ctx(&self.ctx);
@@ -643,8 +637,6 @@ impl App {
                 pid: self.shell,
                 report: self.report.clone(),
                 clock24: self.cfg.input.clock24,
-                prev: self.ctx.clone(),
-                git_age: now.saturating_duration_since(self.refresh.git_at),
             };
             let (done, running, proxy) = (self.refresh.done.clone(), self.refresh.running.clone(), self.proxy.clone());
             let spawned = std::thread::Builder::new().name("context".into()).spawn(move || {

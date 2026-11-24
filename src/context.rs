@@ -1,19 +1,20 @@
 //! What the prompt chips say: the time, the user, the directory the shell is in, the git branch
-//! and its changes, the Python and Kubernetes environments. Reading all of it touches the disk and
-//! may run `git`, so `gather` is meant for a short-lived thread, never the UI thread; the pieces
-//! that decide what the text is are pure functions with their own tests.
+//! and its changes, the Python and Kubernetes environments. Reading all of it touches the disk,
+//! so `gather` is meant for a short-lived thread, never the UI thread; the pieces that decide what
+//! the text is are pure functions with their own tests. axon itself never runs `git`.
 //!
 //! Where each piece comes from:
 //! - directory: `/proc/<shell>/cwd`, right without any help from the shell;
 //! - branch: `.git/HEAD`, read up the directory tree (worktrees and submodules included);
-//! - changes: `git diff HEAD --numstat`, run at most every few seconds and when the directory changes;
+//! - changes: the shell's hook runs `git diff HEAD --numstat` at each prompt, in the user's own git
+//!   environment (so `safe.directory` and the like apply), with the repository's own hooks and filters
+//!   off, and reports `files added removed`;
 //! - Python and Kubernetes: files (`.python-version`, `~/.pyenv/version`, the kubeconfig's
 //!   `current-context`), and the shell's own variables (`CONDA_DEFAULT_ENV`, `VIRTUAL_ENV`,
 //!   `PYENV_VERSION`, `KUBECONFIG`), which only the shell knows: `axon shell-init` makes it write them
 //!   to the file named by `$AXON_CONTEXT` at every prompt.
 use std::{
     path::{Path, PathBuf},
-    process::{Command, Stdio},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -21,17 +22,12 @@ use crate::config::Chip;
 
 /// The longest a chip's text gets, in characters; anything beyond is cut with `…`.
 const MAX_CHARS: usize = 40;
-/// `git diff` runs when the directory changes and at most this often otherwise.
-pub const GIT_EVERY: Duration = Duration::from_secs(3);
-
 /// The text of every chip, indexed by `Chip as usize`. Empty means there is nothing to show.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Context {
     pub text: [String; Chip::COUNT],
     /// The shell's directory as the kernel reports it, to tell when it changed.
     pub cwd: String,
-    /// Whether `git diff` ran for this value (else `Changes` was carried over from the previous one).
-    pub git_ran: bool,
 }
 
 impl Context {
@@ -69,9 +65,6 @@ pub struct Probe {
     /// The file `axon shell-init` makes the shell write, if the shell was started with one.
     pub report: Option<PathBuf>,
     pub clock24: bool,
-    /// The previous result: the directory it was for, the changes text and its age.
-    pub prev: Context,
-    pub git_age: Duration,
 }
 
 /// Reads everything. Slow: a thread, not the UI.
@@ -97,16 +90,9 @@ pub fn gather(p: &Probe) -> Context {
     if let Some(b) = &branch {
         set(&mut c, Chip::Branch, b.clone());
     }
-    // `git diff` only inside a repository, when the directory changed or the last run is old.
+    // The shell ran `git diff` itself (see `CHANGES`); it only reports from inside a repository.
     if branch.is_some() {
-        if c.cwd != p.prev.cwd || p.git_age >= GIT_EVERY {
-            c.git_ran = true;
-            if let Some(out) = git_diff_numstat(&cwd) {
-                c.text[Chip::Changes as usize] = changes_text(parse_numstat(&out));
-            }
-        } else {
-            c.text[Chip::Changes as usize] = p.prev.get(Chip::Changes).to_string();
-        }
+        c.text[Chip::Changes as usize] = changes_text(parse_changes(&report.changes));
     }
     let env = if report.conda.is_empty() { report.venv.as_str() } else { report.conda.as_str() };
     set(&mut c, Chip::Env, env.to_string());
@@ -151,10 +137,37 @@ pub fn remove_stale_reports(dir: &Path) {
 // one column each and are copied as spaces. While the chips are on they are the prompt's context, so the
 // shell's own prompt text (`user@host:~/dir`) is replaced by a bare `$`, in bold amber (the accent colour): showing both would say everything twice.
 
+/// What the bash and zsh hooks run to fill `__axon_c` with `files added removed`: `git diff HEAD --numstat`
+/// in the shell's own directory, run by the shell (so with the user's own git configuration: a
+/// `safe.directory` in it applies, which axon itself, never running git, could not honour). The repository
+/// may be somebody else's (a clone just entered) and git runs whatever its own config names: `core.fsmonitor`
+/// is a command `git diff` executes, `diff.external`, textconv and `clean` filters run programs on files. All of
+/// those are switched off (attributes are read from the empty tree, not the work tree; `core.attributesFile`
+/// is empty) and a repository with a `.git/info/attributes`, which cannot be switched off, gets no chip. Only
+/// when the chips are on, and `timeout` keeps a huge repository from holding the prompt: no chip then.
+macro_rules! changes_sh {
+    () => {
+        r##"__axon_c=
+  if [ -e "$AXON_CHIPS" ]; then
+    __axon_a=$(timeout 0.5 git -c core.fsmonitor=false rev-parse --git-path info/attributes 2>/dev/null </dev/null)
+    if [ -n "$__axon_a" ] && [ ! -e "$__axon_a" ]; then
+      __axon_c=$(GIT_OPTIONAL_LOCKS=0 timeout 0.5 git -c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.attributesFile=/dev/null --attr-source=4b825dc642cb6eb9a060e54bf8d69288fbee4904 diff HEAD --numstat --no-ext-diff --no-textconv 2>/dev/null </dev/null | awk 'NF>=3{f++;a+=$1;d+=$2}END{if(f)printf "%d %d %d",f,a+0,d+0}')
+    fi
+  fi"##
+    };
+}
+
 /// The bash hook as statements. For the shells axon starts it is the whole `PROMPT_COMMAND`
 /// (`shell_env`); `axon shell-init bash` wraps it in a function. It keeps `$?`: see `BASH_KEEP_STATUS`.
-pub const BASH_HOOK: &str = r##"__axon_s=$?
+pub const BASH_HOOK: &str = concat!(
+    r##"__axon_s=$?
 __axon_n=$((${__axon_n:-0}+1))
+if [ -n "$AXON_CONTEXT" ]; then
+  "##,
+    changes_sh!(),
+    r##"
+  printf 'conda=%s\nvenv=%s\npyenv=%s\nkubeconfig=%s\nchanges=%s\n' "$CONDA_DEFAULT_ENV" "${VIRTUAL_ENV##*/}" "$PYENV_VERSION" "${KUBECONFIG%%:*}" "$__axon_c" > "$AXON_CONTEXT"
+fi
 printf '\e]2;axon!hook E %s %s\a' "$__axon_n" "$__axon_s"
 case $PS0 in *'axon!hook S'*) ;; *) PS0=$PS0$'\e]2;axon!hook S\a' ;; esac
 __axon_pfx=$'\\[\e[8;38;2;'
@@ -168,15 +181,22 @@ if [ -e "$AXON_CHIPS" ]; then
   PS1=$__axon_pre$'\\[\e]0;\\u@\\h: \\w\a\\]\\[\e[1;38;2;255;180;84m\\]\\$\\[\e[0m\\]'$__axon_post
 else
   case $PS1 in "$__axon_pfx"*) PS1=$__axon_ps1 ;; esac
-fi
-[ -n "$AXON_CONTEXT" ] && printf 'conda=%s\nvenv=%s\npyenv=%s\nkubeconfig=%s\n' "$CONDA_DEFAULT_ENV" "${VIRTUAL_ENV##*/}" "$PYENV_VERSION" "${KUBECONFIG%%:*}" > "$AXON_CONTEXT""##;
+fi"##
+);
 
 /// Makes the status of the command that just ran (`$?`) what it was, after the hook.
 const BASH_KEEP_STATUS: &str = "(exit $__axon_s)";
 
-const ZSH_HOOK: &str = r##"__axon_prompt() {
+const ZSH_HOOK: &str = concat!(
+    r##"__axon_prompt() {
   local s=$? pfx=$'%{\e[8;38;2;'
   __axon_n=$(( ${__axon_n:-0} + 1 ))
+  if [[ -n $AXON_CONTEXT ]]; then
+  "##,
+    changes_sh!(),
+    r##"
+    printf 'conda=%s\nvenv=%s\npyenv=%s\nkubeconfig=%s\nchanges=%s\n' "$CONDA_DEFAULT_ENV" "${VIRTUAL_ENV:t}" "$PYENV_VERSION" "${KUBECONFIG%%:*}" "$__axon_c" > $AXON_CONTEXT
+  fi
   printf '\e]2;axon!hook E %s %s\a' $__axon_n $s
   local pre=$pfx$((__axon_n>>16&255))';'$((__axon_n>>8&255))';'$((__axon_n&255))$'m%} %{\e[0m%}\n' post=$'%{\e[8m%} %{\e[0m%}'
   if [[ -e $AXON_CHIPS ]]; then
@@ -185,13 +205,13 @@ const ZSH_HOOK: &str = r##"__axon_prompt() {
   elif [[ $PS1 == "$pfx"* ]]; then
     PS1=$__axon_ps1
   fi
-  [[ -n $AXON_CONTEXT ]] && printf 'conda=%s\nvenv=%s\npyenv=%s\nkubeconfig=%s\n' "$CONDA_DEFAULT_ENV" "${VIRTUAL_ENV:t}" "$PYENV_VERSION" "${KUBECONFIG%%:*}" > $AXON_CONTEXT
   return $s
 }
 __axon_start() { printf '\e]2;axon!hook S\a' }
 (( ${precmd_functions[(Ie)__axon_prompt]} )) || precmd_functions+=(__axon_prompt)
 (( ${preexec_functions[(Ie)__axon_start]} )) || preexec_functions+=(__axon_start)
-"##;
+"##
+);
 
 const FISH_HOOK: &str = r##"if not functions -q __axon_fish_prompt
     functions -c fish_prompt __axon_fish_prompt
@@ -214,9 +234,17 @@ function __axon_report --on-event fish_prompt
     set -l s $status
     set -q __axon_n; or set -g __axon_n 0
     set -g __axon_n (math $__axon_n + 1)
+    if test -n "$AXON_CONTEXT"
+        set -l c
+        if test -e "$AXON_CHIPS"
+            set -l a (timeout 0.5 git -c core.fsmonitor=false rev-parse --git-path info/attributes 2>/dev/null </dev/null)
+            if test -n "$a"; and not test -e "$a"
+                set c (env GIT_OPTIONAL_LOCKS=0 timeout 0.5 git -c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.attributesFile=/dev/null --attr-source=4b825dc642cb6eb9a060e54bf8d69288fbee4904 diff HEAD --numstat --no-ext-diff --no-textconv 2>/dev/null </dev/null | awk 'NF>=3{f++;a+=$1;d+=$2}END{if(f)printf "%d %d %d",f,a+0,d+0}')
+            end
+        end
+        printf 'conda=%s\nvenv=%s\npyenv=%s\nkubeconfig=%s\nchanges=%s\n' "$CONDA_DEFAULT_ENV" (string replace -r '.*/' '' -- "$VIRTUAL_ENV") "$PYENV_VERSION" (string split -f1 : -- "$KUBECONFIG") "$c" > $AXON_CONTEXT
+    end
     printf '\e]2;axon!hook E %s %s\a' $__axon_n $s
-    test -n "$AXON_CONTEXT"; or return
-    printf 'conda=%s\nvenv=%s\npyenv=%s\nkubeconfig=%s\n' "$CONDA_DEFAULT_ENV" (string replace -r '.*/' '' -- "$VIRTUAL_ENV") "$PYENV_VERSION" (string split -f1 : -- "$KUBECONFIG") > $AXON_CONTEXT
 end
 "##;
 
@@ -331,62 +359,18 @@ fn head_name(head: &Path) -> Option<String> {
     }
 }
 
-/// Files, added lines and removed lines from `git diff --numstat`; a binary file counts as a file only.
-pub fn parse_numstat(out: &str) -> (usize, usize, usize) {
-    let (mut files, mut add, mut del) = (0, 0, 0);
-    for line in out.lines() {
-        let mut f = line.split('\t');
-        let (Some(a), Some(d), Some(_)) = (f.next(), f.next(), f.next()) else { continue };
-        files += 1;
-        add += a.parse::<usize>().unwrap_or(0);
-        del += d.parse::<usize>().unwrap_or(0);
+/// Files, added lines and removed lines from the hook's `files added removed`; zeros when it is not that.
+pub fn parse_changes(text: &str) -> (usize, usize, usize) {
+    let mut n = text.split_whitespace().map(|w| w.parse::<usize>());
+    match (n.next(), n.next(), n.next(), n.next()) {
+        (Some(Ok(f)), Some(Ok(a)), Some(Ok(d)), None) => (f, a, d),
+        _ => (0, 0, 0),
     }
-    (files, add, del)
 }
 
 /// `3 • +10 -2`; nothing when nothing changed.
 pub fn changes_text((files, add, del): (usize, usize, usize)) -> String {
     if files == 0 { String::new() } else { format!("{files} • +{add} -{del}") }
-}
-
-/// `git diff HEAD --numstat` in `dir`. The repository may be somebody else's (a clone just entered),
-/// and git runs whatever its own config names: `core.fsmonitor` is a command run by `git diff`, and
-/// `diff.external` and textconv filters run programs on the files, and a `clean` filter runs when the
-/// repository's own `.gitattributes` names one. All of these are switched off here (attributes are read
-/// from the empty tree, not the work tree), so merely having `cd`ed into a repository never executes
-/// anything it brought along. `.git/info/attributes` cannot be switched off, so a repository that has one gets no chip; the user's and the
-/// system's config and attributes files are ignored too.
-fn git_diff_numstat(dir: &Path) -> Option<String> {
-    // `.git/info/attributes` is read whatever `--attr-source` says and can name a `clean` filter, so a
-    // repository that has one gets no changes chip. Its path comes from git itself (worktrees, `.git` files).
-    let info = Command::new("git")
-        .args(["-c", "core.fsmonitor=false", "rev-parse", "--git-path", "info/attributes"])
-        .current_dir(dir)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !info.status.success() {
-        return None;
-    }
-    let info = String::from_utf8_lossy(&info.stdout);
-    if dir.join(info.trim()).exists() {
-        return None;
-    }
-    let out = Command::new("git")
-        .args(["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.attributesFile=/dev/null"])
-        .args(["--attr-source=4b825dc642cb6eb9a060e54bf8d69288fbee4904", "diff", "HEAD", "--numstat", "--no-ext-diff", "--no-textconv"])
-        .current_dir(dir)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("GIT_ATTR_NOSYSTEM", "1")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// What `axon shell-init` makes the shell write at every prompt.
@@ -396,6 +380,8 @@ pub struct Report {
     pub venv: String,
     pub pyenv: String,
     pub kubeconfig: String,
+    /// `files added removed` as the hook computed it; empty outside a repository or when git said nothing.
+    pub changes: String,
 }
 
 pub fn parse_report(text: &str) -> Report {
@@ -407,6 +393,7 @@ pub fn parse_report(text: &str) -> Report {
             "venv" => &mut r.venv,
             "pyenv" => &mut r.pyenv,
             "kubeconfig" => &mut r.kubeconfig,
+            "changes" => &mut r.changes,
             _ => continue,
         };
         *slot = v.trim().to_string();
@@ -520,17 +507,20 @@ mod tests {
     }
 
     #[test]
-    fn numstat_adds_files_and_lines() {
-        assert_eq!(parse_numstat("10\t2\tsrc/a.rs\n0\t0\tb\n-\t-\timg.png\nnonsense\n"), (3, 10, 2));
-        assert_eq!(parse_numstat(""), (0, 0, 0));
+    fn the_hooks_changes_are_three_numbers_and_nothing_else_counts() {
+        assert_eq!(parse_changes("3 10 2"), (3, 10, 2));
+        assert_eq!(parse_changes(" 3 10 2\n"), (3, 10, 2));
+        for bad in ["", "x", "1 2", "1 2 3 4", "1 -2 3", "a b c"] {
+            assert_eq!(parse_changes(bad), (0, 0, 0), "{bad:?}");
+        }
         assert_eq!(changes_text((3, 10, 2)), "3 • +10 -2");
         assert_eq!(changes_text((0, 0, 0)), "");
     }
 
     #[test]
     fn the_shell_report_is_read_by_key() {
-        let r = parse_report("conda=base\nvenv=\npyenv=3.12.1\nkubeconfig=/k/cfg\nother=1\ngarbage\n");
-        assert_eq!(r, Report { conda: "base".into(), venv: String::new(), pyenv: "3.12.1".into(), kubeconfig: "/k/cfg".into() });
+        let r = parse_report("conda=base\nvenv=\npyenv=3.12.1\nkubeconfig=/k/cfg\nchanges=1 2 3\nother=1\ngarbage\n");
+        assert_eq!(r, Report { conda: "base".into(), venv: String::new(), pyenv: "3.12.1".into(), kubeconfig: "/k/cfg".into(), changes: "1 2 3".into() });
         assert_eq!(parse_report(""), Report::default());
     }
 
@@ -601,69 +591,211 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    #[test]
-    fn a_repository_cannot_run_its_own_commands_through_the_changes_chip() {
-        let d = scratch("evil");
-        let git = |args: &[&str]| {
-            Command::new("git").args(args).current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
-        };
-        if !git(&["init", "-q"]) {
-            return; // no git here: nothing to test
+    // ----------------------------------------------------- the shells' hooks --
+    // The hooks are run for real, as a shell would at a prompt. zsh and fish are skipped when not installed;
+    // bash must be there.
+
+    use std::process::{Command, Stdio};
+
+    const SHELLS: [&str; 3] = ["bash", "zsh", "fish"];
+
+    fn git(dir: &Path, args: &[&str]) -> bool {
+        Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+
+    /// A repository with `f` committed as `a\nb\n` and modified to `a\nc\n`: one file, +1 -1.
+    fn repo(name: &str) -> PathBuf {
+        let d = scratch(name);
+        assert!(git(&d, &["init", "-q"]), "git is needed for these tests");
+        std::fs::write(d.join("f"), "a\nb\n").unwrap();
+        assert!(git(&d, &["add", "f"]) && git(&d, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "x"]));
+        std::fs::write(d.join("f"), "a\nc\n").unwrap();
+        d
+    }
+
+    fn script(path: &Path, body: &str) {
+        std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    }
+
+    /// Runs `shell`'s hook once in `dir`, as at a prompt, and returns the report it wrote; `None` when the
+    /// shell is not installed. `global` is the user's git config, `env` extra variables (they may replace `PATH`).
+    fn run_hook(shell: &str, tag: &str, dir: &Path, chips: bool, global: Option<&Path>, env: &[(&str, String)]) -> Option<Report> {
+        let w = scratch(&format!("run-{tag}-{shell}"));
+        let (report, flag, file) = (w.join("report"), w.join("chips"), w.join("hook"));
+        let call = if shell == "fish" { "__axon_report" } else { "__axon_prompt" };
+        std::fs::write(&file, format!("{}\n{call}\n", shell_init_script(shell).unwrap())).unwrap();
+        if chips {
+            std::fs::write(&flag, "").unwrap();
         }
-        let marker = d.join("ran");
-        let script = d.join("monitor.sh");
-        std::fs::write(&script, format!("#!/bin/sh\ntouch {}\n", marker.display())).unwrap();
-        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-        std::fs::write(d.join("f"), "a\n").unwrap();
-        let ok = git(&["add", "f"]) && git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "x"]);
-        assert!(ok);
-        // Config the repository carries: an fsmonitor command and an external diff.
-        assert!(git(&["config", "core.fsmonitor", &script.to_string_lossy()]));
-        assert!(git(&["config", "diff.external", &script.to_string_lossy()]));
-        // A clean filter named by the repository's own .gitattributes.
-        assert!(git(&["config", "filter.x.clean", &format!("{} #", script.display())]));
-        std::fs::write(d.join(".gitattributes"), "f filter=x\n").unwrap();
-        std::fs::write(d.join("f"), "b\n").unwrap();
-        let out = git_diff_numstat(&d).expect("git diff ran");
-        assert_eq!(parse_numstat(&out), (1, 1, 1));
-        assert!(!marker.exists(), "the repository's own command was executed");
+        let mut c = Command::new(shell);
+        c.arg(match shell {
+            "bash" => "--norc",
+            "zsh" => "-f",
+            _ => "--no-config",
+        });
+        c.arg(&file).current_dir(dir).env_clear();
+        c.env("PATH", std::env::var("PATH").unwrap_or_default()).env("HOME", &w).env("LC_ALL", "C");
+        c.env("GIT_CONFIG_NOSYSTEM", "1").env("GIT_CONFIG_GLOBAL", global.unwrap_or(Path::new("/dev/null")));
+        c.env("AXON_CONTEXT", &report).env("AXON_CHIPS", &flag);
+        for (k, v) in env {
+            c.env(k, v);
+        }
+        c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        let ran = c.status().ok()?;
+        assert!(ran.success(), "{shell}'s hook failed");
+        let text = std::fs::read_to_string(&report).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&w);
+        Some(parse_report(&text))
+    }
+
+    /// Calls `check` with the report of every installed shell's hook.
+    fn for_each_shell(tag: &str, dir: &Path, chips: bool, global: Option<&Path>, env: &[(&str, String)], check: impl Fn(&str, &Report)) {
+        for sh in SHELLS {
+            match run_hook(sh, tag, dir, chips, global, env) {
+                Some(r) => check(sh, &r),
+                None => assert_ne!(sh, "bash", "bash is needed for these tests"),
+            }
+        }
+    }
+
+    #[test]
+    fn every_hook_reports_the_changes_of_a_normal_repository() {
+        let d = repo("normal");
+        for_each_shell("normal", &d, true, None, &[("PYENV_VERSION", "3.12.1".to_string())], |sh, r| {
+            assert_eq!(r.changes, "1 1 1", "{sh}");
+            assert_eq!(r.pyenv, "3.12.1", "{sh}: the rest of the report is still written");
+        });
+        // A subdirectory is the same repository.
+        std::fs::create_dir_all(d.join("sub")).unwrap();
+        for_each_shell("sub", &d.join("sub"), true, None, &[], |sh, r| assert_eq!(r.changes, "1 1 1", "{sh}"));
         let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
-    fn info_attributes_and_attributes_files_cannot_run_commands_either() {
-        let d = scratch("evil-attrs");
-        let git = |args: &[&str]| {
-            Command::new("git").args(args).current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
-        };
-        if !git(&["init", "-q"]) {
-            return;
-        }
-        let marker = d.join("ran");
-        let script = d.join("filter.sh");
-        std::fs::write(&script, format!("#!/bin/sh\ntouch {}\ncat\n", marker.display())).unwrap();
-        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-        std::fs::write(d.join("f"), "a\n").unwrap();
-        assert!(git(&["add", "f"]) && git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "x"]));
-        assert!(git(&["config", "filter.x.clean", &script.to_string_lossy()]));
-        std::fs::write(d.join("f"), "b\n").unwrap();
-        // A core.attributesFile named by the repository's config.
-        let attrs = d.join("attrs");
-        std::fs::write(&attrs, "f filter=x\n").unwrap();
-        assert!(git(&["config", "core.attributesFile", &attrs.to_string_lossy()]));
-        let _ = git_diff_numstat(&d);
-        assert!(!marker.exists(), "core.attributesFile ran a filter");
-        // .git/info/attributes: no chip at all.
-        assert!(git(&["config", "--unset", "core.attributesFile"]));
+    fn the_shell_axon_starts_reports_through_prompt_command() {
+        let d = repo("raw");
+        let w = scratch("raw-run");
+        let (report, flag) = (w.join("report"), w.join("chips"));
+        std::fs::write(&flag, "").unwrap();
+        let env = shell_env("bash", Some(&report), Some(&flag), None);
+        let pc = &env.iter().find(|(k, _)| k == "PROMPT_COMMAND").unwrap().1;
+        let ok = Command::new("bash")
+            .args(["--norc", "-c", "eval \"$PROMPT_COMMAND\""])
+            .current_dir(&d)
+            .env("PROMPT_COMMAND", pc)
+            .env("AXON_CONTEXT", &report)
+            .env("AXON_CHIPS", &flag)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        assert!(ok);
+        assert_eq!(parse_report(&std::fs::read_to_string(&report).unwrap()).changes, "1 1 1");
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&w);
+    }
+
+    #[test]
+    fn a_repository_cannot_run_its_own_commands_through_the_hook() {
+        let d = repo("evil");
+        let (marker, bin) = (d.join("ran"), d.join("evil.sh"));
+        script(&bin, &format!("touch {}\ncat", marker.display()));
+        let b = bin.to_string_lossy().into_owned();
+        // What a repository can carry: an fsmonitor command, an external diff, a clean filter named by its own
+        // .gitattributes and by a core.attributesFile its config points at.
+        assert!(git(&d, &["config", "core.fsmonitor", &b]));
+        assert!(git(&d, &["config", "diff.external", &b]));
+        assert!(git(&d, &["config", "filter.x.clean", &b]));
+        std::fs::write(d.join(".gitattributes"), "f filter=x\n").unwrap();
+        std::fs::write(d.join("attrs"), "f filter=x\n").unwrap();
+        assert!(git(&d, &["config", "core.attributesFile", &d.join("attrs").to_string_lossy()]));
+        // The test has teeth: plain `git diff` does run it.
+        let _ = Command::new("git").args(["diff", "HEAD", "--numstat"]).current_dir(&d).env("GIT_CONFIG_GLOBAL", "/dev/null").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+        assert!(marker.exists(), "plain git did not run the repository's command: the test proves nothing");
+        std::fs::remove_file(&marker).unwrap();
+        for_each_shell("evil", &d, true, None, &[], |sh, r| {
+            assert!(!marker.exists(), "{sh}: the repository's own command was executed");
+            assert_eq!(r.changes, "1 1 1", "{sh}");
+        });
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_repository_with_info_attributes_gets_no_chip() {
+        let d = repo("info");
+        let (marker, bin) = (d.join("ran"), d.join("evil.sh"));
+        script(&bin, &format!("touch {}\ncat", marker.display()));
+        assert!(git(&d, &["config", "filter.x.clean", &bin.to_string_lossy()]));
         std::fs::write(d.join(".git/info/attributes"), "f filter=x\n").unwrap();
-        assert_eq!(git_diff_numstat(&d), None);
-        assert!(!marker.exists(), "info/attributes ran a filter");
+        for_each_shell("info", &d, true, None, &[], |sh, r| {
+            assert!(!marker.exists(), "{sh}: info/attributes ran a filter");
+            assert_eq!(r.changes, "", "{sh}");
+        });
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_safe_directory_in_the_users_git_config_applies() {
+        // A repository somebody else owns (git is told to see it that way): refused unless the user's own
+        // config trusts it, and then the chip is there. A refusal costs only the chip.
+        let d = repo("foreign");
+        let global = d.join("gitconfig");
+        std::fs::write(&global, format!("[safe]\n\tdirectory = {}\n", d.display())).unwrap();
+        let env = [("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1".to_string()), ("PYENV_VERSION", "3.12.1".to_string())];
+        for_each_shell("trusted", &d, true, Some(&global), &env, |sh, r| assert_eq!(r.changes, "1 1 1", "{sh}"));
+        for_each_shell("untrusted", &d, true, None, &env, |sh, r| {
+            assert_eq!(r.changes, "", "{sh}");
+            assert_eq!(r.pyenv, "3.12.1", "{sh}: the rest of the report is still written");
+        });
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn nothing_is_run_without_chips_or_outside_a_repository() {
+        let d = repo("quiet");
+        let (marker, fake) = (d.join("git-ran"), d.join("bin"));
+        std::fs::create_dir_all(&fake).unwrap();
+        script(&fake.join("git"), &format!("touch {}", marker.display()));
+        let path = format!("{}:{}", fake.display(), std::env::var("PATH").unwrap_or_default());
+        for_each_shell("off", &d, false, None, &[("PATH", path)], |sh, r| {
+            assert_eq!(r.changes, "", "{sh}");
+            assert!(!marker.exists(), "{sh}: git ran with the chips off");
+        });
+        let plain = scratch("plain");
+        for_each_shell("plain", &plain, true, None, &[], |sh, r| assert_eq!(r.changes, "", "{sh}"));
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&plain);
+    }
+
+    #[test]
+    fn a_git_that_hangs_does_not_hold_the_prompt() {
+        let d = repo("slow");
+        let fake = d.join("bin");
+        std::fs::create_dir_all(&fake).unwrap();
+        script(&fake.join("git"), "exec sleep 5");
+        let path = format!("{}:{}", fake.display(), std::env::var("PATH").unwrap_or_default());
+        let t = std::time::Instant::now();
+        for_each_shell("slow", &d, true, None, &[("PATH", path)], |sh, r| assert_eq!(r.changes, "", "{sh}"));
+        assert!(t.elapsed() < Duration::from_secs(4 * SHELLS.len() as u64), "the hook waited for git");
         let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
     fn gather_fills_what_it_can_for_a_process_that_exists() {
-        let p = Probe { pid: std::process::id(), report: None, clock24: true, prev: Context::default(), git_age: Duration::ZERO };
+        let p = Probe { pid: std::process::id(), report: None, clock24: true };
         let c = gather(&p);
         assert_eq!(c.get(Chip::Time).len(), 5);
         assert!(!c.get(Chip::Dir).is_empty());
@@ -677,7 +809,7 @@ mod tests {
     #[test]
     #[ignore = "prints, for a look by hand"]
     fn print_the_context() {
-        let p = Probe { pid: std::process::id(), report: None, clock24: false, prev: Context::default(), git_age: Duration::ZERO };
+        let p = Probe { pid: std::process::id(), report: None, clock24: false };
         let c = gather(&p);
         for chip in Chip::ALL {
             println!("{:8} {:?}", chip.name(), c.get(chip));
