@@ -354,13 +354,34 @@ pub fn changes_text((files, add, del): (usize, usize, usize)) -> String {
 /// `diff.external` and textconv filters run programs on the files, and a `clean` filter runs when the
 /// repository's own `.gitattributes` names one. All of these are switched off here (attributes are read
 /// from the empty tree, not the work tree), so merely having `cd`ed into a repository never executes
-/// anything it brought along. Left open: attributes in `.git/info`, which only whoever owns `.git` can write.
+/// anything it brought along. `.git/info/attributes` cannot be switched off, so a repository that has one gets no chip; the user's and the
+/// system's config and attributes files are ignored too.
 fn git_diff_numstat(dir: &Path) -> Option<String> {
+    // `.git/info/attributes` is read whatever `--attr-source` says and can name a `clean` filter, so a
+    // repository that has one gets no changes chip. Its path comes from git itself (worktrees, `.git` files).
+    let info = Command::new("git")
+        .args(["-c", "core.fsmonitor=false", "rev-parse", "--git-path", "info/attributes"])
+        .current_dir(dir)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !info.status.success() {
+        return None;
+    }
+    let info = String::from_utf8_lossy(&info.stdout);
+    if dir.join(info.trim()).exists() {
+        return None;
+    }
     let out = Command::new("git")
-        .args(["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"])
+        .args(["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.attributesFile=/dev/null"])
         .args(["--attr-source=4b825dc642cb6eb9a060e54bf8d69288fbee4904", "diff", "HEAD", "--numstat", "--no-ext-diff", "--no-textconv"])
         .current_dir(dir)
         .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_ATTR_NOSYSTEM", "1")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
@@ -606,6 +627,37 @@ mod tests {
         let out = git_diff_numstat(&d).expect("git diff ran");
         assert_eq!(parse_numstat(&out), (1, 1, 1));
         assert!(!marker.exists(), "the repository's own command was executed");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn info_attributes_and_attributes_files_cannot_run_commands_either() {
+        let d = scratch("evil-attrs");
+        let git = |args: &[&str]| {
+            Command::new("git").args(args).current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
+        };
+        if !git(&["init", "-q"]) {
+            return;
+        }
+        let marker = d.join("ran");
+        let script = d.join("filter.sh");
+        std::fs::write(&script, format!("#!/bin/sh\ntouch {}\ncat\n", marker.display())).unwrap();
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        std::fs::write(d.join("f"), "a\n").unwrap();
+        assert!(git(&["add", "f"]) && git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "x"]));
+        assert!(git(&["config", "filter.x.clean", &script.to_string_lossy()]));
+        std::fs::write(d.join("f"), "b\n").unwrap();
+        // A core.attributesFile named by the repository's config.
+        let attrs = d.join("attrs");
+        std::fs::write(&attrs, "f filter=x\n").unwrap();
+        assert!(git(&["config", "core.attributesFile", &attrs.to_string_lossy()]));
+        let _ = git_diff_numstat(&d);
+        assert!(!marker.exists(), "core.attributesFile ran a filter");
+        // .git/info/attributes: no chip at all.
+        assert!(git(&["config", "--unset", "core.attributesFile"]));
+        std::fs::write(d.join(".git/info/attributes"), "f filter=x\n").unwrap();
+        assert_eq!(git_diff_numstat(&d), None);
+        assert!(!marker.exists(), "info/attributes ran a filter");
         let _ = std::fs::remove_dir_all(&d);
     }
 
