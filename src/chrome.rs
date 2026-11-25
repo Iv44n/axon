@@ -83,13 +83,15 @@ pub enum Hit {
     Close,
     Minimize,
     Maximize,
-    /// The gear at the right end of the title bar: the settings screen.
+    /// The gear at the right end of the title bar: the settings panel.
     Settings,
     /// The button right of the window buttons: shows or hides the panel of windows.
     SideBtn,
     Title,
     /// The panel of windows (the app finds out what in it; `side.rs`).
     Side,
+    /// The settings panel docked beside the grid (the panel finds out what in it; `settings.rs`).
+    Prefs,
     /// A resize edge or corner: `EDGE_*` bits.
     Edge(u32),
 }
@@ -122,10 +124,12 @@ pub struct Ui {
     pub status: bool,
     /// The panel button: 0 absent (the windows are tabs at the top), 1 the panel is hidden, 2 it is shown.
     pub side: u8,
+    /// The settings panel is open: the gear stays lit, as the reference's `aria-expanded`.
+    pub prefs: bool,
 }
 
 impl Ui {
-    pub const IDLE: Ui = Ui { hover: 0, down: false, focused: true, maximized: false, status: true, side: 1 };
+    pub const IDLE: Ui = Ui { hover: 0, down: false, focused: true, maximized: false, status: true, side: 1, prefs: false };
 }
 
 fn button_center(i: u8) -> (f32, f32) {
@@ -295,19 +299,19 @@ fn sliders(dx: f32, dy: f32) -> f32 {
 }
 
 /// The settings button over `base` at window pixel `(px, py)`: a dim sliders icon that turns to the
-/// foreground colour on a rounded highlight when the pointer is over it.
+/// foreground colour on a rounded highlight when the pointer is over it or the settings panel is open.
 fn gear_button(base: P, px: f32, py: f32, wf: f32, ui: &Ui) -> P {
     let (dx, dy) = (px - (wf - GEAR_FROM_RIGHT), py - BTN_CY);
     if dx.abs() > GEAR_HALF + 1.0 || dy.abs() > GEAR_HALF + 1.0 {
         return base;
     }
-    let hovered = ui.hover == 4;
+    let (hovered, on) = (ui.hover == 4, ui.prefs);
     let mut p = base;
-    if hovered {
+    if hovered || on {
         let d = rounded_rect(dx + GEAR_HALF, dy + GEAR_HALF, 2.0 * GEAR_HALF, 2.0 * GEAR_HALF, 8.0);
-        p = P::white(if ui.down { 0.12 } else { 0.07 } * (0.5 - d).clamp(0.0, 1.0)).over(p);
+        p = P::white(if hovered && ui.down { 0.12 } else { 0.07 } * (0.5 - d).clamp(0.0, 1.0)).over(p);
     }
-    let (colour, a) = match (hovered, ui.focused) {
+    let (colour, a) = match (hovered || on, ui.focused) {
         (true, _) => (ICON_FG, 1.0),
         (false, true) => (ICON_DIM, 1.0),
         (false, false) => (ICON_DIM, 0.55),
@@ -600,5 +604,11 @@ mod tests {
         for x in 14..70 {
             assert_eq!(lum(&hover, x, 21), lum(&UI, x, 21), "x = {x}");
         }
+        // While the settings panel is open it stays lit, without the pointer: the reference's `aria-expanded`.
+        let open = Ui { prefs: true, ..UI };
+        assert!(ink(&open) > ink(&UI));
+        assert_eq!(ink(&open), ink(&hover));
+        assert!(lum(&open, cx + 12, cy) > lum(&UI, cx + 12, cy));
+        assert_eq!(Hit::Prefs.button(), 0, "the panel itself is not a button");
     }
 }

@@ -15,7 +15,6 @@ use crate::{
     config::Chip,
     context::Context,
     history::{self, History, Run},
-    i18n::{Str, tr},
     paint::{Paint, seg},
     soft::{Soft, Target},
     view::{self, View},
@@ -219,58 +218,6 @@ fn paint_run(soft: &Soft, fb: &mut [u32], run: &Run, (cy, right): (f32, usize), 
         soft.paint_text(fb, x + sep, cyi, time.chars(), hue8(palette::FAINT), false, &m, scratch);
     }
     x0
-}
-
-/// The settings screen's live preview in the box `(x, y, w, h)` (window pixels): the chips, when they are
-/// on, over a prompt line, in the font, weight and spacing being edited. The font is scaled down when
-/// its lines would not fit the box.
-#[allow(clippy::too_many_arguments)]
-pub fn paint_preview(soft: &Soft, fb: &mut [u32], (x, y, bw, bh): (i32, i32, i32, i32), input: &crate::config::InputCfg, ctx: &Context, fade: f32) {
-    let (w, h) = soft.fb_size();
-    let (ox, oy) = soft.origin();
-    if fb.len() < w * h {
-        return;
-    }
-    let lines = if input.inline { 2 } else { 1 };
-    let cell_h = soft.cell().1 as f32;
-    let scale = ((bh as f32 - 20.0) / lines as f32 / cell_h).clamp(0.3, 1.0);
-    let m = soft.small(scale);
-    let ch = m.cell_h as usize;
-    {
-        let mut p = Paint { fb: &mut *fb, w, h, ox: ox as i32, oy: oy as i32, fade };
-        p.rrect(x, y, bw, bh, 10.0, [0.0; 3], 0.40);
-        p.outline(x, y, bw, bh, 10.0, [1.0; 3], 0.07);
-    }
-    let content = lines * ch + if input.inline { 4 } else { 0 };
-    let top = y as usize + (bh as usize).saturating_sub(content) / 2;
-    let (left, right) = (x as usize + 12, (x + bw - 12) as usize);
-    let mut scratch = Vec::new();
-    if input.inline {
-        paint_line(soft, fb, ctx, &input.chips, None, (top, ch), (left, right), (scale, fade), &mut scratch);
-    }
-    if fade <= 0.5 {
-        return;
-    }
-    let cy = oy + top + if input.inline { ch + 4 } else { 0 } + ch / 2;
-    let fit = (right - left) / m.cell_w as usize;
-    let pack = |c: alacritty_terminal::vte::ansi::Rgb| pack(c.r, c.g, c.b, 255);
-    let mut x = ox + left;
-    let mut put = |s: &str, c: u32, bold: bool, x: &mut usize, used: &mut usize| {
-        let n = s.chars().count().min(fit.saturating_sub(*used));
-        soft.paint_text(fb, *x, cy, s.chars().take(n), c, bold, &m, &mut scratch);
-        *x += n * m.cell_w as usize;
-        *used += n;
-    };
-    let mut used = 0;
-    if input.inline {
-        put("$", pack(palette::ACCENT), true, &mut x, &mut used);
-        put(&format!(" {}", tr(Str::PreviewCommand)), pack(palette::FG), false, &mut x, &mut used);
-    } else {
-        put(ctx.get(Chip::Host), pack(palette::GREEN), true, &mut x, &mut used);
-        put(":", pack(palette::FG), false, &mut x, &mut used);
-        put(ctx.get(Chip::Dir), pack(palette::BLUE), true, &mut x, &mut used);
-        put(&format!("$ {}", tr(Str::PreviewCommand)), pack(palette::FG), false, &mut x, &mut used);
-    }
 }
 
 /// A prompt's line as it was drawn: its row, which prompt and the revision of its record.

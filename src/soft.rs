@@ -17,6 +17,14 @@ use crate::config::FontCfg;
 use crate::font::{Fonts, GlyphTable, special_tiles};
 use crate::view::Backend;
 
+/// A panel beside the grid: how wide it is and whether it sits at the window's left edge (else the right one).
+/// Zero wide is no panel.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Dock {
+    pub w: u32,
+    pub left: bool,
+}
+
 pub struct Soft {
     fonts: Fonts,
     glyphs: GlyphTable,
@@ -32,8 +40,10 @@ pub struct Soft {
     pub top: u32,
     /// Space below the grid: a margin, or the status bar and a margin.
     pub bottom: u32,
-    /// Width of the panel of windows beside the grid, at the left and at the right (one of them is 0).
-    inset: (u32, u32),
+    /// The panel of windows and the settings panel beside the grid. On a shared edge the windows come first
+    /// (outermost); the reference puts the settings on the other side, so they seldom share one.
+    side: Dock,
+    prefs: Dock,
     /// The last frame repainted everything: whatever is drawn beside the grid has to be drawn again.
     pub last_full: bool,
     /// The last frame repainted the title bar: the tabs drawn in it have to be drawn again.
@@ -77,7 +87,8 @@ impl Soft {
             pad: (font_px * 0.9).round() as u32,
             top: 0,
             bottom: 0,
-            inset: (0, 0),
+            side: Dock::default(),
+            prefs: Dock::default(),
             last_full: true,
             title_painted: true,
             tabs_top: false,
@@ -101,10 +112,10 @@ impl Soft {
         s
     }
 
-    /// Leaves `left` and `right` pixels beside the grid for the panel of windows.
-    pub fn set_inset(&mut self, left: u32, right: u32) {
-        if (left, right) != self.inset {
-            self.inset = (left, right);
+    /// Leaves room beside the grid for the panel of windows and the settings panel.
+    pub fn set_docks(&mut self, side: Dock, prefs: Dock) {
+        if (side, prefs) != (self.side, self.prefs) {
+            (self.side, self.prefs) = (side, prefs);
             self.stale = true;
         }
     }
@@ -117,22 +128,51 @@ impl Soft {
         }
     }
 
+    /// The room taken beside the grid at the left and at the right, in pixels: what the panels add up to.
     pub fn inset(&self) -> (u32, u32) {
-        self.inset
+        let at = |left: bool| [self.side, self.prefs].iter().filter(|d| d.left == left).map(|d| d.w).sum();
+        (at(true), at(false))
     }
 
-    /// The panel's box in framebuffer pixels (`x0, y0, x1, y1`): beside the grid, under the title bar and
-    /// above the status bar. None when there is no panel.
+    /// The panel of windows' box in framebuffer pixels (`x0, y0, x1, y1`): beside the grid, under the title
+    /// bar and above the status bar. None when there is no panel.
     pub fn side_rect(&self) -> Option<(usize, usize, usize, usize)> {
-        let (il, ir) = (self.inset.0 as usize, self.inset.1 as usize);
-        if il + ir == 0 {
+        let (ww, wh) = self.window();
+        self.side_box((ww as u32, wh as u32)).map(|b| self.to_rect(b))
+    }
+
+    /// The settings panel's box, in the same terms: next to the grid on its edge, inside the windows' panel.
+    pub fn prefs_rect(&self) -> Option<(usize, usize, usize, usize)> {
+        let (ww, wh) = self.window();
+        self.prefs_box((ww as u32, wh as u32)).map(|b| self.to_rect(b))
+    }
+
+    /// The panel of windows' box `(x, y, w, h)` in window pixels, for a window `ww` x `wh` (the app knows the
+    /// size before the next frame tells this renderer).
+    pub fn side_box(&self, win: (u32, u32)) -> Option<(i32, i32, i32, i32)> {
+        self.dock_box(self.side, 0, win)
+    }
+
+    /// The settings panel's box in window pixels.
+    pub fn prefs_box(&self, win: (u32, u32)) -> Option<(i32, i32, i32, i32)> {
+        let outer = if self.side.left == self.prefs.left { self.side.w } else { 0 };
+        self.dock_box(self.prefs, outer, win)
+    }
+
+    fn dock_box(&self, d: Dock, outer: u32, (ww, wh): (u32, u32)) -> Option<(i32, i32, i32, i32)> {
+        if d.w == 0 {
             return None;
         }
+        let x = if d.left { outer as i32 } else { ww as i32 - outer as i32 - d.w as i32 };
+        let h = wh as i32 - TITLE_H as i32 - if self.ui.status { STATUS_H as i32 } else { 0 };
+        Some((x, TITLE_H as i32, d.w as i32, h))
+    }
+
+    /// A box in window pixels as framebuffer pixels `(x0, y0, x1, y1)`.
+    fn to_rect(&self, (x, y, w, h): (i32, i32, i32, i32)) -> (usize, usize, usize, usize) {
         let (ox, oy) = self.origin();
-        let (ww, wh) = self.window();
-        let (y0, y1) = (oy + TITLE_H, oy + wh - if self.ui.status { STATUS_H } else { 0 });
-        let x0 = if il > 0 { ox } else { ox + ww - ir };
-        Some((x0, y0, x0 + il + ir, y1))
+        let (x0, y0) = ((ox as i32 + x).max(0) as usize, (oy as i32 + y).max(0) as usize);
+        (x0, y0, x0 + w.max(0) as usize, y0 + h.max(0) as usize)
     }
 
     /// Paints the glass frame's background over `rect` (`side_rect`): the panel starts from a clean slate.
@@ -291,13 +331,14 @@ impl Soft {
             return;
         }
         let (ox, oy) = self.origin();
+        let (il, ir) = (self.inset().0 as usize, self.inset().1 as usize);
         let (top, ch) = (oy + self.top as usize, self.fonts.cell_h as usize);
         for (n, cells) in cells.chunks_exact(self.cols).enumerate() {
             if let Some(t) = self.touched.get_mut(first + n) {
                 *t = true;
             }
             let y0 = top + (first + n) * ch;
-            self.paint_bg(fb, y0, y0 + ch, ox + self.inset.0 as usize, self.w - ox - self.inset.1 as usize);
+            self.paint_bg(fb, y0, y0 + ch, ox + il, self.w - ox - ir);
             self.paint_cells(fb, y0, cells);
         }
     }
@@ -311,7 +352,7 @@ impl Soft {
     }
 
     fn paint_cells(&self, fb: &mut [u32], y0: usize, cells: &[Cell]) {
-        self.paint_cells_at(fb, self.origin().0 + self.inset.0 as usize + self.pad as usize, y0, cells);
+        self.paint_cells_at(fb, self.origin().0 + self.inset().0 as usize + self.pad as usize, y0, cells);
     }
 
     /// Cells in a row starting at pixel `(left, y0)` of the framebuffer, not tied to the grid's columns.
@@ -398,7 +439,7 @@ impl Soft {
     /// Where the grid starts, in framebuffer pixels: its left edge (after the padding) and the top of row 0.
     pub fn grid_origin(&self) -> (usize, usize) {
         let (ox, oy) = self.origin();
-        (ox + self.inset.0 as usize + self.pad as usize, oy + self.top as usize)
+        (ox + self.inset().0 as usize + self.pad as usize, oy + self.top as usize)
     }
 
     /// The framebuffer size of the last frame.
@@ -702,6 +743,48 @@ impl Backend for Target<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_docks_sit_at_their_edges_and_the_windows_panel_is_the_outermost() {
+        let mut s = Soft::new(&FontCfg::sized(15.0), 0.88);
+        let (win, body) = ((1000, 640), 640 - TITLE_H as i32 - STATUS_H as i32);
+        assert_eq!((s.side_box(win), s.prefs_box(win), s.inset()), (None, None, (0, 0)));
+        // The reference's usual: the windows at the left, the settings at the right.
+        s.set_docks(Dock { w: 220, left: true }, Dock { w: 372, left: false });
+        assert_eq!(s.inset(), (220, 372));
+        assert_eq!(s.side_box(win), Some((0, TITLE_H as i32, 220, body)));
+        assert_eq!(s.prefs_box(win), Some((628, TITLE_H as i32, 372, body)));
+        // The windows at the right: the settings go to the left, and the room adds up the other way round.
+        s.set_docks(Dock { w: 220, left: false }, Dock { w: 372, left: true });
+        assert_eq!(s.inset(), (372, 220));
+        assert_eq!((s.side_box(win).unwrap().0, s.prefs_box(win).unwrap().0), (780, 0));
+        // Two panels on one edge stack: the windows outermost, the settings next to the grid.
+        s.set_docks(Dock { w: 200, left: false }, Dock { w: 300, left: false });
+        assert_eq!((s.side_box(win).unwrap().0, s.prefs_box(win).unwrap().0, s.inset()), (800, 500, (0, 500)));
+        s.set_docks(Dock { w: 200, left: true }, Dock { w: 300, left: true });
+        assert_eq!((s.side_box(win).unwrap().0, s.prefs_box(win).unwrap().0, s.inset()), (0, 200, (500, 0)));
+        // The status bar's 28 px belong to the grid column when it is off.
+        s.set_ui(Ui { status: false, ..Ui::IDLE });
+        assert_eq!(s.prefs_box(win).map(|b| b.3), Some(body + STATUS_H as i32));
+        // Nothing: no box.
+        s.set_docks(Dock::default(), Dock::default());
+        assert_eq!((s.side_box(win), s.prefs_box(win)), (None, None));
+    }
+
+    #[test]
+    fn changing_the_docks_asks_for_a_whole_frame_and_the_same_docks_do_not() {
+        let mut s = Soft::new(&FontCfg::sized(15.0), 0.88);
+        let (w, h) = (1000, 700);
+        let mut fb = vec![0u32; w * h];
+        s.set_docks(Dock { w: 100, left: false }, Dock::default());
+        assert!(s.begin_frame(&mut fb, w, h, 10, 40), "the first frame is whole");
+        assert!(!s.begin_frame(&mut fb, w, h, 10, 40));
+        s.set_docks(Dock { w: 100, left: false }, Dock::default());
+        assert!(!s.begin_frame(&mut fb, w, h, 10, 40), "the same docks change nothing");
+        s.set_docks(Dock { w: 100, left: false }, Dock { w: 372, left: true });
+        assert!(s.begin_frame(&mut fb, w, h, 10, 40), "a panel that opens repaints everything");
+        assert!(s.prefs_rect().is_some_and(|(x0, y0, x1, y1)| x1 - x0 == 372 && y1 > y0));
+    }
 
     #[test]
     fn three_equal_coverages_are_the_grey_result() {

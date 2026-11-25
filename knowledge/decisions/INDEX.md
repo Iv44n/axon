@@ -16,12 +16,13 @@ One leaf per decision. Never edited: superseded by a new ADR.
 - [0012 · Black-and-white glass chrome](0012-glass-chrome-black-white.md) — superseded by 0015 (its look); CPU-drawn chrome and round buttons stand.
 - [0013 · Wayland default, xkb via dlopen](0013-wayland-default-xkb-dlopen.md) — accepted 2026-11-23: `wl` is the default backend; `libxkbcommon` loaded at run time; fallback to `winit`.
 - [0014 · Own shadow, design board](0014-client-shadow-design-board.md) — accepted 2026-11-23: shadow in a margin (`set_window_geometry`, input region); visual changes judged on real frames; opacity 0.88.
+- [0026 · Docked settings panel](0026-docked-settings-panel.md) — accepted 2026-11-24: settings beside the terminal (non-modal, opposite the windows' panel), applied and saved as you change; supersedes the modal part of 0017.
 - [0023 · Windows and the side panel](0023-windows-and-side-panel.md) — accepted 2026-11-24: one `Win` per shell, `Alt+N/W/1-9/[/]/B`, a panel at the side (`side.rs`, `Soft::set_inset`); groups, panes, overview and palette still to come.
 - [0022 · i18n](0022-i18n.md) — accepted 2026-11-24: English and Spanish through one `strings!` list in `i18n.rs`; `[ui] language = auto|en|es`; the window's text only.
 - [0021 · UI after the terminal.html reference](0021-ui-refactor-terminal-reference.md) — accepted 2026-11-24: new palette with an amber accent, hairlines, coloured window buttons, status bar, outline chip icons, settings with live preview, sliding tabs, cursor shape.
 - [0020 · Sharp text](0020-text-quality.md) — accepted 2026-11-24: glyphs supersampled 6x, vertical zone hinting and LCD sub-pixel coverage (`smoothing`, `hinting`); proportional settings font; fades; chips reordered by dragging.
 - [0019 · Window blur](0019-window-blur.md) — accepted 2026-11-24: `[window] blur` asks the compositor (`ext-background-effect-v1`, KDE blur) to blur behind the glass; separate from opacity; GNOME offers none.
 - [0018 · Prompt chips](0018-input-bar.md) — accepted 2026-11-24: opt-in row of context chips on the line above the prompt (time, user, dir, git, conda/venv, pyenv, kube); the shell marks its prompt with concealed spaces; grid's own font; read on a thread.
-- [0017 · Settings screen](0017-settings-screen.md) — accepted 2026-11-23: gear / `Ctrl+,` opens a live panel over the grid; Save writes the file keeping comments; no state when closed.
+- [0017 · Settings screen](0017-settings-screen.md) — superseded in part by 0026 (the modal screen and Save/Cancel); its rules on state, text and the file's comments stand.
 - [0016 · Config file, font settings](0016-config-file-font-settings.md) — accepted 2026-11-23: `config.toml` with an own parser; family, size, weight, spacing, line height, opacity; `Ctrl+Shift+R` reloads.
 - [0015 · Continuous glass](0015-continuous-glass.md) — accepted 2026-11-23: integrated title bar, no separators, uniform 1 px outline; background-coloured cells are glass.

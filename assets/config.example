@@ -1,6 +1,6 @@
 # axon settings. Copy this file to ~/.config/axon/config.toml and uncomment what you want to change.
 # Everything is optional; a mistake is reported on stderr with its line number and skipped.
-# The settings screen (the gear in the title bar, or Ctrl+,) edits and saves this file for you.
+# The settings panel (the gear in the title bar, or Ctrl+,) edits and saves this file for you as you change things.
 # Press Ctrl+Shift+R in axon to apply the file without restarting.
 # The environment variables AXON_FONT, AXON_FONT_SIZE and AXON_OPACITY win over this file.
 
@@ -50,7 +50,7 @@
 # status_bar = true
 
 [ui]
-# The language of the window's text (the settings screen, the status bar): "auto" follows your locale
+# The language of the window's text (the settings panel, the status bar): "auto" follows your locale
 # (LC_ALL, LC_MESSAGES, LANG), "en" is English, "es" is Spanish. This file and the command line stay in English.
 # language = "auto"
 
@@ -67,6 +67,10 @@
 
 # The cursor's shape until a program asks for another: "block", "bar" or "underline".
 # cursor = "block"
+
+# Suggest the rest of a command while you type it. The setting is read, saved and shown in the settings
+# panel already; the line editor that draws the suggestion comes later, so today it changes nothing.
+# autosuggest = true
 
 # The chips to show, left to right. One with nothing to say (no git repository, no virtual environment)
 # is skipped. Available: time, user, env (conda or venv), pyenv, host (user@host), dir, branch,

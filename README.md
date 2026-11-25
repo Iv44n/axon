@@ -10,7 +10,7 @@ Written in Rust, for Wayland (own client, CPU-rendered into `wl_shm`, no GPU sta
 - **Own Wayland client and CPU renderer**: the grid is painted straight into a shared-memory buffer, only the damaged rows. ~14 MB idle, no Vulkan or GL loaded.
 - **Zero idle usage**: no continuous redraw; it only paints when there are events (the one timer is the time chip's clock, once a minute, and only while that chip is shown).
 - **Full VT emulation** thanks to [`alacritty_terminal`](https://crates.io/crates/alacritty_terminal).
-- **Dark glass look** (after the `terminal.html` reference, ADR 0021): one rounded translucent pane with a soft shadow; a title bar and a status bar divided from the grid by hairlines, grey window buttons that turn red/yellow/green on hover, one amber accent and six clear hues (also the ANSI colours), outline chip icons and a settings screen with a live preview. The frame is computed per pixel (`src/chrome.rs`), no images. On the default backend; the `winit` fallback only has the black-and-white colours.
+- **Dark glass look** (after the `terminal.html` reference, ADR 0021): one rounded translucent pane with a soft shadow; a title bar and a status bar divided from the grid by hairlines, grey window buttons that turn red/yellow/green on hover, one amber accent and six clear hues (also the ANSI colours), outline chip icons and a settings panel docked beside the terminal. The frame is computed per pixel (`src/chrome.rs`), no images. On the default backend; the `winit` fallback only has the black-and-white colours.
 - **Prompt chips** (opt-in): a row of context chips on the line above your prompt (time, user, directory, git branch and changes, conda/venv, pyenv, Kubernetes), chosen and ordered by you. See [Prompt chips](#prompt-chips).
 - **Design board**: `design/board.html` shows frames from the real renderer over different desktops, zoomed to the pixel and compared with a baseline (see [Design](#design)).
 - **Small binary** (7.3 MiB, see [Benchmarks](#benchmarks)) with LTO, `panic=abort` and `strip`.
@@ -48,7 +48,7 @@ Always use `--release`: debug mode is much slower.
 
 | Shortcut | Action |
 |---|---|
-| `Ctrl+,` | Open or close the settings screen (also the sliders icon in the title bar) |
+| `Ctrl+,` | Open or close the settings panel docked beside the terminal (also the sliders icon in the title bar); `Esc` closes it when it has the keyboard |
 | `Alt+N` / `Alt+W` | New window (a shell of its own) / close the window |
 | `Alt+1…9`, `Alt+[` / `Alt+]` | Go to window *n* / the previous / the next one |
 | `Alt+G` / `Alt+Shift+G` | Group the window on screen (a header in the panel, click it to fold) / take it out of its group |
@@ -66,27 +66,36 @@ Always use `--release`: debug mode is much slower.
 | Drag from an edge or corner, or just outside it | Resize the window |
 | `Alt` + drag | Move the window (`winit` fallback only, it has no title bar) |
 
-### Settings screen
+### Settings panel
 
-Click the **sliders icon** at the right end of the title bar, or press **`Ctrl+,`**. A glass panel opens over the grid with two
-tabs. **Font**: the font (a picker over the installed monospaced fonts), size, weight, bold text, letter spacing, line
-height, window opacity, compositor blur and the interface **language** (auto, English or Español). **Input**: the input type (shell prompt or prompt chips), the clock format, the cursor shape
-(block, bar or underline) and a switch per chip (see [Prompt chips](#prompt-chips)). A live **preview** at the top shows the chips and a
-prompt line in the font, weight and spacing you are editing, and "Unsaved changes" appears when the draft differs from the file. `PageUp` / `PageDown` or `Ctrl+Tab` change tab. Everything changes the real window as you drag, so you judge the text by eye. **Save** writes
-`~/.config/axon/config.toml` (your comments stay, only what you changed is written); **Cancel**, `Esc`, the gear or
-`Ctrl+,` again put everything back. Keys: arrows and `Tab` move between rows, left and right change a value (`Shift`:
-five steps; on the chip grid they move the cursor), `Space` flips the switch or the chip, `Enter` saves.
+Click the **sliders icon** at the right end of the title bar, or press **`Ctrl+,`**. A panel opens at the edge of the window
+and the terminal gets narrower to make room (every window is resized); nothing is modal, so the terminal and the title bar keep
+working beside it. With the windows' panel at the left the settings are at the right; **with it at the right they go to the left**.
+It has three tabs. **Font**: the font (a picker over the installed monospaced fonts), size, weight, bold text, letter spacing, line
+height, window opacity and compositor blur. **Input**: the input type (shell prompt or prompt chips), the clock format, the cursor
+shape (block, bar or underline), a switch per chip (see [Prompt chips](#prompt-chips)) and **Autosuggestions** (`[input] autosuggest`: read
+and saved already, the editor that draws the suggestion comes later). **Windows**: where the list of windows lives (left, right or top),
+whether its panel is visible, its width, and the interface **language** (auto, English or Español). Every change shows on the real
+terminal beside the panel, so you judge the text by eye, and **is saved at once** to `~/.config/axon/config.toml` (your comments stay,
+only what you changed is written; a slider writes when you let go, a key held down writes once). There is no Save and no Cancel:
+**Reset to defaults** at the bottom puts every setting back. A failed write is written next to that button.
+
+Keys (when the panel has the keyboard: it does when it opens or is clicked, and the terminal has it after you click there): arrows and
+`Tab` move between rows (the ones that do nothing now are skipped), left and right change a value (`Shift`: five steps; on the chip
+grid they move the cursor; radios wrap), `Space` or `Enter` flip the switch, pick the next radio or switch the chip, `Alt+Left` /
+`Alt+Right` move a chip, `PageUp` / `PageDown` or `Ctrl+Tab` change tab, the wheel scrolls the page, `Esc` closes the panel. The
+app's own shortcuts (`Alt+...`) keep working.
 
 **Typing a number:** click the number at the right of a slider (or select its row and just start typing). It becomes a
 box: type digits, a `.` or `,` for decimals and a leading `-`; `Enter`, `Tab`, or a click elsewhere keeps it, `Esc`
 drops it. A typed number is not limited to the slider's span, only to the file's limits (size 6 to 96, weight 100
 to 900, spacing -8 to 32, line height 0.8 to 3, opacity 0.3 to 1); weights snap to tens.
 
-![axon settings screen](assets/settings.png)
+![axon settings panel](assets/settings.png)
 
 ### Prompt chips
 
-`[input] mode = "chips"` (or **Input type → Prompt chips** in the settings screen) draws a row of rounded chips on the
+`[input] mode = "chips"` (or **Input type → Prompt chips** in the settings panel) draws a row of rounded chips on the
 line right above the prompt you are typing at, in the style of Warp's prompt chips. They sit exactly where you type, move
 with the prompt, and disappear while a program runs. The shell still edits the line: axon does not replace your prompt,
 it adds context above it. **The chips replace your prompt's own text** (`user@host:~/dir`) with a bare `$`, since they say it already; your `PS1` is kept and comes back when you switch to *Shell prompt*, and the window title is still set. Chips are drawn at **90 % of the font size** set in the settings (a 14 px font gives 12.6 px chips: text, icon, padding and height all follow), with outline icons, from the same font file, rasterized on the fly through one reused buffer, so they keep no tiles or caches.
@@ -104,7 +113,7 @@ it adds context above it. **The chips replace your prompt's own text** (`user@ho
 | `kube` | `prod-eu` | `current-context` of `$KUBECONFIG` or `~/.kube/config` |
 | `env` | the conda environment or virtualenv | the shell's own variables, through the hook below |
 
-A chip with nothing to say is skipped. **Order:** in the settings screen (Input tab) drag a chip to a new slot to reorder it, drag it into the greyed area to switch it off (and back to switch it on), or focus it and press `Alt+Left` / `Alt+Right`; a click still toggles it. The order is the `chips = [...]` list, so it is saved with the file and survives page changes and context updates. The list decides which appear and in what order; chips that
+A chip with nothing to say is skipped. **Order:** in the settings panel (Input tab) drag a chip to a new slot to reorder it, drag it into the greyed area to switch it off (and back to switch it on), or focus it and press `Alt+Left` / `Alt+Right`; a click still toggles it. The order is the `chips = [...]` list, so it is saved with the file and survives page changes and context updates. The list decides which appear and in what order; chips that
 do not fit the window width are shortened with `…` and then dropped from the end. They are re-read when the terminal
 prints (at most twice a second), never on the UI thread.
 
@@ -126,18 +135,18 @@ command starts and when the next prompt appears, through window-title escapes th
 title bar), and axon times them as it reads them. The last 256 prompts are remembered; older rows keep an empty line.
 The hook also tells axon your conda/venv, `PYENV_VERSION` and `KUBECONFIG` (only the shell knows them). A prompt
 framework that rewrites `PS1` on every prompt (starship, oh-my-posh) may need the hook after it. The chips are on the `wl`
-backend only. The settings screen has live preview.
+backend only. The terminal beside the settings panel is the preview.
 
 ### Language
 
-The window's text (settings screen, status bar hints, the preview) is available in **English and Spanish**. `[ui] language`
+The window's text (settings panel, status bar hints) is available in **English and Spanish**. `[ui] language`
 is `auto` (the default: Spanish when `LC_ALL`, `LC_MESSAGES` or `LANG` starts with `es`, English otherwise), `en` or `es`;
-the last row of the settings screen's Font page changes it live. The config file, the command line and the shell hooks stay
+the Language row of the settings panel's Windows page changes it live. The config file, the command line and the shell hooks stay
 in English. Strings live in `src/i18n.rs` (ADR 0022).
 
 ### Configuration file
 
-The settings screen writes the file for you; it can also be edited by hand. axon reads `~/.config/axon/config.toml`
+The settings panel writes the file for you as you change things; it can also be edited by hand. axon reads `~/.config/axon/config.toml`
 (or `$XDG_CONFIG_HOME/axon/config.toml`) if it exists; every setting is optional. **Create it from the terminal with `axon config`**: it writes the file with every setting, commented, and never
 overwrites an existing one.
 
@@ -176,6 +185,7 @@ language = "auto"           # "auto" (your locale), "en" or "es": the language o
 mode = "shell"              # "shell" leaves the prompt as it is; "chips" puts the chips above it
 clock = "12h"               # "12h" (03:48 pm) or "24h"
 cursor = "block"            # "block", "bar" or "underline" until a program asks for another (it does not blink)
+autosuggest = true          # suggest the rest of a command while typing (read and saved; the editor that shows it comes later)
 chips = ["time", "user", "env", "pyenv", "host", "dir", "branch", "changes", "kube"]   # shown left to right
 ```
 
@@ -292,12 +302,12 @@ src/
 ├─ soft.rs      CPU renderer into an ARGB framebuffer
 ├─ chrome.rs    window frame: glass look, rounded corners, title bar, buttons, shadow, hit testing
 ├─ palette.rs   the colour tokens (amber accent, six hues) and ANSI resolution
-├─ paint.rs     antialiased shapes composited into the framebuffer (settings screen, prompt chips)
+├─ paint.rs     antialiased shapes composited into the framebuffer (settings panel, prompt chips)
 ├─ bar.rs       the prompt chips: layout, icons, painting over the reserved prompt line (grid's own font)
 ├─ i18n.rs      the interface's strings in English and Spanish (`tr`), the language setting
 ├─ history.rs   each prompt's chips as they were, and how long its command ran (the hook's title escapes)
 ├─ context.rs   what the chips say: directory, git, Python, Kubernetes, time (read on a thread)
-├─ settings.rs  the settings screen (Font and Input tabs)
+├─ settings.rs  the settings panel docked beside the grid (Font, Input and Windows pages)
 ├─ config.rs    the settings file: parser, writer, `axon config`, `axon shell-init`
 ├─ view.rs      grid → cells for any renderer (damage, cursor, selection)
 ├─ session.rs   Term + PTY thread
@@ -331,9 +341,9 @@ Plan, decisions (ADRs), risks and measurements live in the knowledge tree at
 ## Status and known limitations
 
 - Mouse reports reach applications on the `wl` backend only; the `winit` fallback keeps local selection.
-- Text is drawn with sub-pixel (LCD) coverage and vertical hinting by our own rasterizer (ADR 0020), tuned for an RGB panel; set `smoothing = "gray"` for a rotated or OLED-triangle screen. Fallback fonts (CJK, symbols) are grey and unhinted. The settings screen uses a proportional UI font (+7 MB RSS while open).
+- Text is drawn with sub-pixel (LCD) coverage and vertical hinting by our own rasterizer (ADR 0020), tuned for an RGB panel; set `smoothing = "gray"` for a rotated or OLED-triangle screen. Fallback fonts (CJK, symbols) are grey and unhinted. The settings panel uses a proportional UI font (+7 MB RSS while open).
 - Synthesized bold; no italics or ligatures; no color emoji.
-- Blur: a request to the compositor, not our own effect; GNOME (Mutter) offers none, so there it does nothing. Settings: fonts, opacity, blur and the prompt chips (settings screen or `config.toml`); colours, shortcuts and themes are not configurable yet. The weight is synthesized.
+- Blur: a request to the compositor, not our own effect; GNOME (Mutter) offers none, so there it does nothing. Settings: fonts, opacity, blur, the prompt chips and the windows' panel (settings panel or `config.toml`); colours, shortcuts and themes are not configurable yet. The weight is synthesized.
 - Input: the chips sit above the prompt, but the line is still edited by the shell. An own input editor (Warp's "Input type") is the next step, not built yet. The chip colours are fixed; the chips are `wl` only, and zsh and fish need the `axon shell-init` line (and keep their own prompt text).
 - Tested only on Linux/Wayland.
 

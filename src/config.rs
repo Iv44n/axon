@@ -117,11 +117,14 @@ pub struct InputCfg {
     pub clock24: bool,
     /// The cursor's shape until a program asks for another (`DECSCUSR`).
     pub cursor: CursorKind,
+    /// Suggest the rest of a command while it is typed (`autosuggest`). Parsed, saved and shown in the settings
+    /// panel; the line editor that draws the suggestion comes with the own input (task 6a, phase 2).
+    pub autosuggest: bool,
 }
 
 impl Default for InputCfg {
     fn default() -> Self {
-        InputCfg { inline: false, chips: Chip::ALL.to_vec(), clock24: false, cursor: CursorKind::Block }
+        InputCfg { inline: false, chips: Chip::ALL.to_vec(), clock24: false, cursor: CursorKind::Block, autosuggest: true }
     }
 }
 
@@ -183,8 +186,8 @@ impl Default for WindowsCfg {
     }
 }
 
-/// The side panel's width limits, in pixels.
-const SIDE_W: (f32, f32) = (160.0, 320.0);
+/// The side panel's width limits, in pixels. The settings panel's box and slider use the same limits.
+pub const SIDE_W: (f32, f32) = (160.0, 320.0);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
@@ -360,7 +363,8 @@ fn describe(c: &Config) -> String {
     let opacity = c.opacity.map_or("# opacity: the backend's default (0.88)".to_string(), |o| format!("opacity = {o}"));
     format!(
         "[font]\n{family}\nsize = {}\nweight = {}\nbold = {}\nletter_spacing = {}\nline_height = {}\nsmoothing = {:?}\nhinting = {}\n\n[window]\n{opacity}\nblur = {}\nstatus_bar = {}\n\n[ui]\nlanguage = {:?}\n\n\
-         [input]\nmode = {:?}\nclock = {:?}\ncursor = {:?}\nchips = {}\n",
+         [input]\nmode = {:?}\nclock = {:?}\ncursor = {:?}\nautosuggest = {}\nchips = {}\n\n\
+         [windows]\ntabs = {:?}\nside = {}\nside_width = {}\n",
         f.size,
         f.weight,
         f.bold,
@@ -374,7 +378,11 @@ fn describe(c: &Config) -> String {
         if c.input.inline { "chips" } else { "shell" },
         if c.input.clock24 { "24h" } else { "12h" },
         c.input.cursor.name(),
+        c.input.autosuggest,
         chip_list_text(&c.input.chips),
+        c.windows.tabs.name(),
+        c.windows.side,
+        c.windows.side_w,
     )
 }
 
@@ -473,7 +481,7 @@ fn config_command(sub: Option<&str>) -> i32 {
     0
 }
 
-/// What each number may be; anything outside is clamped. The settings screen's boxes use the same limits.
+/// What each number may be; anything outside is clamped. The settings panel's boxes use the same limits.
 pub const SIZE: (f32, f32) = (6.0, 96.0);
 pub const WEIGHT: (f32, f32) = (100.0, 900.0);
 pub const SPACING: (f32, f32) = (-8.0, 32.0);
@@ -631,6 +639,7 @@ fn apply(cfg: &mut Config, key: &str, v: &str) -> Result<(), String> {
             other => return Err(format!("expected \"12h\" or \"24h\", got {other:?}")),
         },
         "input.chips" => cfg.input.chips = chip_list(v)?,
+        "input.autosuggest" => cfg.input.autosuggest = boolean(v)?,
         "windows.tabs" => {
             let name = string(v)?;
             cfg.windows.tabs = TabsPos::ALL.into_iter().find(|t| t.name() == name).ok_or_else(|| format!("tabs is \"left\", \"right\" or \"top\", not {name:?}"))?
@@ -727,6 +736,27 @@ mod tests {
         let d = InputCfg::default();
         assert!(!d.inline && !d.clock24 && d.chips == Chip::ALL);
         assert_eq!(parsed("input.chips = []").0.input.chips, vec![]);
+    }
+
+    #[test]
+    fn autosuggest_is_on_by_default_and_is_read_saved_and_shown() {
+        assert!(InputCfg::default().autosuggest);
+        assert!(parsed("").0.input.autosuggest);
+        let (c, w) = parsed("[input]\nautosuggest = false\n");
+        assert!(w.is_empty(), "{w:?}");
+        assert!(!c.input.autosuggest);
+        // A word that is not a boolean is named and the default stays.
+        let (c, w) = parsed("[input]\nautosuggest = \"no\"\n");
+        assert!(c.input.autosuggest);
+        assert_eq!(w.len(), 1);
+        assert!(w[0].contains("autosuggest") && w[0].contains("true or false"), "{}", w[0]);
+        // The template line is turned into the setting, not duplicated, and `config show` reads back.
+        let out = set_key(TEMPLATE, "input", "autosuggest", Some("false"));
+        assert_eq!(out.matches("autosuggest = ").count(), 1);
+        assert!(!parsed(&out).0.input.autosuggest);
+        let off = parsed(&out).0;
+        assert_eq!(parsed(&describe(&off)).0, off);
+        assert!(describe(&off).contains("autosuggest = false"));
     }
 
     #[test]
@@ -875,7 +905,8 @@ mod tests {
             ("font", "bold", "false"), ("font", "letter_spacing", "1.5"), ("font", "line_height", "1.25"),
             ("font", "smoothing", "\"bgr\""), ("font", "hinting", "false"),
             ("window", "opacity", "0.7"), ("window", "blur", "true"), ("window", "status_bar", "false"), ("ui", "language", "\"es\""), ("input", "cursor", "\"bar\""), ("input", "mode", "\"chips\""), ("input", "clock", "\"24h\""),
-            ("input", "chips", "[\"dir\", \"time\"]"),
+            ("input", "chips", "[\"dir\", \"time\"]"), ("input", "autosuggest", "false"),
+            ("windows", "tabs", "\"right\""), ("windows", "side", "false"), ("windows", "side_width", "260"),
         ] {
             text = set_key(&text, sec, key, Some(v));
         }
@@ -886,8 +917,8 @@ mod tests {
             Config {
                 font: FontCfg { family: Some("Fira Code".into()), size: 20.0, weight: 700, bold: false, letter_spacing: 1.5, line_height: 1.25, smoothing: Smoothing::Bgr, hinting: false, ..FontCfg::default() },
                 opacity: Some(0.7),
-                input: InputCfg { inline: true, chips: vec![Chip::Dir, Chip::Time], clock24: true, cursor: CursorKind::Bar, ..InputCfg::default() },
-                windows: WindowsCfg::default(),
+                input: InputCfg { inline: true, chips: vec![Chip::Dir, Chip::Time], clock24: true, cursor: CursorKind::Bar, autosuggest: false },
+                windows: WindowsCfg { tabs: TabsPos::Right, side: false, side_w: 260 },
                 blur: true,
                 status_bar: false,
                 lang: crate::i18n::Setting::Es,

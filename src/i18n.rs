@@ -87,15 +87,14 @@ strings! {
     SettingsTitle: "Settings", "Ajustes";
     Windows: "Windows", "Ventanas";
     GroupName: "group", "grupo";
-    HintFont: "drag, or click a number to type", "arrastra, o clic en un número para escribirlo";
-    HintInput: "click to choose, drag to reorder", "clic para elegir, arrastra para reordenar";
     TabFont: "Font", "Fuente";
     TabInput: "Input", "Entrada";
+    TabWindows: "Windows", "Ventanas";
     RowFont: "Font", "Fuente";
     RowSize: "Size", "Tamaño";
     RowWeight: "Weight", "Peso";
     RowBold: "Bold text", "Texto en negrita";
-    RowSpacing: "Letter spacing", "Espaciado";
+    RowSpacing: "Letter spacing", "Espaciado de letras";
     RowLine: "Line height", "Altura de línea";
     RowOpacity: "Opacity", "Opacidad";
     RowBlur: "Blur", "Desenfoque";
@@ -104,13 +103,20 @@ strings! {
     RowClock: "Clock", "Reloj";
     RowCursor: "Cursor", "Cursor";
     RowChips: "Chips", "Chips";
+    RowAutosuggest: "Autosuggestions", "Autosugerencias";
+    RowTabs: "Position", "Posición";
+    RowSide: "Panel visible", "Panel visible";
+    RowSideW: "Panel width", "Ancho del panel";
     OptShell: "Shell prompt", "Prompt del shell";
     OptChips: "Prompt chips", "Chips de prompt";
     Opt12: "12-hour", "12 horas";
     Opt24: "24-hour", "24 horas";
     OptBlock: "Block", "Bloque";
     OptBar: "Bar", "Barra";
-    OptUnderline: "Underline", "Subrayado";
+    OptUnderline: "Underline", "Línea";
+    OptLeft: "Left", "Izquierda";
+    OptRight: "Right", "Derecha";
+    OptTop: "Top", "Arriba";
     OptAuto: "Auto", "Auto";
     OptEnglish: "English", "English";
     OptSpanish: "Español", "Español";
@@ -118,13 +124,9 @@ strings! {
     Off: "off", "desactivado";
     OnUnsupported: "on, not offered here", "activado, no disponible aquí";
     OffUnsupported: "off, not offered here", "desactivado, no disponible aquí";
-    Note1: "The chips replace your prompt's text with a `$`.", "Los chips reemplazan el texto de tu prompt por un `$`.";
-    Note2: "Drag a chip to reorder it, or Alt+Left/Right.", "Arrastra un chip para reordenarlo, o Alt+Izq/Der.";
-    Note3: "zsh and fish: add `axon shell-init` to the rc file.", "zsh y fish: añade `axon shell-init` al archivo rc.";
-    Reset: "Reset", "Restablecer";
-    Cancel: "Cancel", "Cancelar";
-    Save: "Save", "Guardar";
-    Unsaved: "Unsaved changes", "Cambios sin guardar";
+    NoteInput: "The chips replace your prompt's text with a `$`.\nDrag a chip to reorder it, or use [Alt] + [←] / [→].\nzsh and fish: add `axon shell-init` to the rc file.", "Los chips reemplazan el texto de tu prompt por un `$`.\nArrastra un chip para reordenarlo, o usa [Alt] + [←] / [→].\nzsh y fish: añade `axon shell-init` al archivo rc.";
+    NoteWindows: "Windows and groups can live in a panel at one side or in tabs at the top.\nShow or hide it with [Alt] + [B].", "Las ventanas y los grupos pueden vivir en un panel a un lado o en pestañas arriba.\nMuéstralo u ocúltalo con [Alt] + [B].";
+    Reset: "Reset to defaults", "Restablecer valores";
     DefaultFont: "Default (JetBrains Mono)", "Por defecto (JetBrains Mono)";
     NotSaved: "not saved: ", "no guardado: ";
     ChipTime: "time", "hora";
@@ -140,7 +142,6 @@ strings! {
     HintComplete: "complete", "completar";
     HintClear: "clear", "limpiar";
     HintSettings: "settings", "ajustes";
-    PreviewCommand: "echo \"The quick brown fox\"", "echo \"El veloz murciélago\"";
 }
 
 /// The string `key` in language `l`.
@@ -163,16 +164,18 @@ mod tests {
     #[test]
     fn both_languages_have_every_string_and_none_is_empty() {
         assert_eq!(EN.len(), ES.len());
-        assert_eq!(EN.len(), Str::PreviewCommand as usize + 1, "the last key is the last string");
+        assert_eq!(EN.len(), Str::HintSettings as usize + 1, "the last key is the last string");
         for (i, (en, es)) in EN.iter().zip(ES).enumerate() {
             assert!(!en.is_empty() && !es.is_empty(), "string {i}");
         }
-        // The backticked commands and keys are the same in both.
-        for key in [Str::Note1, Str::Note3] {
-            let ticks = |l| tr_in(l, key).matches('`').count();
-            assert_eq!(ticks(Lang::En), ticks(Lang::Es));
+        // The notes' markup (`code`, [keys]) and their lines are the same in both languages.
+        for key in [Str::NoteInput, Str::NoteWindows] {
+            let count = |l, c: char| tr_in(l, key).matches(c).count();
+            for c in ['`', '[', ']', '\n'] {
+                assert_eq!(count(Lang::En, c), count(Lang::Es, c), "{key:?} {c:?}");
+            }
         }
-        assert_ne!(tr_in(Lang::En, Str::Save), tr_in(Lang::Es, Str::Save));
+        assert_ne!(tr_in(Lang::En, Str::Reset), tr_in(Lang::Es, Str::Reset));
     }
 
     #[test]
