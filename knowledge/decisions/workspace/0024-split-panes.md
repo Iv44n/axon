@@ -1,6 +1,6 @@
 ---
 type: decision
-status: accepted
+status: superseded-by-0034
 updated: 2026-11-25
 related: [0023-windows-and-side-panel.md, ../interface/0021-ui-refactor-terminal-reference.md, ../core/0009-data-oriented-no-caches.md, ../interface/0018-input-bar.md]
 ---

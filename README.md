@@ -11,7 +11,7 @@ Written in Rust, for Wayland (own client, CPU-rendered into `wl_shm`, no GPU sta
 - **Zero idle usage**: no continuous redraw; it only paints when there are events (the one timer is the time chip's clock, once a minute, and only while that chip is shown).
 - **Full VT emulation** thanks to [`alacritty_terminal`](https://crates.io/crates/alacritty_terminal).
 - **Dark glass look** (after the `terminal.html` reference, ADR 0021): one rounded translucent pane with a soft shadow; a title bar and a status bar divided from the grid by hairlines, grey window buttons that turn red/yellow/green on hover, one amber accent and six clear hues (also the ANSI colours), outline chip icons and a settings panel docked beside the terminal. The frame is computed per pixel (`src/chrome.rs`), no images. On the default backend; the `winit` fallback only has the black-and-white colours.
-- **Windows, groups and panes**: one shell per window, listed in a panel at the left or right or as tabs in the title bar; windows can be put in coloured groups (a dialog with templates that open real windows with their commands typed in), renamed in place, split into panes (columns, rows or a grid), reordered and regrouped by dragging, and closed with an *Undo*; each row says what its shell is doing (the prompt, a turning ring while a command runs, a red dot when the last one failed). Right click opens the menu of whatever is under the pointer. See [Shortcuts](#shortcuts).
+- **Windows, groups and panes**: one shell per window, listed in a panel at the left or right or as tabs in the title bar; windows can be put in coloured groups (a dialog with templates that open real windows with their commands typed in), renamed in place, reordered and regrouped by dragging, and closed with an *Undo*; each row says what its shell is doing (the prompt, a turning ring while a command runs, a red dot when the last one failed). **A group is a split view**, as a tab with split panes is in Warp: the windows of the group you are in are shown side by side (columns, rows or a grid), and `Ctrl+Space` on a window in no group makes the group. Right click opens the menu of whatever is under the pointer. See [Shortcuts](#shortcuts).
 - **Command palette and overview**: `Ctrl+K` lists actions, windows and groups (ranked as you type, each with its shortcut); `Alt+O` shows every window as a card with the last rows of its terminal, in a section per group, with a filter and drag and drop between groups.
 - **Prompt chips** (opt-in): a row of context chips on the line above your prompt (time, user, directory, git branch and changes, conda/venv, pyenv, Kubernetes), chosen and ordered by you. See [Prompt chips](#prompt-chips).
 - **Design board**: `design/board.html` shows frames of every screen (the window, the settings panel, the panes, the palette, the overview, the group dialog and menus, in English and Spanish) from the real renderer over different desktops, zoomed to the pixel and compared with a baseline (see [Design](#design)).
@@ -55,13 +55,13 @@ Always use `--release`: debug mode is much slower.
 | `Alt+N` / `Alt+W` | New window (a shell of its own) / close the window: the toast says so with an *Undo* button, and the shell stays alive until it is gone |
 | `Alt+1…9`, `Alt+[` / `Alt+]` | Go to window *n* / the previous / the next one |
 | `Alt+G` / `Alt+Shift+G` | Open the new-group dialog (name, colour, the windows to group, templates that open new windows; the window on screen is ticked when it is in no group; the panel's second header button, or the new-group button left of the gear when the windows are tabs, does the same) / take the window on screen out of its group |
-| Right click on the panel or tabs | Menu of what is under the pointer: a window (rename, duplicate, split, groups, close, close the others), a group's header (edit, fold, new window, dissolve, close), a pane's row, or the empty part (new window, new group) |
+| Right click on the panel or tabs | Menu of what is under the pointer: a window (rename, duplicate, split, groups, close, close the others), a group's header (edit, fold, new window, dissolve, close), or the empty part (new window, new group) |
 | Double click on a window's row or tab / `F2` over it | Rename it in place: `Enter` keeps the name, `Esc` cancels, an empty name goes back to the automatic one. A double click on a group's header edits the group |
-| `Ctrl+Space` | One more pane in the window (to the right first, then an automatic grid); a split that would leave a pane under 20 columns x 5 rows is refused |
-| `Alt+\` / `Alt+-` | Split the focused pane in columns / in rows (mixing the two gives the grid) |
-| `Alt+,` / `Alt+.` | Focus the previous / the next pane (a click on a pane focuses it too) |
-| `Alt+Shift+W` | Close the focused pane (a shell that exits closes its pane; the window closes with its last one); the cross at a pane's corner and the cross of its row in the panel do the same |
-| `Alt+O` | The overview of windows: every window as a card (the last rows of its terminal, status, name, panes, directory) in a section per group; type to filter (name, directory, group or terminal text), arrows or `Tab` to move, `Enter` or a click to go to a window, `Alt+N` for a new one, `Esc` clears the filter and then closes it |
+| `Ctrl+Space` | Split: one more terminal in the group of the window on screen, shown beside it (to the right first, then an automatic grid). A window in no group is put in a new group first. A split that would leave a pane under 20 columns x 5 rows is refused, and no group is made |
+| `Alt+\` / `Alt+-` | The same split, with the group's windows in columns / in rows (mixing the two gives the grid) |
+| `Alt+,` / `Alt+.` | Focus the previous / the next window of the group (a click on a pane focuses it too) |
+| `Alt+Shift+W` | Close the focused pane, which is a window of the group (with the *Undo* toast; a shell that exits closes its window); the cross at a pane's corner and the cross of its row in the panel do the same |
+| `Alt+O` | The overview of windows: every window as a card (the last rows of its terminal, status, name, directory) in a section per group; type to filter (name, directory, group or terminal text), arrows or `Tab` to move, `Enter` or a click to go to a window, `Alt+N` for a new one, `Esc` clears the filter and then closes it |
 | Drag a card in the overview | Drop it on a group's section to put the window into the group (on the *No group* one to take it out), or on the dashed tile to make a group with it; `Esc` puts it back |
 | Drag a row or a tab | Reorder windows: drop it before or after another (it takes that window's group), on a group's header or chip to put it into the group, on the empty part of the list to take it out of its group. Drag a group's header or chip to move the group. `Esc` cancels. A status icon says what the shell is doing: the prompt, a turning ring while a command runs, a red dot when the last one failed (both need the shell's hook: `axon shell-init`; bash gets it from axon) |
 | `Alt+B` | Show or hide the panel of windows (`[windows] tabs = "left" \| "right" \| "top"`, `side`, `side_width`); the button right of the window buttons does the same |
@@ -222,11 +222,11 @@ axis of a font like `JetBrainsMono[wght].ttf`; the own font reader (task 12) wil
 | `AXON_BACKEND` | `wl` on Wayland, else `winit` | `wl`: own Wayland client + CPU renderer (~15 MB idle). `winit`: `winit` + `wgpu` (~150 MB idle), also the automatic fallback if `wl` cannot start |
 | `AXON_SETTINGS` | — | A debugging aid: start with the settings panel open (screenshots, measurements) |
 | `AXON_WINDOWS` | `1` | A debugging aid: start with *n* windows (up to 9) |
-| `AXON_PANES` | `1` | A debugging aid: start with *n* panes in the first window (up to 12) |
+| `AXON_PANES` | `1` | A debugging aid: start with *n* terminals split in a group around the first window (up to 12) |
 | `AXON_GROUPS` | — | A debugging aid: set (any value) with `AXON_WINDOWS` of 2 or more, the first two windows start in one group |
-| `AXON_RUNNING` | — | A debugging aid: every pane counts as running a command (the turning ring, the folded groups' dots) |
+| `AXON_RUNNING` | — | A debugging aid: every window counts as running a command (the turning ring, the folded groups' dots) |
 | `AXON_OVERVIEW` | — | A debugging aid: start with the overview of windows open |
-| `AXON_LIST_UI` | — | A debugging aid: start with one of the window list's screens open: `dialog`, `edit`, `menu`, `group-menu`, `pane-menu`, `strip-menu`, `rename`, `close` or `toast` (`edit` and `group-menu` need `AXON_GROUPS`) |
+| `AXON_LIST_UI` | — | A debugging aid: start with one of the window list's screens open: `dialog`, `edit`, `menu`, `group-menu`, `strip-menu`, `rename`, `close` or `toast` (`edit` and `group-menu` need `AXON_GROUPS`) |
 | `AXON_DEMO_OVERLAY` | — | A debugging aid: start with one of the overlay kit's screens open (`field`, `list`, `menu`, `toast`, `modal`), or `palette` for the real command palette |
 | `AXON_WL_DEBUG` | — | A debugging aid: trace the Wayland protocol on stderr |
 
@@ -253,42 +253,42 @@ Measured with [`scripts/bench.sh`](scripts/bench.sh) (`--clean` adds a cold buil
 can move size or speed** (rule in `CLAUDE.md`); older numbers stay in the history table.
 
 Machine: AMD Ryzen 5 5600H (12 threads) + RTX 3050 Mobile, Ubuntu, kernel 7.0.0-44, GNOME Shell 50.1 on Wayland.
-Last measured: 2026-11-25, at `a44df93`: everything since `02c3490` (mouse reporting, the config file, the prompt chips, the blur request, the sub-pixel text rasterizer, the UI after `terminal.html`) plus the second reference: windows and groups (side panel or top tabs), split panes, the overlay kit, the docked settings panel, the command palette, the overview of windows, the group dialog, context menus, inline rename, toasts with undo, drag and drop, status icons, and the fixes after the review. The machine was idle (`vmstat`: 96-99 % idle; a browser open).
+Last measured: 2026-11-25, at `169bda9` plus the change that makes a group the split (ADR 0034): everything since `02c3490` (mouse reporting, the config file, the prompt chips, the blur request, the sub-pixel text rasterizer, the UI after `terminal.html`) plus the second reference: windows and groups (side panel or top tabs), split panes, the overlay kit, the docked settings panel, the command palette, the overview of windows, the group dialog, context menus, inline rename, toasts with undo, drag and drop, status icons, and the fixes after the review. The machine was idle (`vmstat`: 96-99 % idle; a browser open).
 
 **Build**
 
 | Binary | Cold release build |
 |---|---|
-| 7.9 MiB (8,294,576 bytes) | 98 s |
+| 7.9 MiB (8,302,768 bytes) | 101 s |
 
 **Idle memory and CPU** (`AXON_BACKEND` selects the backend; `wl` is the own Wayland client with the CPU renderer and the
 default on Wayland, `winit` is the `winit` + `wgpu` fallback)
 
 | Backend | Font | RSS | PSS | Private (anon) | CPU |
 |---|---|---|---|---|---|
-| `wl` | JetBrains Mono (default) | **15 MB** | 10 MB | 6 MB | 0 ticks / 3 s |
-| `wl` | DejaVu Sans Mono | 20 MB | 16 MB | 11 MB | 0 ticks / 3 s |
-| `wl` | Cascadia Mono NF | 58 MB | 54 MB | 49 MB | 0 ticks / 3 s |
-| `winit` | JetBrains Mono (default) | 147 MB | 96 MB | 31 MB | 0 ticks / 3 s |
-| `winit` | DejaVu Sans Mono | 154 MB | 102 MB | 37 MB | 0 ticks / 3 s |
-| `winit` | Cascadia Mono NF | 190 MB | 138 MB | 74 MB | 0 ticks / 3 s |
+| `wl` | JetBrains Mono (default) | **15 MB** | 11 MB | 6 MB | 0 ticks / 3 s |
+| `wl` | DejaVu Sans Mono | 21 MB | 17 MB | 11 MB | 0 ticks / 3 s |
+| `wl` | Cascadia Mono NF | 59 MB | 55 MB | 49 MB | 0 ticks / 3 s |
+| `winit` | JetBrains Mono (default) | 148 MB | 139 MB | 31 MB | 0 ticks / 3 s |
+| `winit` | DejaVu Sans Mono | 154 MB | 145 MB | 37 MB | 0 ticks / 3 s |
+| `winit` | Cascadia Mono NF | 189 MB | 180 MB | 74 MB | 0 ticks / 3 s |
 
 The idle target is under 50 MB of RSS. `wl` meets it with the default font; a Nerd Font such as Cascadia Mono NF costs
 ~45 MB inside `fontdue` (it parses every glyph), which the own font reader will remove. The `winit` backend cannot meet
-the target: the Vulkan loader and the drivers map ~94 MB. (`winit`'s PSS went from 56 to 96 MB with the RSS
+the target: the Vulkan loader and the drivers map ~94 MB. (`winit`'s PSS went from 56 to 96 and now 139 MB with the RSS
 unchanged: PSS divides shared pages among every process that maps them, so it follows what else runs on the desktop.)
 
-**Windows, panes and screens** (`wl`, default font, idle shell in every pane; the debugging knobs `AXON_WINDOWS`,
+**Windows, groups and screens** (`wl`, default font, idle shell in every window; the debugging knobs `AXON_WINDOWS`,
 `AXON_PANES`, `AXON_SETTINGS`, `AXON_OVERVIEW`)
 
 | State | RSS | Private (anon) | CPU |
 |---|---|---|---|
-| One window | 14.7 MB | 5.7 MB | 0 ticks / 5 s |
+| One window | 14.8 MB | 5.7 MB | 0 ticks / 5 s |
 | Three windows (grouped or not) | 17.0 MB | 8.0 MB | 0 ticks / 5 s |
-| One window with four panes | 18.1 MB | 9.0 MB | 0 ticks / 5 s |
-| Settings panel open | 23.2 MB | 14.1 MB | 0 ticks / 5 s |
-| Overview of windows open | 19.9 MB | 10.7 MB | 0 ticks / 5 s |
-| Three windows, every pane marked as running (the status spinners turn) | 17.1 MB | 8.0 MB | 5 ticks / 5 s |
+| A group of four windows shown split (`AXON_PANES=4`) | 18.0 MB | 9.1 MB | 0 ticks / 5 s |
+| Settings panel open | 23.1 MB | 14.1 MB | 0 ticks / 5 s |
+| Overview of windows open (one window) | 19.8 MB | 10.7 MB | 0 ticks / 5 s |
+| Three windows, each marked as running (the status spinners turn) | 17.0 MB | 8.0 MB | 3 ticks / 5 s |
 
 A shell killed with `SIGKILL` closes only its own window; when the last one goes, axon quits and removes its report files.
 
@@ -296,11 +296,11 @@ A shell killed with `SIGKILL` closes only its own window; when the last one goes
 
 | Backend | Time | RSS afterwards |
 |---|---|---|
-| `wl` | 1.57 s | 37 MB |
-| `winit` | 1.30 s | 177 MB |
+| `wl` | 1.65 s | 37 MB |
+| `winit` | 1.35 s | 177 MB |
 
-Idle machine, two runs of `scripts/bench.sh` (`wl` 1.58 and 1.57 s, `winit` 1.33 and 1.30 s): run-to-run noise is about
-0.1 s. The 1.95-2.08 s of the title bar build was the machine (a browser held the load average at 3-4), not the code.
+Idle machine, four runs of `scripts/bench.sh` in this stretch (`wl` 1.58, 1.57, 1.63 and 1.65 s, `winit` 1.33, 1.30, 1.38 and 1.35 s):
+run-to-run noise is about 0.1 s, and the last two are within it of the first two. The 1.95-2.08 s of the title bar build was the machine (a browser held the load average at 3-4), not the code.
 
 Not measured yet: startup time, input latency, and a comparison with Alacritty, Ghostty and foot (not installed here).
 
@@ -308,6 +308,7 @@ Not measured yet: startup time, input latency, and a comparison with Alacritty, 
 
 | Date | Change | Binary | Idle RSS `winit` | Idle RSS `wl` |
 |---|---|---|---|---|
+| 2026-11-25 | A group is the split (ADR 0034): a group's windows are shown side by side, `Ctrl+Space` makes the group; no new dependency, +8.2 KB over the row below; a group of four windows 18 MB | 8,302,768 B | 148 MB | 15 MB |
 | 2026-11-25 | The second reference (`a44df93`): groups, split panes, overlay kit, docked settings, command palette, overview, group dialog, menus, rename, toasts, drag and drop, status icons, and the review fixes; +561 KB over the title bar row; three windows 17 MB, settings open 23 MB, overview open 20 MB | 8,294,576 B | 147 MB | 15 MB |
 | 2026-11-24 | Title bar after the reference: panel button, name and place as the title, windows as tabs at the top (`tabs = "top"`) | 7,733,936 B | 149 MB | 15 MB |
 | 2026-11-24 | Windows and the side panel (`Win` per shell, `side.rs`, `[windows]`, `Alt+N/W/1-9/[/]/B`, ADR 0023); one window idle 15 MB, three windows ~18 MB | 7,730,960 B | 150 MB | 15 MB |
@@ -348,7 +349,7 @@ src/
 ├─ palette.rs   the colour tokens (amber accent, six hues) and ANSI resolution
 ├─ side.rs      the list of windows (panel or tabs): layout, groups, status icons, drag marks, painting
 ├─ dnd.rs       drag and drop in that list: what a drop means and the new order (pure)
-├─ panes.rs     split panes of a window: layouts, focus order, the 20 x 5 minimum (pure)
+├─ panes.rs     the split layouts (columns, rows, grid), focus order, the 20 x 5 minimum (pure); a group's windows are the panes
 ├─ paint.rs     antialiased shapes composited into the framebuffer (settings panel, prompt chips)
 ├─ bar.rs       the prompt chips: layout, icons, painting over the reserved prompt line (grid's own font)
 ├─ i18n.rs      the interface's strings in English and Spanish (`tr`), the language setting
@@ -362,7 +363,7 @@ src/
 ├─ picker.rs    the command palette's overlay: input row, list, footer (`Ctrl+K`)
 ├─ groups.rs    groups of windows: the dialog's form check, names, colours, what a close puts back, templates (pure)
 ├─ group_dialog.rs  the group dialog (`Alt+G`), an overlay
-├─ ctxmenu.rs   the context menus of a window, a group, a pane and the empty list
+├─ ctxmenu.rs   the context menus of a window, a group and the empty list
 ├─ menu.rs      the context menu
 ├─ toast.rs     the toast (with an *Undo* button)
 ├─ icons.rs     the overlays' outline icons
@@ -372,7 +373,7 @@ src/
 ├─ view.rs      grid → cells for any renderer (damage, cursor, selection)
 ├─ session.rs   Term + PTY thread
 ├─ wl.rs        own Wayland client: wire protocol, window, shm buffers
-├─ wlapp.rs     the default app on wl.rs + soft.rs: windows made of panes, keyboard, pointer, clipboard, one poll loop
+├─ wlapp.rs     the default app on wl.rs + soft.rs: windows (a group's are shown split), keyboard, pointer, clipboard, one poll loop
 │  ├─ groups_ui.rs         windows, groups, menus, rename and undo: what owns the shells
 │  └─ windows_overview.rs  the app's side of the overview: cards from the windows, the terminals' text for the previews
 ├─ xkb.rs       keyboard layouts through libxkbcommon (dlopen)
@@ -406,7 +407,7 @@ Plan, decisions (ADRs), risks and measurements live in the knowledge tree at
 - Synthesized bold; no italics or ligatures; no color emoji.
 - Blur: a request to the compositor, not our own effect; GNOME (Mutter) offers none, so there it does nothing. Settings: fonts, opacity, blur, the prompt chips and the windows' panel (settings panel or `config.toml`); colours, shortcuts and themes are not configurable yet. The weight is synthesized.
 - Input: the chips sit above the prompt, but the line is still edited by the shell. An own input editor (Warp's "Input type") is the next step, not built yet. The chip colours are fixed; the chips are `wl` only, and zsh and fish need the `axon shell-init` line (and keep their own prompt text).
-- Windows, groups and their names are not saved between runs; panes cannot be resized by dragging yet; the overview has no context menus (ADR 0033 lists what is left out on purpose).
+- Windows, groups and their names are not saved between runs; a split's panes cannot be resized by dragging yet; the overview has no context menus (ADR 0033 lists what is left out on purpose).
 - Tested only on Linux/Wayland.
 
 ## License

@@ -155,6 +155,17 @@ pub fn after_remove(kind: Kind, n: usize) -> Kind {
     }
 }
 
+/// The layout `n` panes have when what holds them (a group, ADR 0034) only remembers the last choice: one is
+/// `Single`, and two or more never are (two columns, then the automatic grid), whatever was remembered.
+pub fn fit_kind(kind: Kind, n: usize) -> Kind {
+    match (kind, n) {
+        (_, 0 | 1) => Kind::Single,
+        (Kind::Single, 2) => Kind::Cols,
+        (Kind::Single, _) => Kind::Grid,
+        (k, _) => k,
+    }
+}
+
 /// The pane `d` places (-1, +1) from `i` among `n`, wrapping round.
 pub fn cycle(i: usize, n: usize, d: i32) -> usize {
     if n == 0 {
@@ -211,6 +222,23 @@ mod tests {
 
     fn overlap(a: Rect, b: Rect) -> bool {
         a.x < b.x2() && b.x < a.x2() && a.y < b.y2() && b.y < a.y2()
+    }
+
+    #[test]
+    fn a_remembered_layout_always_fits_the_count() {
+        assert_eq!(fit_kind(Kind::Grid, 1), Kind::Single);
+        assert_eq!(fit_kind(Kind::Cols, 0), Kind::Single);
+        assert_eq!(fit_kind(Kind::Single, 2), Kind::Cols);
+        assert_eq!(fit_kind(Kind::Single, 3), Kind::Grid);
+        assert_eq!(fit_kind(Kind::Single, 9), Kind::Grid);
+        // A real choice is kept.
+        assert_eq!(fit_kind(Kind::Rows, 4), Kind::Rows);
+        assert_eq!(fit_kind(Kind::Cols, 3), Kind::Cols);
+        // Whatever it returns for two or more panes can be laid out without overlap.
+        for n in 2..=8 {
+            let rs: Vec<Rect> = (0..n).map(|i| rect(fit_kind(Kind::Single, n), n, i, AREA)).collect();
+            assert!(rs.iter().enumerate().all(|(i, a)| rs.iter().skip(i + 1).all(|b| !overlap(*a, *b))), "n = {n}");
+        }
     }
 
     #[test]

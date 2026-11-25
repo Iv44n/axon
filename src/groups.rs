@@ -6,6 +6,7 @@
 //!
 //! A window's group is an index into the app's list of groups (`Win::group`), as the panel needs it; a group
 //! also has a stable `id` that a menu or a dialog can hold on to while the indices shift under it.
+use crate::panes;
 use std::path::Path;
 
 /// The most characters a group's name can have (`maxlength` of the reference's field), and a window's.
@@ -14,13 +15,16 @@ pub const RENAME_MAX: usize = 28;
 /// The colours a group can have (`side::group_color`).
 pub const COLORS: usize = 8;
 
-/// A group of windows: a name, one of the eight colours, and whether the panel shows its windows.
+/// A group of windows: a name, one of the eight colours, whether the panel shows its windows, and how they are laid
+/// side by side in the grid area (ADR 0034: the windows of a group are the panes of one split view). `kind` is the
+/// last choice (a split in columns or in rows); what it means for the windows there are now is `panes::fit_kind`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Group {
     pub id: u32,
     pub name: String,
     pub color: u8,
     pub collapsed: bool,
+    pub kind: panes::Kind,
 }
 
 /// The first colour no group has, else the one the count points at (the reference's `nextColor`).
@@ -119,6 +123,21 @@ pub fn dissolve(win_group: &mut [Option<usize>], g: usize) {
     }
 }
 
+/// Where the windows of group `g` are in the list: `(first, count)`. `of` is the group of each window in the order of the
+/// list, which keeps a group's windows together (`App::rebuild_side`); `None` when no window is in it.
+pub fn span(of: impl IntoIterator<Item = Option<usize>>, g: usize) -> Option<(usize, usize)> {
+    let (mut first, mut n) = (None, 0);
+    for (i, x) in of.into_iter().enumerate() {
+        match (x == Some(g), first) {
+            (true, None) => (first, n) = (Some(i), 1),
+            (true, Some(_)) => n += 1,
+            (false, Some(_)) => break,
+            (false, None) => {}
+        }
+    }
+    first.map(|f| (f, n))
+}
+
 /// The index of the group with `id`.
 pub fn index_of(groups: &[Group], id: u32) -> Option<usize> {
     groups.iter().position(|g| g.id == id)
@@ -139,6 +158,20 @@ pub fn after_close(cur: usize, closed: &[usize], n: usize) -> usize {
     } else {
         cur - closed.iter().filter(|&&c| c < cur).count()
     }
+}
+
+/// Like `after_close`, for windows that are shown together: when the window on screen is one of a group's and closes,
+/// the group's window before it is shown (the way a closed pane gives the focus to the one before it), so the
+/// split view stays on screen; only when none is left does the list decide. `of` is the group of each window
+/// before the close.
+pub fn after_close_in(of: &[Option<usize>], cur: usize, closed: &[usize]) -> usize {
+    if closed.contains(&cur)
+        && let Some(g) = of[cur]
+        && let Some(prev) = (0..cur).rev().find(|&i| of[i] == Some(g) && !closed.contains(&i))
+    {
+        return prev - closed.iter().filter(|&&c| c < prev).count();
+    }
+    after_close(cur, closed, of.len())
 }
 
 /// Puts back what a close took out, each at the place it had (`items` are `(index before, item)`; those past
@@ -254,7 +287,33 @@ mod tests {
     use super::*;
 
     fn g(id: u32, name: &str) -> Group {
-        Group { id, name: name.into(), color: 0, collapsed: false }
+        Group { id, name: name.into(), color: 0, collapsed: false, kind: panes::Kind::Single }
+    }
+
+    #[test]
+    fn closing_the_window_on_screen_keeps_its_group_in_view() {
+        let of = [Some(0), Some(0), Some(0), None, None];
+        // The middle one of the group closes: the one before it takes the focus, in the shortened list.
+        assert_eq!(after_close_in(&of, 1, &[1]), 0);
+        assert_eq!(after_close_in(&of, 2, &[2]), 1);
+        // The first of the group has none before it: the list decides (the one that took its place).
+        assert_eq!(after_close_in(&of, 0, &[0]), 0);
+        // Several closing at once: the nearest survivor before it.
+        assert_eq!(after_close_in(&of, 2, &[1, 2]), 0);
+        // A window out of the group, or one that is not on screen, is as `after_close` says.
+        assert_eq!(after_close_in(&of, 3, &[3]), 3);
+        assert_eq!(after_close_in(&of, 4, &[4]), 3);
+        assert_eq!(after_close_in(&of, 2, &[0]), 1);
+    }
+
+    #[test]
+    fn a_groups_windows_are_found_as_a_run_of_the_list() {
+        // Groups in order, a group's windows together, the windows in none last (`App::rebuild_side`).
+        let of = [Some(0), Some(0), Some(0), Some(1), Some(2), Some(2), None, None];
+        let at = |g| span(of.iter().copied(), g);
+        assert_eq!((at(0), at(1), at(2)), (Some((0, 3)), Some((3, 1)), Some((4, 2))));
+        assert_eq!(at(3), None, "no window is in it");
+        assert_eq!(span(std::iter::empty(), 0), None);
     }
 
     #[test]

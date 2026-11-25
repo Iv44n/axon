@@ -86,6 +86,20 @@ impl App {
         self.groups_made as u32
     }
 
+    /// A group for window `wi` alone, made the way the dialog would suggest (the name of its folder, the next colour):
+    /// what a split of a window in no group starts from (ADR 0034). Returns its index; the window is in it.
+    pub(super) fn group_around(&mut self, wi: usize) -> usize {
+        let taken: Vec<&str> = self.groups.iter().map(|g| g.name.as_str()).collect();
+        let base = win_place(&self.wins[wi]).rsplit('/').next().unwrap_or("");
+        let name = groups::suggest_name(base, tr(Str::GroupName), &taken);
+        let color = groups::next_color(&self.groups.iter().map(|g| g.color).collect::<Vec<_>>());
+        let id = self.next_group_id();
+        self.groups.push(Group { id, name, color, collapsed: false, kind: panes::Kind::Single });
+        let g = self.groups.len() - 1;
+        self.wins[wi].group = Some(g);
+        g
+    }
+
     // ------------------------------------------------------------- windows --
 
     /// Opens a window with a shell of its own (`Spawn` says where, in which group, named how, with which command);
@@ -154,9 +168,9 @@ impl App {
         self.finish_rename(false);
         let label = label.unwrap_or_else(|| self.closed_label(&idx));
         let placeholder = (idx.len() == self.wins.len()).then(|| self.spawn_win(Spawn::default()));
-        let n = self.wins.len();
         let was = self.wins[self.cur].id;
-        let cur = groups::after_close(self.cur, &idx, n);
+        let of: Vec<Option<usize>> = self.wins.iter().map(|w| w.group).collect();
+        let cur = groups::after_close_in(&of, self.cur, &idx);
         // Out of the list, last first so that the indices stay right; each remembers its group.
         let mut entries = Vec::with_capacity(idx.len());
         for &i in idx.iter().rev() {
@@ -313,7 +327,7 @@ impl App {
             return;
         }
         let id = self.next_group_id();
-        self.groups.push(Group { id, name: s.name.clone(), color: s.color, collapsed: false });
+        self.groups.push(Group { id, name: s.name.clone(), color: s.color, collapsed: false, kind: panes::Kind::Single });
         let g = self.groups.len() - 1;
         let mut ticked = Vec::new();
         for &m in &s.members {

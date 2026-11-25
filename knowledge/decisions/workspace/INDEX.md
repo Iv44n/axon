@@ -3,7 +3,7 @@
 Windows, groups, panes, the overlays built on one kit, and the screens of the second reference. Never edited: superseded by a new ADR.
 
 - [0023 · Windows and the side panel](0023-windows-and-side-panel.md) — one `Win` per shell, `Alt+N/W/1-9/[/]/B`, a panel or tabs at the top.
-- [0024 · Split panes](0024-split-panes.md) — panes per window, focus ring, dimming, panel rows; a split below 20x5 cells is refused.
+- [0024 · Split panes](0024-split-panes.md) — superseded by 0034 for panes inside a window; the layout, focus ring, dimming and 20x5 minimum stay.
 - [0025 · The overlay kit](0025-overlay-kit.md) — one `overlay::Stack` takes keyboard and pointer; field, list, menu, toast, modal frame.
 - [0026 · Docked settings panel](0026-docked-settings-panel.md) — settings beside the terminal, non-modal, saved as you change; supersedes 0017's modal part.
 - [0027 · The command palette](0027-command-palette.md) — `Ctrl+K` on the overlay kit: actions, windows, groups; no History heading.
@@ -13,3 +13,4 @@ Windows, groups, panes, the overlays built on one kit, and the screens of the se
 - [0031 · The paint path after the review](0031-review-fixes-paint-path.md) — no syscalls, locks or copies while painting; a toast repaints its box; one UI font.
 - [0032 · Fidelity to the second reference](0032-fidelity-second-reference.md) — 40 px title bar, panel measures, scrolling tabs, overview drag, window label from the command.
 - [0033 · Windows, groups, palette, overview and drag as one set](0033-windows-feature-set-after-the-merge.md) — what the merge connected; the groups model; what is left out on purpose.
+- [0034 · A group is the split](0034-a-group-is-the-split.md) — a group's windows are shown side by side as panes; `Ctrl+Space` makes the group.

@@ -1,6 +1,6 @@
 //! The design board's frames of the window list's screens ([0029](../../knowledge/decisions/workspace/0029-group-dialog-menus-rename-toasts.md)):
 //! the group dialog (new, with its error lines, with the windows ticked, the development template, edit mode, in
-//! Spanish), the context menus of a window, a group, a pane and the empty list, a window's name being edited in its
+//! Spanish), the context menus of a window, a group and the empty list, a window's name being edited in its
 //! row or tab, and the toasts of a close and of a group made. Each is painted over the real window and panel by
 //! the same `Stack` the app uses; the menus and dialogs are the real ones with made-up windows.
 //! `design::frames` writes them next to the others.
@@ -78,7 +78,6 @@ fn defs() -> Vec<Def> {
     let row3: fn(Scene) -> Scene = |s| Scene { side: Some((TabsPos::Left, Some(Part::Row(3)))), ..s };
     let row1: fn(Scene) -> Scene = |s| Scene { side: Some((TabsPos::Left, Some(Part::Row(1)))), ..s };
     let head0: fn(Scene) -> Scene = |s| Scene { side: Some((TabsPos::Left, Some(Part::Head(0)))), ..s };
-    let pane: fn(Scene) -> Scene = |s| Scene { side: Some((TabsPos::Left, Some(Part::Pane(0, 1)))), ..s };
     vec![
         d("group-dialog", "Group dialog (Alt+G): the name selected, the eight colours, the windows (the one on screen ticked, out of view), the templates, the summary", "side", plain, Show::Overlay(|| Box::new(new_group(&[5])))),
         d("group-dialog-picked", "Group dialog: two windows ticked, the list scrolled to its end with its scrollbar, the keyboard on the list", "side", plain, Show::Overlay(|| Box::new(new_group(&[4, 5]).at(Zone::Members).scrolled_list(999)))),
@@ -92,7 +91,6 @@ fn defs() -> Vec<Def> {
         d("menu-window", "Window menu (right click on a row): rename, duplicate, split, the groups, new group, close; the first item lit", "side", row3, Show::Overlay(|| Box::new(ctxmenu::window_menu((80, 300), &groups(), None, true).shown(Some(0))))),
         d("menu-window-grouped", "Window menu of a window in a group: its group checked, Remove from group, the danger items", "side", row1, Show::Overlay(|| Box::new(ctxmenu::window_menu((80, 150), &groups(), Some(1), true).shown(Some(11))))),
         d("menu-group", "Group menu (right click on its header): edit, fold, new window, dissolve, close", "side", head0, Show::Overlay(|| Box::new(ctxmenu::group_menu((80, 100), false).shown(Some(0))))),
-        d("menu-pane", "Pane menu (right click on a pane's row): go to it, close it", "panes-2", pane, Show::Overlay(|| Box::new(ctxmenu::pane_menu((110, 158)).shown(Some(0))))),
         d("menu-strip", "Menu of the empty part of the list: a new window, a new group", "side", plain, Show::Overlay(|| Box::new(ctxmenu::strip_menu((100, 520), false).shown(Some(1))))),
         Def { name: "menu-window-es", label: "Window menu in Spanish", lang: Lang::Es, base: "side", tweak: row3, show: Show::Overlay(|| Box::new(ctxmenu::window_menu((80, 300), &groups(), None, true).shown(Some(0)))) },
         Def { name: "menu-group-es", label: "Group menu in Spanish", lang: Lang::Es, base: "side", tweak: head0, show: Show::Overlay(|| Box::new(ctxmenu::group_menu((80, 100), true).shown(Some(1)))) },

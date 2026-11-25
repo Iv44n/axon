@@ -84,8 +84,9 @@
 # Alt+G makes a group: a coloured container for windows (a dialog, with templates that open windows for you);
 # Alt+Shift+G takes the window out of its group. Drag a row or a tab to reorder or regroup it, right click it for
 # its menu, double click it to rename it. Windows, groups and names are not saved between runs.
-# A window can be split into panes: Ctrl+Space adds one, Alt+\ splits in columns, Alt+- in rows, Alt+, and
-# Alt+. move the focus, Alt+Shift+W closes the focused pane. The panel lists a window's panes under it.
+# A group is a split: its windows are shown side by side. Ctrl+Space adds a terminal to the group of the window on
+# screen (a window in no group gets one), Alt+\ lays them out in columns, Alt+- in rows, Alt+, and Alt+. move the
+# focus, Alt+Shift+W closes the focused one. The panel lists the group's windows as usual.
 # tabs = "left"
 
 # Whether the panel is shown (Alt+B toggles it), and its width in pixels (160 to 320).

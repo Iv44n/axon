@@ -106,8 +106,8 @@ fn pane_status(i: usize) -> Status {
     }
 }
 
-/// A window split into panes: how many, how they are arranged, which has the focus and the cross shown at a
-/// pane's corner (the pane, and whether the pointer is on it).
+/// A group split into panes (ADR 0034: a split is the windows of a group): how many windows, how they are arranged,
+/// which is on screen and the cross shown at a pane's corner (the pane, and whether the pointer is on it).
 #[derive(Clone, Copy)]
 struct PaneScene {
     n: usize,
@@ -355,23 +355,22 @@ fn scenes() -> Vec<Scene> {
         Scene { side: Some((TabsPos::Top, Some(crate::side::Part::Row(1)))), ..base("tabs-top", "Windows as tabs in the title bar, pointer over one", "windows", Ui { side: 0, ..Ui::IDLE }) },
         Scene { side: Some((TabsPos::Top, Some(crate::side::Part::Close(2)))), bar: bar(&[Chip::Time, Chip::Dir, Chip::Branch]), input: hooked, ..base("tabs-top-close", "Tabs, pointer over a cross, chips on", "windows", Ui { side: 0, ..Ui::IDLE }) },
         base("side-btn-hover", "Pointer over the panel button, panel hidden", "windows", Ui { side: 1, hover: 5, ..Ui::IDLE }),
-        Scene { panes: split(2, panes::Kind::Cols, 1, None), side: Some((TabsPos::Left, None)), bar: chips3(), ..base("panes-2", "Two panes in columns (Alt+\\): the focused one has the accent border and its ring, the other is dimmer with a hollow cursor; the panel lists them", "panes", side_ui) },
-        Scene { panes: split(3, panes::Kind::Grid, 2, None), side: Some((TabsPos::Left, None)), bar: chips3(), ..base("panes-3", "Three panes (Ctrl+Space twice): the last spans both columns of the second row", "panes", side_ui) },
-        Scene { panes: split(4, panes::Kind::Grid, 3, None), side: Some((TabsPos::Left, None)), bar: chips3(), ..base("panes-4", "Four panes: a grid of two by two", "panes", side_ui) },
-        Scene { panes: split(5, panes::Kind::Grid, 4, None), side: Some((TabsPos::Left, Some(crate::side::Part::Pane(0, 2)))), bar: chips3(), ..base("panes-5", "Five panes: three columns, the last pane spans the two cells the second row leaves empty; pointer over a pane's row in the panel; the rows' status icons (running, failed)", "panes", side_ui) },
-        Scene { panes: split(6, panes::Kind::Grid, 0, None), side: Some((TabsPos::Left, Some(crate::side::Part::ClosePane(0, 3)))), bar: chips3(), ..base("panes-6", "Six panes, the first focused; pointer over the cross of a pane's row", "panes", side_ui) },
-        Scene { panes: split(3, panes::Kind::Rows, 1, Some((1, false))), side: Some((TabsPos::Left, None)), bar: chips3(), ..base("panes-rows", "Three panes in rows (Alt+-): the cross at the corner of the pane under the pointer", "panes", side_ui) },
-        Scene { panes: split(4, panes::Kind::Grid, 0, Some((1, true))), side: Some((TabsPos::Left, None)), bar: chips3(), ..base("panes-cross-hot", "The pointer is on a pane's cross (closes it, Alt+Shift+W closes the focused one)", "panes", side_ui) },
-        Scene { panes: split(4, panes::Kind::Cols, 2, None), side: Some((TabsPos::Top, Some(crate::side::Part::Row(0)))), bar: chips3(), ..base("panes-tabs-top", "Windows as tabs: the first says how many panes it has", "panes", Ui { side: 0, ..Ui::IDLE }) },
-        Scene { panes: split(3, panes::Kind::Grid, 1, None), side: Some((TabsPos::Left, None)), bar: chips3(), lang: Lang::Es, ..base("panes-es", "Panes in Spanish: the rows of the panel say Panel n", "panes", side_ui) },
-        Scene { panes: split(2, panes::Kind::Cols, 0, None), bar: chips3(), ..base("panes-no-panel", "Two panes with the panel hidden (Alt+B)", "panes", Ui { side: 1, ..Ui::IDLE }) },
+        Scene { panes: split(2, panes::Kind::Cols, 1, None), side: Some((TabsPos::Left, None)), bar: chips3(), ..base("panes-2", "Two windows of a group in columns (Alt+\\ or Ctrl+Space on a window in no group makes the group): the one on screen has the accent border and its ring, the other is dimmer with a hollow cursor; the panel lists both under the group", "panes", side_ui) },
+        Scene { panes: split(3, panes::Kind::Grid, 2, None), side: Some((TabsPos::Left, None)), bar: chips3(), ..base("panes-3", "Three windows in a group (Ctrl+Space twice): the last spans both columns of the second row", "panes", side_ui) },
+        Scene { panes: split(4, panes::Kind::Grid, 3, None), side: Some((TabsPos::Left, None)), bar: chips3(), ..base("panes-4", "Four windows in a group: a grid of two by two", "panes", side_ui) },
+        Scene { panes: split(5, panes::Kind::Grid, 4, None), side: Some((TabsPos::Left, Some(crate::side::Part::Row(2)))), bar: chips3(), ..base("panes-5", "Five windows in a group: three columns, the last pane spans the two cells the second row leaves empty; pointer over a window's row in the panel; the rows' status icons (running, failed)", "panes", side_ui) },
+        Scene { panes: split(6, panes::Kind::Grid, 0, None), side: Some((TabsPos::Left, Some(crate::side::Part::Close(3)))), bar: chips3(), ..base("panes-6", "Six windows in a group, the first on screen; pointer over the cross of a window's row", "panes", side_ui) },
+        Scene { panes: split(3, panes::Kind::Rows, 1, Some((1, false))), side: Some((TabsPos::Left, None)), bar: chips3(), ..base("panes-rows", "Three windows in rows (Alt+-): the cross at the corner of the pane under the pointer", "panes", side_ui) },
+        Scene { panes: split(4, panes::Kind::Grid, 0, Some((1, true))), side: Some((TabsPos::Left, None)), bar: chips3(), ..base("panes-cross-hot", "The pointer is on a pane's cross (it closes that window, with the Undo toast; Alt+Shift+W closes the one on screen)", "panes", side_ui) },
+        Scene { panes: split(4, panes::Kind::Cols, 2, None), side: Some((TabsPos::Top, Some(crate::side::Part::Row(0)))), list: ListScene { grouped_tabs: true, ..NO_LIST }, bar: chips3(), ..base("panes-tabs-top", "A split in the tabs at the top: the group's chip and a tab for each of its windows, the one on screen lit", "panes", Ui { side: 0, ..Ui::IDLE }) },
+        Scene { panes: split(3, panes::Kind::Grid, 1, None), side: Some((TabsPos::Left, None)), bar: chips3(), lang: Lang::Es, ..base("panes-es", "A split in Spanish", "panes", side_ui) },
+        Scene { panes: split(2, panes::Kind::Cols, 0, None), bar: chips3(), ..base("panes-no-panel", "Two windows of a group with the panel hidden (Alt+B)", "panes", Ui { side: 1, ..Ui::IDLE }) },
         Scene { side: Some((TabsPos::Left, None)), list: ListScene { status: BUSY, ..NO_LIST }, ..base("status-side", "Status icons in the panel: the prompt (idle), a ring that turns (a command runs), a red dot (the last command failed); the cyan dot is output that came while it was hidden", "status", side_ui) },
         Scene { side: Some((TabsPos::Left, None)), list: ListScene { status: BUSY, phase: 0.6, ..NO_LIST }, ..base("status-side-turned", "The same a little later: the ring's bright quarter has gone round", "status", side_ui) },
         Scene { side: Some((TabsPos::Left, Some(side::Part::Head(0)))), folded: true, list: ListScene { fold0: true, status: BUSY, ..NO_LIST }, ..base("status-folded", "A folded group shows the window on screen, and its dot turns while a window in it runs a command (the other group is folded too, idle)", "status", side_ui) },
         Scene { side: Some((TabsPos::Top, None)), list: ListScene { grouped_tabs: true, status: BUSY, ..NO_LIST }, ..base("tabs-top-groups", "Groups in the tabs: a container tinted with the group's colour, its chip (dot, name, count), the tab on screen at 16 % of the colour; status icons in the tabs", "tabs", Ui { side: 0, ..Ui::IDLE }) },
         Scene { side: Some((TabsPos::Top, None)), list: ListScene { grouped_tabs: true, status: BUSY, first: 4, ..NO_LIST }, ..base("tabs-top-scrolled", "The tabs scrolled a group on (the wheel moves them a group or a window at a time): the first group is out of sight and the rest start at the left of the strip", "tabs", Ui { side: 0, ..Ui::IDLE }) },
         Scene { side: Some((TabsPos::Top, Some(side::Part::Head(0)))), list: ListScene { grouped_tabs: true, fold0: true, status: BUSY, ..NO_LIST }, ..base("tabs-top-folded", "A folded group at the top keeps only the window on screen; the pointer is over its chip; the ring turns because a hidden window runs a command", "tabs", Ui { side: 0, ..Ui::IDLE }) },
-        Scene { panes: split(2, panes::Kind::Cols, 1, None), side: Some((TabsPos::Top, Some(side::Part::Row(1)))), list: ListScene { grouped_tabs: true, status: BUSY, ..NO_LIST }, ..base("tabs-top-badge", "A window of two panes says so in its tab at the top (the panel lists them as rows instead)", "tabs", Ui { side: 0, ..Ui::IDLE }) },
         Scene { side: Some((TabsPos::Left, None)), list: ListScene { drag: Some(DragScene { grab: crate::dnd::Grab::Win(3), over: Over::Win(1, 0.2) }), ..NO_LIST }, ..base("dnd-side-before", "Dragging a window in the panel: it stays at 40 %, its ghost follows the pointer, a 2 px accent line says it would go before servidor, in its group", "drag", side_ui) },
         Scene { side: Some((TabsPos::Left, None)), list: ListScene { drag: Some(DragScene { grab: crate::dnd::Grab::Win(3), over: Over::Group(0, 0.5) }), ..NO_LIST }, ..base("dnd-side-into", "Over a group's header: a 2 px ring in the group's colour, the window would go into the group", "drag", side_ui) },
         Scene { side: Some((TabsPos::Left, None)), list: ListScene { drag: Some(DragScene { grab: crate::dnd::Grab::Group(0), over: Over::Group(1, 0.9) }), ..NO_LIST }, ..base("dnd-side-group", "Dragging a group: its header is dimmed and the line is after the block of the group it is over", "drag", side_ui) },
@@ -439,25 +438,35 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
         bar::Chips::default().frame(s.bar.is_some(), true, &demo_history(&ctx), &chips, &mut term, &mut View::new(), &mut soft, &mut fb, (w, h), s.ui.focused);
     }
     if let Some((pos, hover)) = s.side {
-        // The first window's panes: rows under it in the panel, a number in its tab at the top.
-        let pane_n = s.panes.map_or(1, |p| p.n);
+        // The windows the panel lists. With a split, the group "arcton" is the split: a window for each pane (ADR 0034), then
+        // the one in no group and the other group's; else the reference's session.
+        const NAMES: [&str; 12] = ["arcton", "servidor", "pruebas", "logs", "build", "docs", "api", "web", "db", "cache", "queue", "cron"];
+        let (rows, win_group, cur): (Vec<(&str, bool, bool, Status)>, Vec<Option<usize>>, usize) = match s.panes {
+            Some(ps) => {
+                let mut rows: Vec<_> = (0..ps.n).map(|j| (NAMES[j % NAMES.len()], j == ps.focus, false, pane_status(j))).collect();
+                rows.extend([("~", false, false, Status::Idle), ("notas", false, false, Status::Idle)]);
+                let mut of = vec![Some(0); ps.n];
+                of.extend([None, Some(1)]);
+                (rows, of, ps.focus)
+            }
+            None => {
+                let titles = [("arcton", true, false), ("servidor", false, false), ("pruebas", false, true), ("~", false, false), ("notas", false, false)];
+                let rows = titles.into_iter().zip(s.list.status).map(|((t, sel, un), st)| (t, sel, un, st)).collect();
+                (rows, vec![Some(0), Some(0), Some(0), None, Some(1)], 0)
+            }
+        };
+        let members = win_group.iter().filter(|g| **g == Some(0)).count();
         let mut items = crate::side::Items::default();
-        let titles = [("arcton", true, false), ("servidor", false, false), ("pruebas", false, true), ("~", false, false), ("notas", false, false)];
-        for (i, ((title, selected, unread), st)) in titles.into_iter().zip(s.list.status).enumerate() {
+        for (i, &(title, selected, unread, st)) in rows.iter().enumerate() {
             // A window being renamed has no title under its field.
             let title = if s.edit.is_some_and(|(wi, ..)| wi == i) { "" } else { title };
-            let ps = s.panes.filter(|p| i == 0 && p.n > 1);
-            items.push_win(title, selected, unread, ps.filter(|_| pos == TabsPos::Top).map_or(0, |p| p.n), st);
-            for j in 0..ps.map_or(0, |p| p.n) {
-                items.push_pane(j == ps.map_or(0, |p| p.focus), pane_status(j), |t| t.push_str(&format!("{} {}", i18n::tr(i18n::Str::Pane), j + 1)));
-            }
+            items.push_win(title, selected, unread, 0, st);
         }
         // The reference's session: a group of three windows, one in none, and a folded group of one.
         let group = |name: &str, color, collapsed, count, busy| crate::side::GroupItem { id: 0, name: name.to_string(), color, collapsed, count, busy };
         // A folded group is busy while a window in it runs a command: the windows 0 to 2 are in the first, 4 in the second.
         let running = |ws: &[usize]| ws.iter().any(|&w| s.list.status[w] == Status::Running);
-        let groups = [group("arcton", 1, s.list.fold0, 2 + pane_n, s.list.fold0 && running(&[0, 1, 2])), group("docs", 3, s.folded, 1, s.folded && running(&[4]))];
-        let win_group = [Some(0), Some(0), Some(0), None, Some(1)];
+        let groups = [group("arcton", 1, s.list.fold0, members, s.list.fold0 && running(&[0, 1, 2])), group("docs", 3, s.folded, 1, s.folded && running(&[4]))];
         let folds = [s.list.fold0, s.folded];
         let (ox, oy) = soft.origin();
         let edit = s.edit.map(|(wi, text, all)| (wi, text, text.chars().count(), all.then(|| (0, text.chars().count()))));
@@ -466,9 +475,9 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
             // The older scenes: one tab for each window, none grouped.
             (0..items.len()).map(|win| crate::side::Entry::Row { win, grouped: false }).collect()
         } else if top {
-            crate::side::top_entries(&win_group, &folds, 0)
+            crate::side::top_entries(&win_group, &folds, cur)
         } else {
-            crate::side::entries(&win_group, &folds, &[pane_n, 1, 1, 1, 1], Some(0))
+            crate::side::entries(&win_group, &folds, &vec![1; win_group.len()], Some(cur))
         };
         let (x0, x1) = (chrome::TABS_X0 as i32, W as i32 - chrome::TABS_FROM_RIGHT as i32);
         let panel = soft.side_rect().map(|rect| (rect, ((rect.0 - ox) as i32, (rect.1 - oy) as i32, (rect.2 - rect.0) as i32, (rect.3 - rect.1) as i32)));

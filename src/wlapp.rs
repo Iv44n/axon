@@ -219,6 +219,33 @@ impl Win {
     }
 }
 
+/// What the grid area holds: the window on screen with its panes, or, when that window is in a group, the group's windows
+/// side by side, one pane each (ADR 0034). Either is a run of `wins`, and the panes in that run, in order, are numbered
+/// the same everywhere: the layout, the hit test, the focus.
+#[derive(Clone, Copy)]
+struct Shown {
+    /// The first window of the run.
+    first: usize,
+    /// Whether the run is a group's: its panes are its windows, which have one pane each.
+    grouped: bool,
+    /// How the panes are arranged, how many there are, and the one with the focus.
+    kind: panes::Kind,
+    n: usize,
+    focus: usize,
+}
+
+impl Shown {
+    /// The windows the run covers.
+    fn run(self) -> std::ops::Range<usize> {
+        self.first..self.first + if self.grouped { self.n.max(1) } else { 1 }
+    }
+
+    /// The window, and the pane in it, of pane `i` of the run.
+    fn locate(self, i: usize) -> (usize, usize) {
+        if self.grouped { (self.first + i, 0) } else { (self.first, i) }
+    }
+}
+
 /// A press on a window's row or tab, or on a group's header or chip, which becomes a drag when the pointer moves
 /// far enough before the button comes up (`dnd.rs`), and a click when it does not.
 struct Dnd {
@@ -558,7 +585,7 @@ fn spin_tabs(soft: &Soft, fb: &mut [u32], items: &side::Items, groups: &[side::G
 /// what the last frame left): all of the window while one is open, and under a toast only the toast's box, so the
 /// fade of a toast costs what a toast covers and not a whole window. `extent` is what they painted over the last
 /// frame; `win` is the window on screen.
-fn give_back_to_overlays(overlays: &Stack, extent: &mut overlay::Extent, soft: &mut Soft, win: &mut Win, geo: Geo) {
+fn give_back_to_overlays<'a>(overlays: &Stack, extent: &mut overlay::Extent, soft: &mut Soft, panes: impl Iterator<Item = &'a mut Pane>, geo: Geo) {
     let now = overlays.extent(geo);
     let was = std::mem::replace(extent, now);
     let part = match was.to_restore(now) {
@@ -571,7 +598,7 @@ fn give_back_to_overlays(overlays: &Stack, extent: &mut overlay::Extent, soft: &
         return soft.invalidate();
     }
     // The rows under it are written again (with the chips over them).
-    for (pi, pane) in win.panes.iter_mut().enumerate() {
+    for (pi, pane) in panes.enumerate() {
         for row in soft.rows_under(pi, r.y, r.y2()) {
             pane.view.invalidate_row(row);
         }
@@ -819,7 +846,7 @@ impl App {
             let now = Instant::now();
             let timeout = [self.repeat.as_ref().map(|r| r.at), self.waiting.map(|t| t + STALL), self.save_at, self.overlays.deadline(now), self.undo.as_ref().map(|u| u.until), self.spin_at]
                 .into_iter()
-                .chain(self.wins[self.cur].panes.iter().flat_map(|p| [p.refresh.due, p.refresh.clock_at]))
+                .chain(self.shown_panes().flat_map(|p| [p.refresh.due, p.refresh.clock_at]))
                 .flatten()
                 .min()
                 .map(|at| {
@@ -839,8 +866,8 @@ impl App {
                 self.dirty = true;
                 // A terminal printed something: the directory or the branch may have changed.
                 let now = Instant::now();
-                for pi in 0..self.wins[self.cur].panes.len() {
-                    if self.wins[self.cur].panes[pi].proxy.pending.load(Ordering::Acquire) {
+                for pi in 0..self.shown().n {
+                    if self.pane(pi).proxy.pending.load(Ordering::Acquire) {
                         self.context_due(pi, now);
                     }
                 }
@@ -895,8 +922,8 @@ impl App {
         let (drag, spinning) = (self.dnd_view(), self.spinning());
         // Where the panes of the window on screen are: when that is not what the framebuffer shows, the frame
         // is repainted whole. The cross at a pane's corner is drawn over rows that are repainted every frame.
-        let cur = self.cur;
-        let (n, kind, focus) = (self.wins[cur].panes.len(), self.wins[cur].kind, self.wins[cur].focus);
+        let sh = self.shown();
+        let (n, kind, focus) = (sh.n, sh.kind, sh.focus);
         let ws = self.soft.workspace(self.w, self.h);
         self.slots.clear();
         self.slots.extend((0..n).map(|i| Slot { rect: panes::rect(kind, n, i, ws), focus: i == focus, framed: n > 1 }));
@@ -904,7 +931,8 @@ impl App {
         let cross = if n > 1 { self.pane_hover.filter(|&i| i < n) } else { None };
         for i in [self.close_shown, cross].into_iter().flatten().filter(|&i| i < n) {
             for r in self.soft.close_rows(i) {
-                self.wins[cur].panes[i].view.invalidate_row(r);
+                let (wi, pj) = sh.locate(i);
+                self.wins[wi].panes[pj].view.invalidate_row(r);
             }
         }
         // The overview lists the windows as they are now.
@@ -916,18 +944,19 @@ impl App {
             return;
         };
         self.waiting = None;
-        let win = &mut self.wins[cur];
+        let win = &self.wins[self.cur];
         let branch = if chips_on { win.pane().ctx.get(Chip::Branch) } else { "" };
         let shell = std::env::var("SHELL").ok();
         let shell = shell.as_deref().and_then(|s| s.rsplit('/').next()).unwrap_or("shell");
         let (cols, rows) = win.pane().size;
         self.soft.set_status(shell, branch, cols, rows);
         self.soft.set_ui(self.ui);
-        give_back_to_overlays(&self.overlays, &mut self.overlay_extent, &mut self.soft, win, geo);
+        let run = sh.run();
+        give_back_to_overlays(&self.overlays, &mut self.overlay_extent, &mut self.soft, self.wins[run.clone()].iter_mut().flat_map(|w| w.panes.iter_mut()), geo);
         // Every pane in turn, pane 0 first (it begins the frame); one without the focus is drawn dimmer and
-        // with a hollow cursor.
+        // with a hollow cursor. A group's panes are its windows.
         let chips = &self.cfg.input.chips;
-        for (i, pane) in win.panes.iter_mut().enumerate() {
+        for (i, pane) in self.wins[run].iter_mut().flat_map(|w| w.panes.iter_mut()).enumerate() {
             pane.proxy.pending.store(false, Ordering::Release);
             self.soft.select(i);
             self.soft.set_dim(if i == focus { 255 } else { UNFOCUSED });
@@ -989,9 +1018,11 @@ impl App {
     /// handled: the PTY thread sends events while holding the terminal lock, and handling may take it.
     fn term_events(&mut self) {
         let mut gone = Vec::new();
+        // The windows in sight (the one on screen, or its whole group) are painted as they print; the others say so in the panel.
+        let seen = self.shown().run();
         for i in 0..self.wins.len() {
             for j in 0..self.wins[i].panes.len() {
-                if i != self.cur && self.wins[i].panes[j].proxy.pending.swap(false, Ordering::AcqRel) {
+                if !seen.contains(&i) && self.wins[i].panes[j].proxy.pending.swap(false, Ordering::AcqRel) {
                     // A window out of sight printed: say so in the panel; the grid is read when it comes back. It may
                     // have moved: the panel says where it is.
                     if !self.wins[i].unread {
@@ -1195,10 +1226,10 @@ impl App {
             return;
         }
         let was = self.wins[self.cur].id;
+        let of: Vec<Option<usize>> = self.wins.iter().map(|w| w.group).collect();
+        let cur = groups::after_close_in(&of, self.cur, &[i]);
         self.wins.remove(i);
-        if i < self.cur || self.cur >= self.wins.len() {
-            self.cur = self.cur.saturating_sub(1).min(self.wins.len() - 1);
-        }
+        self.cur = cur;
         self.prune_groups();
         self.rebuild_side();
         self.show_after_close(was);
@@ -1215,12 +1246,19 @@ impl App {
 
     // -------------------------------------------------------------- panes --
 
-    /// Splits the pane with the focus in direction `dir`: the new pane goes right after it, has a shell of its own
-    /// that starts in the same directory, and gets the focus. Refused (nothing happens) when a pane would be
-    /// left with fewer than `panes::MIN_COLS` x `panes::MIN_ROWS` cells.
+    /// Splits what is on screen in direction `dir` (`Ctrl+Space`, `Alt+\\`, `Alt+-`, the palette): another terminal joins the
+    /// group of the window on screen, right after it, starting in the same directory, and gets the focus (ADR 0034: the
+    /// panes of a split are the windows of a group). A window in no group is put in a new one first, so the split
+    /// always has a group to be. Refused (nothing happens, no group made) when a pane would be left with fewer than
+    /// `panes::MIN_COLS` x `panes::MIN_ROWS` cells.
     fn split(&mut self, dir: panes::Dir) {
-        let cur = self.cur;
-        let (n, kind, focus) = (self.wins[cur].panes.len(), self.wins[cur].kind, self.wins[cur].focus);
+        let (n, kind) = match self.wins[self.cur].group {
+            Some(_) => {
+                let sh = self.shown();
+                (sh.n, sh.kind)
+            }
+            None => (1, panes::Kind::Single),
+        };
         let kind = panes::after_split(kind, n, dir);
         let ws = self.soft.workspace(self.w, self.h);
         let (min_w, min_h) = self.soft.min_pane(panes::MIN_COLS, panes::MIN_ROWS);
@@ -1228,31 +1266,23 @@ impl App {
             self.toast(tr(Str::ToastNoRoom));
             return;
         }
-        let at = focus + 1;
-        let g = self.soft.grid(panes::rect(kind, n + 1, at, ws), true);
-        let id = self.next_win;
-        self.next_win += 1;
-        let from = std::fs::read_link(format!("/proc/{}/cwd", self.wins[cur].pane().shell)).ok();
-        let pane = Pane::spawn(&self.wake, id, (g.cols, g.rows, self.cw, self.ch), self.cfg.input.cursor, self.chips_on(), from);
-        let reporting = self.ui.focused;
-        let w = &mut self.wins[cur];
-        if reporting {
-            report_focus(&w.panes[focus], false);
-        }
-        w.panes.insert(at, pane);
-        (w.kind, w.focus) = (kind, at);
-        if reporting {
-            report_focus(&w.panes[at], true);
-        }
-        self.pane_hover = None;
-        self.relayout();
-        self.rebuild_side();
-        self.titled(cur);
-        self.sync_flag();
+        let g = self.wins[self.cur].group.unwrap_or_else(|| self.group_around(self.cur));
+        self.groups[g].kind = kind;
+        self.groups[g].collapsed = false;
+        let o = groups_ui::Spawn { group: Some(g), after: Some(self.wins[self.cur].id), activate: true, ..groups_ui::Spawn::default() };
+        self.spawn_win(o);
     }
 
-    /// Gives the focus to pane `pi` of the window on screen (a click on it, `Alt+,` and `Alt+.`, its row in the panel).
+    /// Gives the focus to pane `pi` of what is on screen (a click on it, `Alt+,` and `Alt+.`, its row in the panel). In
+    /// a group the panes are windows, so the focus is the window on screen: it changes, and the group stays in view.
     fn set_focus(&mut self, pi: usize) {
+        let sh = self.shown();
+        if sh.grouped {
+            if pi < sh.n && pi != sh.focus {
+                self.switch_to(sh.first + pi);
+            }
+            return;
+        }
         let (cur, reporting) = (self.cur, self.ui.focused);
         let w = &mut self.wins[cur];
         if pi >= w.panes.len() || pi == w.focus {
@@ -1268,9 +1298,9 @@ impl App {
 
     /// Moves the focus `d` panes along (wrapping round): `Alt+,` back, `Alt+.` forward.
     fn cycle_pane(&mut self, d: i32) {
-        let w = &self.wins[self.cur];
-        if w.panes.len() > 1 {
-            self.set_focus(panes::cycle(w.focus, w.panes.len(), d));
+        let sh = self.shown();
+        if sh.n > 1 {
+            self.set_focus(panes::cycle(sh.focus, sh.n, d));
         }
     }
 
@@ -1313,20 +1343,55 @@ impl App {
         self.titled(wi);
     }
 
+    /// What window `wi` is shown with: itself and its panes, or, in a group, the group's windows.
+    fn shown_for(&self, wi: usize) -> Shown {
+        let w = &self.wins[wi];
+        let Some(g) = w.group else { return Shown { first: wi, grouped: false, kind: w.kind, n: w.panes.len(), focus: w.focus } };
+        let (first, n) = groups::span(self.wins.iter().map(|w| w.group), g).unwrap_or((wi, 1));
+        let kind = self.groups.get(g).map_or(panes::Kind::Single, |g| g.kind);
+        Shown { first, grouped: true, kind: panes::fit_kind(kind, n), n, focus: wi.saturating_sub(first).min(n - 1) }
+    }
+
+    /// What the grid area shows now.
+    fn shown(&self) -> Shown {
+        self.shown_for(self.cur)
+    }
+
+    /// Pane `i` of what is on screen.
+    fn pane(&self, i: usize) -> &Pane {
+        let (wi, pj) = self.shown().locate(i);
+        &self.wins[wi].panes[pj]
+    }
+
+    fn pane_mut(&mut self, i: usize) -> &mut Pane {
+        let (wi, pj) = self.shown().locate(i);
+        &mut self.wins[wi].panes[pj]
+    }
+
+    /// The panes of what is on screen, in order.
+    fn shown_panes(&self) -> impl Iterator<Item = &Pane> {
+        self.wins[self.shown().run()].iter().flat_map(|w| w.panes.iter())
+    }
+
+    fn shown_panes_mut(&mut self) -> impl Iterator<Item = &mut Pane> {
+        let run = self.shown().run();
+        self.wins[run].iter_mut().flat_map(|w| w.panes.iter_mut())
+    }
+
     /// The pane of the window on screen under window pixel `(x, y)`: with one pane, that is all of the
     /// workspace; with several, the gaps and the padding belong to none.
     fn pane_under(&self, x: f32, y: f32) -> Option<usize> {
-        let w = &self.wins[self.cur];
-        if w.panes.len() == 1 {
+        let sh = self.shown();
+        if sh.n == 1 {
             return Some(0);
         }
-        panes::at(w.kind, w.panes.len(), self.soft.workspace(self.w, self.h), x, y)
+        panes::at(sh.kind, sh.n, self.soft.workspace(self.w, self.h), x, y)
     }
 
     /// The box of pane `pi` of the window on screen, and whether it has a frame.
     fn pane_box(&self, pi: usize) -> (panes::Rect, bool) {
-        let w = &self.wins[self.cur];
-        (panes::rect(w.kind, w.panes.len(), pi, self.soft.workspace(self.w, self.h)), w.panes.len() > 1)
+        let sh = self.shown();
+        (panes::rect(sh.kind, sh.n, pi, self.soft.workspace(self.w, self.h)), sh.n > 1)
     }
 
     /// Puts the windows in the order the panel shows them (a group's windows together, groups in order, the
@@ -1335,6 +1400,13 @@ impl App {
         let id = self.wins[self.cur].id;
         self.wins.sort_by_key(|w| w.group.unwrap_or(usize::MAX));
         self.cur = self.wins.iter().position(|w| w.id == id).unwrap_or(0);
+        // A group's windows share the grid area, so joining or leaving one changes the size of their terminals.
+        self.resize_panes(false);
+        // Whatever is in sight now is not "printed while out of sight" (a window dragged into the group on screen).
+        let seen = self.shown().run();
+        for w in &mut self.wins[seen] {
+            w.unread = false;
+        }
         // Windows or groups came or went, so what a drag in progress points at is not what it was.
         self.dnd_cancel();
         self.relist();
@@ -1413,7 +1485,7 @@ impl App {
     fn new_group(&mut self) {
         self.groups_made += 1;
         let color = groups::next_color(&self.groups.iter().map(|g| g.color).collect::<Vec<_>>());
-        self.groups.push(Group { id: self.groups_made as u32, name: format!("{} {}", tr(Str::GroupName), self.groups_made), color, collapsed: false });
+        self.groups.push(Group { id: self.groups_made as u32, name: format!("{} {}", tr(Str::GroupName), self.groups_made), color, collapsed: false, kind: panes::Kind::Single });
         self.wins[self.cur].group = Some(self.groups.len() - 1);
         self.prune_groups();
         self.rebuild_side();
@@ -1440,6 +1512,12 @@ impl App {
         // Going to a window of a folded group opens the group (the reference's `activate`); the folded groups
         // that remain show the window on screen, which changes.
         let was = self.cur;
+        // Going from one window of a group to another keeps the group in view: the program in the pane that loses the
+        // focus is told so, as with panes, and the one that gets it too.
+        if self.ui.focused && i != was && self.wins[i].group.is_some() && self.wins[i].group == self.wins[was].group {
+            report_focus(self.wins[was].pane(), false);
+            report_focus(self.wins[i].pane(), true);
+        }
         self.cur = i;
         if i != was {
             let unfolded = self.wins[i].group.is_some_and(|g| std::mem::take(&mut self.groups[g].collapsed));
@@ -1449,12 +1527,15 @@ impl App {
         }
         self.pane_hover = None;
         self.reveal_active();
-        let w = &mut self.wins[i];
-        w.unread = false;
-        for p in &mut w.panes {
-            p.ctx_dirty = true;
-            p.refresh.due = Some(Instant::now());
-            p.read_dir();
+        // Everything in sight is read again: the window, or all of its group.
+        let run = self.shown().run();
+        for w in &mut self.wins[run] {
+            w.unread = false;
+            for p in &mut w.panes {
+                p.ctx_dirty = true;
+                p.refresh.due = Some(Instant::now());
+                p.read_dir();
+            }
         }
         self.titled(i);
         self.soft.invalidate();
@@ -1596,20 +1677,30 @@ impl App {
         let ws = self.soft.workspace(self.w, self.h);
         let lone = self.soft.grid(ws, false);
         (self.cols, self.rows) = (lone.cols, lone.rows);
-        for w in &mut self.wins {
-            let n = w.panes.len();
-            for (i, p) in w.panes.iter_mut().enumerate() {
-                let g = self.soft.grid(panes::rect(w.kind, n, i, ws), n > 1);
-                if p.size != (g.cols, g.rows) {
-                    p.size = (g.cols, g.rows);
-                    session::resize(&p.term, &p.pty, g.cols, g.rows, self.cw, self.ch);
-                }
-                p.ctx_dirty = true;
-            }
-        }
+        self.resize_panes(true);
         self.reveal_active();
         self.side_dirty = true;
         self.dirty = true;
+    }
+
+    /// Tells every terminal and PTY the size of its own box: a pane of a window has its share of the workspace, and so
+    /// has a window of a group (ADR 0034). `all` repaints the chips of the ones that did not change too (a new font).
+    fn resize_panes(&mut self, all: bool) {
+        let ws = self.soft.workspace(self.w, self.h);
+        for wi in 0..self.wins.len() {
+            let sh = self.shown_for(wi);
+            for pj in 0..self.wins[wi].panes.len() {
+                let i = if sh.grouped { wi - sh.first } else { pj };
+                let g = self.soft.grid(panes::rect(sh.kind, sh.n, i, ws), sh.n > 1);
+                let p = &mut self.wins[wi].panes[pj];
+                let moved = p.size != (g.cols, g.rows);
+                if moved {
+                    p.size = (g.cols, g.rows);
+                    session::resize(&p.term, &p.pty, g.cols, g.rows, self.cw, self.ch);
+                }
+                p.ctx_dirty |= all || moved;
+            }
+        }
     }
 
     // ------------------------------------------------------- prompt chips --
@@ -1636,21 +1727,21 @@ impl App {
         if !self.chips_on() {
             return;
         }
-        let r = &mut self.wins[self.cur].panes[pi].refresh;
+        let r = &mut self.pane_mut(pi).refresh;
         let at = now.max(r.last + CONTEXT_EVERY);
         r.due = Some(r.due.map_or(at, |d| d.min(at)));
     }
 
     /// Takes in the finished refreshes of the panes on screen, starts the ones that are due, and keeps the minute timers.
     fn tick_context(&mut self) {
-        for pi in 0..self.wins[self.cur].panes.len() {
+        for pi in 0..self.shown().n {
             self.tick_pane_context(pi);
         }
     }
 
     fn tick_pane_context(&mut self, pi: usize) {
-        let cur = self.cur;
-        let pane = &mut self.wins[cur].panes[pi];
+        let (cur, pj) = self.shown().locate(pi);
+        let pane = &mut self.wins[cur].panes[pj];
         let done = pane.refresh.done.lock().unwrap().take();
         if let Some(c) = done
             && c != pane.ctx
@@ -1666,19 +1757,19 @@ impl App {
             }
         }
         if !self.chips_on() {
-            let r = &mut self.wins[cur].panes[pi].refresh;
+            let r = &mut self.wins[cur].panes[pj].refresh;
             (r.due, r.clock_at) = (None, None);
             return;
         }
         let now = Instant::now();
-        let r = &self.wins[cur].panes[pi].refresh;
+        let r = &self.wins[cur].panes[pj].refresh;
         if r.clock_at.is_none_or(|t| now >= t) && self.cfg.input.chips.contains(&Chip::Time) {
             if r.clock_at.is_some() {
                 self.context_due(pi, now);
             }
-            self.wins[cur].panes[pi].refresh.clock_at = Some(now + context::until_next_minute());
+            self.wins[cur].panes[pj].refresh.clock_at = Some(now + context::until_next_minute());
         }
-        let pane = &mut self.wins[cur].panes[pi];
+        let pane = &mut self.wins[cur].panes[pj];
         if pane.refresh.due.is_some_and(|d| now >= d) {
             if pane.refresh.running.swap(true, Ordering::AcqRel) {
                 pane.refresh.due = Some(now + Duration::from_millis(200)); // one at a time
@@ -1795,7 +1886,7 @@ impl App {
         }
         self.cfg.input = input.clone();
         let on = self.chips_on();
-        for p in &mut self.wins[self.cur].panes {
+        for p in self.shown_panes_mut() {
             p.refresh.clock_at = None;
             if on {
                 p.refresh.due = Some(Instant::now());
@@ -1941,7 +2032,7 @@ impl App {
             p.refresh.clock_at = None;
         }
         if self.chips_on() {
-            for p in &mut self.wins[self.cur].panes {
+            for p in self.shown_panes_mut() {
                 p.refresh.due = Some(Instant::now());
             }
         }
@@ -2229,8 +2320,7 @@ impl App {
     fn open_palette(&mut self) {
         let wins: Vec<commands::WinInfo> = self.wins.iter().map(|w| commands::WinInfo { id: w.id, title: win_title(w).to_string(), place: win_place(w).to_string(), group: w.group }).collect();
         let groups = group_items(&self.groups, &self.wins);
-        let w = &self.wins[self.cur];
-        let state = commands::State { wins: &wins, groups: &groups, cur: self.cur, panes: w.panes.len(), overview: true };
+        let state = commands::State { wins: &wins, groups: &groups, cur: self.cur, panes: self.shown().n, overview: true };
         let list = commands::build(&state);
         self.open_overlay(commands::TAG, Box::new(Picker::new(list)));
     }
@@ -2368,7 +2458,7 @@ impl App {
 
     /// The pane a gesture in progress (a selection, a held button) belongs to: the one it began on.
     fn drag_pane(&self) -> usize {
-        self.drag.min(self.wins[self.cur].panes.len() - 1)
+        self.drag.min(self.shown().n - 1)
     }
 
     /// The cell of pane `pi` under the pointer `(col, row)`, and which half of it: the pointer outside the pane's
@@ -2377,7 +2467,7 @@ impl App {
         let (cw, ch) = (self.cw as f32, self.ch as f32);
         let (rect, framed) = self.pane_box(pi);
         let g = self.soft.grid(rect, framed);
-        let (cols, rows) = self.wins[self.cur].panes[pi].size;
+        let (cols, rows) = self.pane(pi).size;
         let fx = ((self.mouse.0 - g.x as f32) / cw).max(0.0);
         let fy = ((self.mouse.1 - g.y as f32) / ch).max(0.0);
         let col = (fx as usize).min(cols - 1);
@@ -2388,7 +2478,7 @@ impl App {
     /// The terminal point of pane `pi` under the pointer, and which half of its cell.
     fn cell_at(&self, pi: usize) -> (Point, Side) {
         let (col, row, side) = self.viewport_cell(pi);
-        let off = self.wins[self.cur].panes[pi].term.lock().grid().display_offset();
+        let off = self.pane(pi).term.lock().grid().display_offset();
         (viewport_to_point(off, Point::new(row, Column(col))), side)
     }
 
@@ -2396,14 +2486,15 @@ impl App {
     /// (the usual way out, to select text anyway) is not held.
     fn reporting(&self, pi: usize) -> bool {
         let shift = self.xkb.as_ref().is_some_and(|x| x.mods().shift);
-        !shift && mouse::reporting(*self.wins[self.cur].panes[pi].term.lock().mode())
+        !shift && mouse::reporting(*self.pane(pi).term.lock().mode())
     }
 
     /// Sends `ev` to pane `pi` at the cell under the pointer. Returns whether a report went out.
     fn report(&mut self, pi: usize, ev: mouse::Event) -> bool {
         let (col, row, _) = self.viewport_cell(pi);
         let mods = self.xkb.as_ref().map(|x| x.mods()).unwrap_or_default();
-        let pane = &self.wins[self.cur].panes[pi];
+        let (wi, pj) = self.shown().locate(pi);
+        let pane = &self.wins[wi].panes[pj];
         let mode = *pane.term.lock().mode();
         let Some(r) = mouse::encode(mode, ev, mods, col, row) else { return false };
         self.reported = (col, row);
@@ -2419,7 +2510,7 @@ impl App {
             }
             let Some(pi) = self.pane_under(self.mouse.0, self.mouse.1).filter(|&pi| self.reporting(pi)) else { return false };
             (self.held, self.drag) = (Some(b), pi);
-            self.wins[self.cur].panes[pi].term.lock().selection = None;
+            self.pane(pi).term.lock().selection = None;
             self.dirty = true;
             self.report(pi, mouse::Event::Press(b));
             true
@@ -2491,7 +2582,7 @@ impl App {
         if self.selecting {
             let pi = self.drag_pane();
             let (p, side) = self.cell_at(pi);
-            if let Some(sel) = self.wins[self.cur].panes[pi].term.lock().selection.as_mut() {
+            if let Some(sel) = self.pane(pi).term.lock().selection.as_mut() {
                 sel.update(p, side);
             }
             self.dirty = true;
@@ -2520,7 +2611,7 @@ impl App {
             }
         }
         // Over a pane of several: its cross shows at the corner, and the pointer is a hand on it.
-        let hp = if now == Hit::Client && self.wins[self.cur].panes.len() > 1 { self.pane_under(x, y) } else { None };
+        let hp = if now == Hit::Client && self.shown().n > 1 { self.pane_under(x, y) } else { None };
         let hot = hp.is_some_and(|pi| panes::close_box(self.pane_box(pi).0).contains(x, y));
         if (hp, hot) != (self.pane_hover, self.close_hot) {
             (self.pane_hover, self.close_hot) = (hp, hot);
@@ -2550,7 +2641,8 @@ impl App {
             if let Some(pi) = self.cross_down.take()
                 && self.close_hot && self.pane_hover == Some(pi)
             {
-                self.close_pane_asked(self.cur, pi);
+                let (wi, pj) = self.shown().locate(pi);
+                self.close_pane_asked(wi, pj);
             }
             if self.ui.down {
                 self.ui.down = false;
@@ -2615,7 +2707,7 @@ impl App {
                     _ => SelectionType::Simple,
                 };
                 let (p, side) = self.cell_at(pi);
-                self.wins[self.cur].panes[pi].term.lock().selection = Some(Selection::new(ty, p, side));
+                self.pane(pi).term.lock().selection = Some(Selection::new(ty, p, side));
                 (self.selecting, self.drag) = (true, pi);
                 self.dirty = true;
             }
@@ -2650,14 +2742,14 @@ impl App {
         }
         self.scroll_acc -= lines as f32;
         // The wheel is for the pane under the pointer, focused or not.
-        let pi = if self.hover == Hit::Client { self.pane_under(self.mouse.0, self.mouse.1) } else { None }.unwrap_or(self.wins[self.cur].focus);
+        let pi = if self.hover == Hit::Client { self.pane_under(self.mouse.0, self.mouse.1) } else { None }.unwrap_or(self.shown().focus);
         if self.hover == Hit::Client && self.reporting(pi) {
             for _ in 0..lines.unsigned_abs() {
                 self.report(pi, mouse::Event::Wheel(lines > 0));
             }
             return;
         }
-        let pane = &self.wins[self.cur].panes[pi];
+        let pane = self.pane(pi);
         let mode = *pane.term.lock().mode();
         if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
             let k = match (lines > 0, mode.contains(TermMode::APP_CURSOR)) {
