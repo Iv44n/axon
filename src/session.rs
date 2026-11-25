@@ -56,7 +56,8 @@ fn window_size(cols: usize, rows: usize, cw: u32, ch: u32) -> WindowSize {
 }
 
 /// Starts the shell on a new PTY and its reader thread. `id` identifies the window to the PTY layer.
-/// `env` is added to the shell's environment (`context::shell_env`). Also returns the shell's process id.
+/// `env` is added to the shell's environment (`context::shell_env`), `dir` is where it starts (None: the home).
+/// Also returns the shell's process id.
 pub fn spawn<L: EventListener + Clone + Send + 'static>(
     listener: L,
     cols: usize,
@@ -66,10 +67,11 @@ pub fn spawn<L: EventListener + Clone + Send + 'static>(
     id: u64,
     env: HashMap<String, String>,
     cursor: CursorKind,
+    dir: Option<std::path::PathBuf>,
 ) -> (Arc<FairMutex<Term<L>>>, Notifier, u32) {
     let term = Arc::new(FairMutex::new(Term::new(term_config(cursor), &Size { cols, rows }, listener.clone())));
     tty::setup_env();
-    let opts = tty::Options { shell: None, working_directory: None, drain_on_exit: false, env };
+    let opts = tty::Options { shell: None, working_directory: dir, drain_on_exit: false, env };
     let pty = tty::new(&opts, window_size(cols, rows, cw, ch), id).expect("pty");
     let pid = pty.child().id();
     let lp = PtyLoop::new(term.clone(), listener, pty, false, false).expect("pty event loop");

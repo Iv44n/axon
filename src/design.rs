@@ -117,6 +117,8 @@ struct Scene {
     bar: Option<(Context, Vec<Chip>)>,
     /// The list of windows: where it is, and what the pointer is over. The windows are made up.
     side: Option<(crate::config::TabsPos, Option<crate::side::Part>)>,
+    /// The second group of the panel is folded.
+    folded: bool,
 }
 
 /// What the bar says in the board's scenes: made-up values, the same on every machine.
@@ -158,6 +160,7 @@ fn scenes() -> Vec<Scene> {
         select: None,
         bar: None,
         side: None,
+        folded: false,
         lang: Lang::En,
     };
     let bar = |chips: &[Chip]| Some((sample_context(), chips.to_vec()));
@@ -220,6 +223,7 @@ fn scenes() -> Vec<Scene> {
             ..base("settings-chip-drag", "Input page: a chip held mid-drag", "settings", Ui::IDLE)
         },
         Scene { side: Some((TabsPos::Left, None)), ..base("side", "Panel of windows at the left (Alt+B hides it)", "windows", Ui { side: 2, ..Ui::IDLE }) },
+        Scene { side: Some((TabsPos::Left, Some(crate::side::Part::Head(0)))), folded: true, ..base("side-groups", "Groups: a header with its count and chevron, a folded group, pointer over a header", "windows", Ui { side: 2, ..Ui::IDLE }) },
         Scene { side: Some((TabsPos::Left, Some(crate::side::Part::Close(2)))), bar: bar(&[Chip::Time, Chip::Dir, Chip::Branch, Chip::Changes]), input: hooked, ..base("side-hover", "Pointer over a row's cross, chips on", "windows", Ui { side: 2, ..Ui::IDLE }) },
         Scene { side: Some((TabsPos::Right, Some(crate::side::Part::New))), ..base("side-right", "Panel at the right, pointer over the +", "windows", Ui { side: 2, ..Ui::IDLE }) },
         Scene { side: Some((TabsPos::Top, Some(crate::side::Part::Row(1)))), ..base("tabs-top", "Windows as tabs in the title bar, pointer over one", "windows", Ui { side: 0, ..Ui::IDLE }) },
@@ -262,7 +266,12 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
     bar::Chips::default().frame(s.bar.is_some(), true, &demo_history(&ctx), &chips, &mut term, &mut View::new(), &mut soft, &mut fb, (w, h), s.ui.focused);
     if let Some((pos, hover)) = s.side {
         let item = |title: &str, selected, unread| crate::side::Item { title: title.to_string(), selected, unread };
-        let items = [item("arcton", true, false), item("servidor", false, false), item("pruebas", false, true), item("~", false, false)];
+        let items = [item("arcton", true, false), item("servidor", false, false), item("pruebas", false, true), item("~", false, false), item("notas", false, false)];
+        // The reference's session: a group of three windows, one in none, and a folded group of one.
+        let group = |name: &str, color, collapsed, count| crate::side::GroupItem { name: name.to_string(), color, collapsed, count };
+        let groups = [group("arcton", 1, false, 3), group("docs", 3, s.folded, 1)];
+        let entries = crate::side::entries(&[Some(0), Some(0), Some(0), None, Some(1)], &[false, s.folded]);
+        let entries = if s.folded { entries } else { crate::side::entries(&[Some(0), Some(0), Some(0), None, Some(1)], &[false, false]) };
         let (ox, oy) = soft.origin();
         if let (TabsPos::Top, _) | (_, None) = (pos, soft.side_rect()) {
             let (x0, x1) = (chrome::TITLE_CLEAR as i32 - 8, W as i32 - 50);
@@ -271,7 +280,7 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
         } else if let Some(rect) = soft.side_rect() {
             let b = ((rect.0 - ox) as i32, (rect.1 - oy) as i32, (rect.2 - rect.0) as i32, (rect.3 - rect.1) as i32);
             soft.clear_rect(&mut fb, rect);
-            crate::side::paint(&soft, &mut fb, b, pos == TabsPos::Left, &i18n::tr(i18n::Str::Windows), &items, hover, &mut Vec::new());
+            crate::side::paint(&soft, &mut fb, b, pos == TabsPos::Left, &i18n::tr(i18n::Str::Windows), &entries, &groups, &items, hover, &mut Vec::new());
         }
     }
     if let Some((sel, hover, typing)) = s.settings {

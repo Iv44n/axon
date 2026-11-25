@@ -555,7 +555,7 @@ mod tests {
 
     #[test]
     fn hit_testing_finds_buttons_title_edges_and_client() {
-        let h = |x, y| hit(x, y, 800, 600, false);
+        let h = |x, y| hit(x, y, 800, 600, false, false);
         assert_eq!(h(20.0, 21.0), Hit::Close);
         assert_eq!(h(40.0, 21.0), Hit::Minimize);
         assert_eq!(h(60.0, 21.0), Hit::Maximize);
@@ -569,7 +569,11 @@ mod tests {
         assert_eq!(h(2.0, 2.0), Hit::Edge(EDGE_TOP | EDGE_LEFT));
         assert_eq!(h(790.0, 3.0), Hit::Edge(EDGE_TOP | EDGE_RIGHT));
         assert_eq!(h(797.0, 590.0), Hit::Edge(EDGE_RIGHT | EDGE_BOTTOM));
-        assert_eq!(hit(2.0, 300.0, 800, 600, true), Hit::Client);
+        assert_eq!(hit(2.0, 300.0, 800, 600, true, false), Hit::Client);
+        // The panel button is there only when asked for; without it that spot is the title bar.
+        assert_eq!(hit(SIDE_CX, 21.0, 800, 600, false, true), Hit::SideBtn);
+        assert_eq!(hit(SIDE_CX, 21.0, 800, 600, false, false), Hit::Title);
+        assert_eq!(Hit::SideBtn.button(), 5);
         // Over the shadow: a grab zone just outside the edge, nothing beyond it.
         assert_eq!(h(-5.0, 300.0), Hit::Edge(EDGE_LEFT));
         assert_eq!(h(400.0, 605.0), Hit::Edge(EDGE_BOTTOM));

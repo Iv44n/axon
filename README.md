@@ -51,6 +51,7 @@ Always use `--release`: debug mode is much slower.
 | `Ctrl+,` | Open or close the settings screen (also the sliders icon in the title bar) |
 | `Alt+N` / `Alt+W` | New window (a shell of its own) / close the window |
 | `Alt+1…9`, `Alt+[` / `Alt+]` | Go to window *n* / the previous / the next one |
+| `Alt+G` / `Alt+Shift+G` | Group the window on screen (a header in the panel, click it to fold) / take it out of its group |
 | `Alt+B` | Show or hide the panel of windows (`[windows] tabs = "left" \| "right" \| "top"`, `side`, `side_width`); the button right of the window buttons does the same |
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copy / paste |
 | `Ctrl+Shift+Q` | Quit |

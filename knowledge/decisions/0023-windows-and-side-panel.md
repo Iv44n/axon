@@ -40,5 +40,13 @@ default `user@host: path` does not). With `tabs = "top"` the windows are tabs in
 title text is not drawn. `side::Layout` is the one place that knows where rows and tabs are, for painting and for hit
 testing; `Soft::title_painted` says when the bar was repainted so the tabs are drawn again over it.
 
-**Not yet:** groups, split panes, the overview, the palette, window titles that can be renamed, a status that says a
+**Groups (third slice):** `App::groups` (name, one of eight colours, folded) and `Win::group`; the windows are kept sorted
+so a group's windows are together, groups in order, the windows in none last (`rebuild_side`), which makes `Alt+1…9` and
+`Alt+[` follow the panel. `side::entries` lists what the panel shows (a header per group, its windows unless folded, then the
+rest) and `side::Layout::Side` places them with the reference's measures (header 26, row 30, gap 1, 10 above a group,
+windows indented 8 with a 2 px bar in the group's colour at 50 %); clicking a header folds it. `Alt+G` makes a group around
+the window on screen (named `group N`, next colour), `Alt+Shift+G` takes it out; a group with no windows is dropped. A new
+window starts in the directory of the one on screen. Groups are per run, not saved. Dialog, rename and menus come later.
+
+**Not yet:** split panes, the overview, the palette, window titles that can be renamed, a status that says a
 command is running or failed.

@@ -166,6 +166,16 @@ struct Win {
     /// The title the program set (empty: the directory's name is used) and whether it printed while hidden.
     title: String,
     unread: bool,
+    /// The number the window was given when it opened, and the group it is in (an index into `App::groups`).
+    id: u64,
+    group: Option<usize>,
+}
+
+/// A group of windows: a name, one of the eight colours, and whether the panel shows its windows.
+struct Group {
+    name: String,
+    color: u8,
+    collapsed: bool,
 }
 
 impl Drop for Win {
@@ -192,6 +202,11 @@ struct App {
     side_hover: Option<side::Part>,
     side_dirty: bool,
     side_scratch: Vec<u8>,
+    /// The groups, in the order the panel shows them, how many were ever made (for their names), and what
+    /// the panel lists now (rebuilt whenever the windows or the groups change).
+    groups: Vec<Group>,
+    groups_made: usize,
+    entries: Vec<side::Entry>,
     xkb: Option<Xkb>,
     ui: Ui,
     hover: Hit,
@@ -271,11 +286,17 @@ fn items(wins: &[Win], cur: usize) -> Vec<side::Item> {
     wins.iter().enumerate().map(|(i, w)| side::Item { title: win_title(w), selected: i == cur, unread: w.unread }).collect()
 }
 
+/// The groups as the panel shows them.
+fn group_items(groups: &[Group], wins: &[Win]) -> Vec<side::GroupItem> {
+    groups.iter().enumerate().map(|(g, x)| side::GroupItem { name: x.name.clone(), color: x.color, collapsed: x.collapsed, count: wins.iter().filter(|w| w.group == Some(g)).count() }).collect()
+}
+
 /// Paints the panel of windows over its cleared box.
-fn paint_side(soft: &Soft, fb: &mut [u32], wins: &[Win], cur: usize, right: bool, hover: Option<side::Part>, scratch: &mut Vec<u8>) {
+#[allow(clippy::too_many_arguments)]
+fn paint_side(soft: &Soft, fb: &mut [u32], wins: &[Win], groups: &[Group], entries: &[side::Entry], cur: usize, right: bool, hover: Option<side::Part>, scratch: &mut Vec<u8>) {
     let (Some(rect), Some(b)) = (soft.side_rect(), side_box(soft)) else { return };
     soft.clear_rect(fb, rect);
-    side::paint(soft, fb, b, !right, &tr(Str::Windows), &items(wins, cur), hover, scratch);
+    side::paint(soft, fb, b, !right, &tr(Str::Windows), entries, &group_items(groups, wins), &items(wins, cur), hover, scratch);
 }
 
 /// Paints the tabs in the title bar, over the bar cleared between the buttons.
@@ -305,7 +326,7 @@ pub fn run() -> bool {
 
 impl Win {
     /// A new window with its own shell. `n` numbers it for the files it reports through.
-    fn spawn(wake: &Arc<OwnedFd>, n: u64, (cols, rows, cw, ch): (usize, usize, u32, u32), cursor: config::CursorKind, chips: bool) -> Win {
+    fn spawn(wake: &Arc<OwnedFd>, n: u64, (cols, rows, cw, ch): (usize, usize, u32, u32), cursor: config::CursorKind, chips: bool, dir: Option<PathBuf>) -> Win {
         let proxy = Proxy { wake: wake.clone(), pending: Arc::new(AtomicBool::new(false)), queue: Arc::default(), hooks: Arc::default() };
         // The files the shell and axon talk through (`context.rs`): what the shell reports, and the flag
         // that says the prompt chips are on.
@@ -313,7 +334,7 @@ impl Win {
         let shell_path = std::env::var("SHELL").unwrap_or_default();
         let inherited = std::env::var("PROMPT_COMMAND").ok();
         let env = context::shell_env(&shell_path, report.as_deref(), flag.as_deref(), inherited.as_deref()).into_iter().collect();
-        let (term, pty, shell) = session::spawn(proxy.clone(), cols, rows, cw, ch, n, env, cursor);
+        let (term, pty, shell) = session::spawn(proxy.clone(), cols, rows, cw, ch, n, env, cursor, dir);
         Win {
             term,
             pty,
@@ -329,6 +350,8 @@ impl Win {
             refresh: Refresh { due: chips.then(Instant::now), last: Instant::now(), running: Arc::new(AtomicBool::new(false)), done: Arc::default(), clock_at: None },
             title: String::new(),
             unread: false,
+            id: n,
+            group: None,
         }
     }
 }
@@ -388,7 +411,7 @@ impl App {
             context::remove_stale_reports(dir);
         }
         let cfg_chips = cfg.input.inline && !cfg.input.chips.is_empty();
-        let first = Win::spawn(&wake, 0, (cols, rows, cw, ch), cfg.input.cursor, cfg_chips);
+        let first = Win::spawn(&wake, 0, (cols, rows, cw, ch), cfg.input.cursor, cfg_chips, None);
         let mut app = App {
             wl,
             soft,
@@ -399,6 +422,9 @@ impl App {
             side_hover: None,
             side_dirty: true,
             side_scratch: Vec::new(),
+            groups: Vec::new(),
+            groups_made: 0,
+            entries: Vec::new(),
             xkb,
             ui,
             hover: Hit::Client,
@@ -428,10 +454,17 @@ impl App {
             delay,
         };
         app.set_geometry();
+        app.rebuild_side();
         app.sync_flag();
         // A debugging aid: start with this many windows (screenshots, memory measurements).
         for _ in 1..std::env::var("AXON_WINDOWS").ok().and_then(|n| n.parse::<usize>().ok()).unwrap_or(1).min(9) {
             app.new_win();
+        }
+        // Another aid: the first two windows start in one group.
+        if std::env::var_os("AXON_GROUPS").is_some() && app.wins.len() > 1 {
+            app.new_group();
+            app.wins[1].group = Some(0);
+            app.rebuild_side();
         }
         app.switch_to(0);
         // A debugging aid: start with the settings screen open (screenshots, memory measurements).
@@ -530,7 +563,7 @@ impl App {
                 paint_tabs(&self.soft, fb, &self.wins, self.cur, self.w, self.side_hover, &mut self.side_scratch);
             } else {
                 let right = self.cfg.windows.tabs == config::TabsPos::Right;
-                paint_side(&self.soft, fb, &self.wins, self.cur, right, self.side_hover, &mut self.side_scratch);
+                paint_side(&self.soft, fb, &self.wins, &self.groups, &self.entries, self.cur, right, self.side_hover, &mut self.side_scratch);
             }
             self.side_dirty = false;
         }
@@ -656,13 +689,13 @@ impl App {
             if y < 0.0 || y >= chrome::TITLE_H as f32 - 1.0 {
                 return None;
             }
-            return side::Layout::Top { x0, x1, n: self.wins.len() }.hit(self.wins.len(), x, y);
+            return side::Layout::Top { x0, x1, n: self.wins.len() }.hit(x, y);
         }
         let (bx, by, bw, bh) = self.side_box()?;
         if x < bx as f32 || x >= (bx + bw) as f32 || y < by as f32 || y >= (by + bh) as f32 {
             return None;
         }
-        side::Layout::Side { x0: bx, y0: by, w: bw }.hit(self.wins.len(), x, y)
+        side::Layout::Side { x0: bx, y0: by, w: bw, entries: &self.entries }.hit(x, y)
     }
 
     fn toggle_side(&mut self) {
@@ -678,8 +711,11 @@ impl App {
         let n = self.next_win;
         self.next_win += 1;
         let cfg_chips = self.chips_on();
-        let win = Win::spawn(&self.wake, n, (self.cols, self.rows, self.cw, self.ch), self.cfg.input.cursor, cfg_chips);
+        // The new shell starts where the one you were in is.
+        let dir = std::fs::read_link(format!("/proc/{}/cwd", self.wins[self.cur].shell)).ok();
+        let win = Win::spawn(&self.wake, n, (self.cols, self.rows, self.cw, self.ch), self.cfg.input.cursor, cfg_chips, dir);
         self.wins.push(win);
+        self.rebuild_side();
         self.switch_to(self.wins.len() - 1);
         self.sync_flag();
     }
@@ -698,7 +734,66 @@ impl App {
         if i < self.cur || self.cur >= self.wins.len() {
             self.cur = self.cur.saturating_sub(1).min(self.wins.len() - 1);
         }
+        self.prune_groups();
+        self.rebuild_side();
         self.switch_to(self.cur);
+    }
+
+    // ------------------------------------------------------------- groups --
+
+    /// Puts the windows in the order the panel shows them (a group's windows together, groups in order, the
+    /// windows in none last: so `Alt+1..9` and `Alt+[` follow what is on screen) and lists them.
+    fn rebuild_side(&mut self) {
+        let id = self.wins[self.cur].id;
+        self.wins.sort_by_key(|w| w.group.unwrap_or(usize::MAX));
+        self.cur = self.wins.iter().position(|w| w.id == id).unwrap_or(0);
+        let of: Vec<Option<usize>> = self.wins.iter().map(|w| w.group).collect();
+        let folded: Vec<bool> = self.groups.iter().map(|g| g.collapsed).collect();
+        self.entries = side::entries(&of, &folded);
+        self.side_hover = None;
+        self.side_dirty = true;
+        self.dirty = true;
+    }
+
+    /// Drops the groups that no window is in, and renumbers the others in the windows.
+    fn prune_groups(&mut self) {
+        let mut g = 0;
+        while g < self.groups.len() {
+            if self.wins.iter().any(|w| w.group == Some(g)) {
+                g += 1;
+                continue;
+            }
+            self.groups.remove(g);
+            for w in &mut self.wins {
+                w.group = w.group.map(|x| if x > g { x - 1 } else { x });
+            }
+        }
+    }
+
+    /// A new group, named and coloured for the next in line, around the window on screen.
+    fn new_group(&mut self) {
+        self.groups_made += 1;
+        let color = (self.groups.len() % 8) as u8;
+        self.groups.push(Group { name: format!("{} {}", tr(Str::GroupName), self.groups_made), color, collapsed: false });
+        self.wins[self.cur].group = Some(self.groups.len() - 1);
+        self.prune_groups();
+        self.rebuild_side();
+    }
+
+    /// Takes the window on screen out of its group.
+    fn ungroup(&mut self) {
+        if self.wins[self.cur].group.take().is_some() {
+            self.prune_groups();
+            self.rebuild_side();
+        }
+    }
+
+    /// Folds or unfolds group `g` in the panel.
+    fn fold(&mut self, g: usize) {
+        if let Some(group) = self.groups.get_mut(g) {
+            group.collapsed = !group.collapsed;
+            self.rebuild_side();
+        }
     }
 
     /// Shows window `i`: what was in the middle of a pointer gesture or a key repeat is dropped, and the
@@ -1118,6 +1213,8 @@ impl App {
                 (Some('n'), _) => self.new_win(),
                 (Some('w'), _) => self.close_win(self.cur),
                 (Some('b'), _) => self.toggle_side(),
+                (Some('g'), _) if m.shift => self.ungroup(),
+                (Some('g'), _) => self.new_group(),
                 (_, 0x5b) => self.switch_to(if self.cur == 0 { last } else { self.cur - 1 }),
                 (_, 0x5d) => self.switch_to(if self.cur == last { 0 } else { self.cur + 1 }),
                 (_, d @ 0x31..=0x39) if ((d - 0x31) as usize) < self.wins.len() => self.switch_to((d - 0x31) as usize),
@@ -1347,6 +1444,7 @@ impl App {
                 Some(side::Part::Row(i)) => self.switch_to(i),
                 Some(side::Part::Close(i)) => self.close_win(i),
                 Some(side::Part::New) => self.new_win(),
+                Some(side::Part::Head(g)) => self.fold(g),
                 None => {}
             },
             Hit::Client => {
