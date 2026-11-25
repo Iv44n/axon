@@ -49,9 +49,11 @@ Always use `--release`: debug mode is much slower.
 | Shortcut | Action |
 |---|---|
 | `Ctrl+,` | Open or close the settings panel docked beside the terminal (also the sliders icon in the title bar); `Esc` closes it when it has the keyboard |
-| `Alt+N` / `Alt+W` | New window (a shell of its own) / close the window |
+| `Alt+N` / `Alt+W` | New window (a shell of its own) / close the window: the toast says so with an *Undo* button, and the shell stays alive until it is gone |
 | `Alt+1…9`, `Alt+[` / `Alt+]` | Go to window *n* / the previous / the next one |
-| `Alt+G` / `Alt+Shift+G` | Group the window on screen (a header in the panel, click it to fold) / take it out of its group |
+| `Alt+G` / `Alt+Shift+G` | Open the new-group dialog (name, colour, the windows to group, templates that open new windows; the window on screen is ticked when it is in no group; the panel's second header button does the same) / take the window on screen out of its group |
+| Right click on the panel or tabs | Menu of what is under the pointer: a window (rename, duplicate, split, groups, close, close the others), a group's header (edit, fold, new window, dissolve, close), a pane's row, or the empty part (new window, new group) |
+| Double click on a window's row or tab / `F2` over it | Rename it in place: `Enter` keeps the name, `Esc` cancels, an empty name goes back to the automatic one. A double click on a group's header edits the group |
 | `Ctrl+Space` | One more pane in the window (to the right first, then an automatic grid); a split that would leave a pane under 20 columns x 5 rows is refused |
 | `Alt+\` / `Alt+-` | Split the focused pane in columns / in rows (mixing the two gives the grid) |
 | `Alt+,` / `Alt+.` | Focus the previous / the next pane (a click on a pane focuses it too) |
