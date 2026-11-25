@@ -2431,7 +2431,7 @@ mod tests {
     #[test]
     fn the_windows_and_input_settings_are_written_under_their_file_keys() {
         let mut s = open();
-        s.draft.windows = WindowsCfg { tabs: TabsPos::Right, side: false, side_w: 260 };
+        s.draft.windows = WindowsCfg { tabs: TabsPos::Right, side: false, side_w: 260, ..WindowsCfg::default() };
         s.draft.input.autosuggest = false;
         s.draft.input.inline = true;
         s.draft.input.clock24 = true;
@@ -2472,7 +2472,7 @@ mod tests {
 
     #[test]
     fn the_defaults_put_the_windows_and_the_input_back_too() {
-        let mut s = open().with_windows(&WindowsCfg { tabs: TabsPos::Top, side: false, side_w: 300 }).with_input(&InputCfg { inline: true, chips: vec![Chip::Dir], clock24: true, autosuggest: false, ..Default::default() });
+        let mut s = open().with_windows(&WindowsCfg { tabs: TabsPos::Top, side: false, side_w: 300, ..WindowsCfg::default() }).with_input(&InputCfg { inline: true, chips: vec![Chip::Dir], clock24: true, autosuggest: false, ..Default::default() });
         s.defaults();
         assert_eq!(s.draft.windows, WindowsCfg::default());
         assert_eq!(s.draft.input, InputCfg::default());

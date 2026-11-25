@@ -226,6 +226,7 @@ chips = ["time", "user", "env", "pyenv", "host", "dir", "branch", "changes", "ku
 tabs = "left"               # where the list of windows lives: "left" or "right" (a panel), or "top" (tabs in the title bar)
 side = true                 # whether the panel is shown (Alt+B toggles it)
 side_width = 220            # the panel's width in pixels, 160 to 320
+scope = true                # every window's shell in a systemd scope of its own: what runs from a window is counted (and killed under memory pressure) apart from the others
 ```
 
 The file is a small subset of TOML read by our own parser (`src/config.rs`): sections, `key = value`, `#` comments,
@@ -296,25 +297,25 @@ Measured with [`scripts/bench.sh`](scripts/bench.sh) (`--clean` adds a cold buil
 can move size or speed** (rule in `CLAUDE.md`); older numbers stay in the history table.
 
 Machine: AMD Ryzen 5 5600H (12 threads) + RTX 3050 Mobile, Ubuntu, kernel 7.0.0-44, GNOME Shell 50.1 on Wayland.
-Last measured: 2026-11-25, at `c16281a` plus the change that makes the window the same as the reference, cleaner (ADR 0036: the UI font for the title, the panel and the tabs, its character map narrowed; no status bar by default; quiet chips; the reference's margins) and the one that docks the prompt at the bottom (ADR 0037), the flood and the spinners timed against a build of the same tree drawing the rows flat, in turn under the same load (ADR 0036 was timed against `c16281a`): everything since `02c3490` (mouse reporting, the config file, the prompt chips, the blur request, the sub-pixel text rasterizer, the UI after `terminal.html`) plus the second reference: windows and groups (side panel or top tabs), split panes, the overlay kit, the docked settings panel, the command palette, the overview of windows, the group dialog, context menus, inline rename, toasts with undo, drag and drop, status icons, and the fixes after the review. The machine was not idle (a browser held the load average at 1-2.5).
+Last measured: 2026-11-25, at `37e4cd3` plus the change that starts every window's shell in a systemd scope of its own (ADR 0038: +4.6 KB of binary, the idle numbers and the flood unchanged, 1-8 ms more to a window's first shell); the notes that follow come from the build before it, measured at `c16281a` plus the change that makes the window the same as the reference, cleaner (ADR 0036: the UI font for the title, the panel and the tabs, its character map narrowed; no status bar by default; quiet chips; the reference's margins) and the one that docks the prompt at the bottom (ADR 0037), the flood and the spinners timed against a build of the same tree drawing the rows flat, in turn under the same load (ADR 0036 was timed against `c16281a`): everything since `02c3490` (mouse reporting, the config file, the prompt chips, the blur request, the sub-pixel text rasterizer, the UI after `terminal.html`) plus the second reference: windows and groups (side panel or top tabs), split panes, the overlay kit, the docked settings panel, the command palette, the overview of windows, the group dialog, context menus, inline rename, toasts with undo, drag and drop, status icons, and the fixes after the review. The machine was not idle (a browser held the load average at 1-2.5).
 
 **Build**
 
 | Binary | Cold release build |
 |---|---|
-| 7.9 MiB (8,315,096 bytes) | 101 s (before ADR 0036) |
+| 7.9 MiB (8,319,736 bytes) | 101 s (before ADR 0036) |
 
 **Idle memory and CPU** (`AXON_BACKEND` selects the backend; `wl` is the own Wayland client with the CPU renderer and the
 default on Wayland, `winit` is the `winit` + `wgpu` fallback)
 
 | Backend | Font | RSS | PSS | Private (anon) | CPU |
 |---|---|---|---|---|---|
-| `wl` | JetBrains Mono (default) | **19 MB** | 15 MB | 8 MB | 0 ticks / 3 s |
-| `wl` | DejaVu Sans Mono | 25 MB | 20 MB | 14 MB | 1 tick / 3 s |
-| `wl` | Cascadia Mono NF | 61 MB | 56 MB | 50 MB | 0 ticks / 3 s |
-| `winit` | JetBrains Mono (default) | 151 MB | 71 MB | 31 MB | 1 tick / 3 s |
-| `winit` | DejaVu Sans Mono | 156 MB | 77 MB | 37 MB | 0 ticks / 3 s |
-| `winit` | Cascadia Mono NF | 193 MB | 113 MB | 74 MB | 0 ticks / 3 s |
+| `wl` | JetBrains Mono (default) | **19 MB** | 14 MB | 8 MB | 0 ticks / 3 s |
+| `wl` | DejaVu Sans Mono | 25 MB | 20 MB | 14 MB | 0 ticks / 3 s |
+| `wl` | Cascadia Mono NF | 61 MB | 57 MB | 50 MB | 0 ticks / 3 s |
+| `winit` | JetBrains Mono (default) | 151 MB | 58 MB | 31 MB | 0 ticks / 3 s |
+| `winit` | DejaVu Sans Mono | 156 MB | 64 MB | 37 MB | 0 ticks / 3 s |
+| `winit` | Cascadia Mono NF | 193 MB | 100 MB | 74 MB | 0 ticks / 3 s |
 
 The idle target is under 50 MB of RSS. `wl` meets it with the default font (the 4 MB over the 15 MB of before are the UI
 font: 2.7 MB of its parsed outlines, narrowed to the characters an interface draws, and ~1.5 MB more of the binary's own code
@@ -341,10 +342,12 @@ A shell killed with `SIGKILL` closes only its own window; when the last one goes
 
 | Backend | Time | RSS afterwards |
 |---|---|---|
-| `wl` | 1.87 s | 40 MB |
-| `winit` | 1.47 s | 180 MB |
+| `wl` | 2.01 s | 40 MB |
+| `winit` | 1.28 s | 179 MB |
 
-This time the machine was busy (load average 2.4-2.7): three runs each of this build and of the same tree drawing the rows
+For ADR 0038 (a scope per window), four rounds with the scope on and off, in turn, at load 1.0-1.3: `wl` 2.39, 1.94, 1.89 and 1.93 s on against 1.78, 1.93, 1.78 and 2.07 s off (the first pair had a cold file cache; the rest average 1.92 against 1.93 s): the same within the noise, as it must be, since the scope changes where the shell is accounted and not what it does. The `scripts/bench.sh` run above, 2.01 s, is inside that spread. Startup to a window's first shell process, six launches in turn: 57, 59 and 59 ms without the scope, 65, 61 and 60 ms with it (the `systemd-run` that makes the scope runs in the shell's own process, and its probe overlaps the window's creation).
+
+Before that, the machine was busy (load average 2.4-2.7): three runs each of this build and of the same tree drawing the rows
 flat (no docked prompt), in turn, gave `wl` 1.87, 1.89 and 1.86 s against 1.87, 1.84 and 1.85 s, the same within the noise; a
 `scripts/bench.sh` run just before, under load too, gave 2.10 s. For ADR 0036, three runs each of the build before it and
 after it gave 1.81, 1.86 and 1.73 s against 1.78, 1.78 and 1.74 s (the RSS after it is 3 MB higher, the UI font). The spinners
@@ -352,12 +355,13 @@ of three running windows cost 10-11 ticks every 5 s in both builds of the A/B; t
 back in either. Before, idle machine, four runs of `scripts/bench.sh` in this stretch (`wl` 1.58, 1.57, 1.63 and 1.65 s, `winit` 1.33, 1.30, 1.38 and 1.35 s):
 run-to-run noise is about 0.1 s, and the last two are within it of the first two. The 1.95-2.08 s of the title bar build was the machine (a browser held the load average at 3-4), not the code.
 
-Not measured yet: startup time, input latency, and a comparison with Alacritty, Ghostty and foot (not installed here).
+Not measured yet: startup time to the first frame, input latency, and a comparison with Alacritty, Ghostty and foot (not installed here).
 
 **History** (binary size and idle RSS with the default font; newest first)
 
 | Date | Change | Binary | Idle RSS `winit` | Idle RSS `wl` |
 |---|---|---|---|---|
+| 2026-11-25 | Every window's shell in a systemd scope of its own (ADR 0038, `[windows] scope`): `systemd-run --user --scope` execs in place, a probe runs while the window is made, off where the user manager does not answer; +4.6 KB; flood and idle the same (A/B); 1-8 ms more to a window's first shell | 8,319,736 B | 151 MB | 19 MB |
 | 2026-11-25 | The prompt docked at the bottom below a hairline (ADR 0037): `view::Fold` lays the lines on the rows, `Soft::band` draws them; +0.9 KB; flood and spinners the same as the rows drawn flat (A/B); one or two rows fewer for every program (the composer's gaps are kept) | 8,315,096 B | 151 MB | 19 MB |
 | 2026-11-25 | The same as the reference, cleaner (ADR 0036): the UI font (Inter) for the title, the panel and the tabs, its character map narrowed to ~900 characters (`cmap.rs`: 2.7 MB parsed, not ~8.5); no status bar by default; quiet chips on the live prompt, a command's status at the end of its line; 22 px margins; +11.4 KB; settings open 22 MB (was 23), overview open 18.5 MB (was 20) | 8,314,200 B | 151 MB | 19 MB |
 | 2026-11-25 | A group is the split (ADR 0034): a group's windows are shown side by side, `Ctrl+Space` makes the group; no new dependency, +8.2 KB over the row below; a group of four windows 18 MB | 8,302,768 B | 148 MB | 15 MB |

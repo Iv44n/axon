@@ -154,7 +154,8 @@ impl State {
         let (cw, ch) = gpu.cell();
         let pad = gpu.pad as u32;
         let (cols, rows) = session::grid_size(w, h, cw, ch, pad, pad, pad);
-        let (term, notifier, _) = session::spawn(listener, cols, rows, cw, ch, u64::from(window.id()), Default::default(), Default::default(), None);
+        let scope = session::scope_probe(cfg.windows.scope).works();
+        let (term, notifier, _) = session::spawn(listener, cols, rows, cw, ch, u64::from(window.id()), Default::default(), Default::default(), None, scope);
 
         window.request_redraw();
         State {

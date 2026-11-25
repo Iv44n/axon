@@ -92,3 +92,9 @@
 # Whether the panel is shown (Alt+B toggles it), and its width in pixels (160 to 320).
 # side = true
 # side_width = 220
+
+# Start every window's shell in a systemd scope of its own (`systemd-run --user --scope`), so what runs from a window
+# (an editor, a build, a browser) is counted, and killed under memory pressure, apart from the other windows and not as
+# "axon". It is used only where systemd's user manager answers; elsewhere the shell starts as usual. List them with
+# `systemd-cgtop` or `systemctl --user list-units --type=scope` (app-axon-<pid>w<window>.scope).
+# scope = true

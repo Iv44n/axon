@@ -282,6 +282,9 @@ struct App {
     wake: Arc<OwnedFd>,
     /// The number the next window gets (for its report file and its PTY).
     next_win: u64,
+    /// Whether a shell can be given a scope of its own on this machine (`session::scope_probe`); None while the
+    /// file had `[windows] scope = false` and nothing was tried. Read through `scope_for_new`.
+    scope_ok: Option<bool>,
     /// What the pointer is over in the panel of windows, and whether the panel has to be painted again.
     side_hover: Option<side::Part>,
     side_dirty: bool,
@@ -628,7 +631,8 @@ pub fn run() -> bool {
 
 impl Pane {
     /// A new pane with its own shell. `n` numbers it for the files it reports through.
-    fn spawn(wake: &Arc<OwnedFd>, n: u64, (cols, rows, cw, ch): (usize, usize, u32, u32), cursor: config::CursorKind, chips: bool, dir: Option<PathBuf>) -> Pane {
+    /// `scope` starts its shell in a scope of its own (`App::scope_for_new`).
+    fn spawn(wake: &Arc<OwnedFd>, n: u64, (cols, rows, cw, ch): (usize, usize, u32, u32), cursor: config::CursorKind, chips: bool, dir: Option<PathBuf>, scope: bool) -> Pane {
         let proxy = Proxy { wake: wake.clone(), pending: Arc::new(AtomicBool::new(false)), queue: Arc::default(), hooks: Arc::default() };
         // The files the shell and axon talk through (`context.rs`): what the shell reports, and the flag
         // that says the prompt chips are on.
@@ -636,7 +640,7 @@ impl Pane {
         let shell_path = std::env::var("SHELL").unwrap_or_default();
         let inherited = std::env::var("PROMPT_COMMAND").ok();
         let env = context::shell_env(&shell_path, report.as_deref(), flag.as_deref(), inherited.as_deref()).into_iter().collect();
-        let (term, pty, shell) = session::spawn(proxy.clone(), cols, rows, cw, ch, n, env, cursor, dir);
+        let (term, pty, shell) = session::spawn(proxy.clone(), cols, rows, cw, ch, n, env, cursor, dir, scope);
         let mut pane = Pane {
             term,
             pty,
@@ -670,6 +674,8 @@ impl App {
     fn new() -> std::io::Result<App> {
         let cfg = config::load();
         i18n::set(cfg.lang.resolve_here());
+        // The scope's try runs while the window is made (ADR 0038); it is awaited before the first shell.
+        let scope_probe = session::scope_probe(cfg.windows.scope);
         let base_px = cfg.font.size;
         let shown_font = cfg.font.clone();
         let opacity = cfg.opacity.unwrap_or(chrome::OPACITY);
@@ -725,7 +731,8 @@ impl App {
             context::remove_stale_reports(dir);
         }
         let cfg_chips = cfg.input.inline && !cfg.input.chips.is_empty();
-        let first = Win::new(Pane::spawn(&wake, 0, (cols, rows, cw, ch), cfg.input.cursor, cfg_chips, None), 0);
+        let scope_ok = cfg.windows.scope.then(|| scope_probe.works());
+        let first = Win::new(Pane::spawn(&wake, 0, (cols, rows, cw, ch), cfg.input.cursor, cfg_chips, None, scope_ok == Some(true)), 0);
         let mut app = App {
             wl,
             soft,
@@ -733,6 +740,7 @@ impl App {
             cur: 0,
             wake,
             next_win: 1,
+            scope_ok,
             side_hover: None,
             side_dirty: true,
             side_scratch: Vec::new(),
@@ -1720,6 +1728,12 @@ impl App {
     }
 
     // ------------------------------------------------------- prompt chips --
+
+    /// Whether the next shell starts in a scope of its own: the setting says so (it follows a reload) and the machine
+    /// can (tried once, here, when the file did not want it at the start and wants it now).
+    fn scope_for_new(&mut self) -> bool {
+        self.cfg.windows.scope && *self.scope_ok.get_or_insert_with(|| session::scope_probe(true).works())
+    }
 
     /// Whether the chips are shown: asked for and with at least one chip to show.
     fn chips_on(&self) -> bool {
@@ -2965,7 +2979,7 @@ mod tests {
 
     #[test]
     fn the_settings_are_at_the_edge_opposite_the_windows_panel() {
-        let cfg = |tabs, side| WindowsCfg { tabs, side, side_w: 240 };
+        let cfg = |tabs, side| WindowsCfg { tabs, side, side_w: 240, ..WindowsCfg::default() };
         // Windows at the left: settings at the right.
         assert_eq!(docks(&cfg(TabsPos::Left, true), 372, 1000), (Dock { w: 240, left: true }, Dock { w: 372, left: false }));
         // Windows at the right: settings at the left, as the reference orders them (`.prefs` is `order: -1`).
@@ -2984,7 +2998,7 @@ mod tests {
 
     #[test]
     fn a_narrow_window_keeps_room_for_the_grid_by_hiding_the_windows_panel() {
-        let cfg = WindowsCfg { tabs: TabsPos::Left, side: true, side_w: 220 };
+        let cfg = WindowsCfg { tabs: TabsPos::Left, side: true, side_w: 220, ..WindowsCfg::default() };
         // Roomy: both panels. At the least size with the settings open (`panel_width(320)` = 198): the grid would be
         // 320 - 220 - 198 < 0, so the windows' panel goes.
         assert_eq!(docks(&cfg, 198, 1000).0.w, 220);

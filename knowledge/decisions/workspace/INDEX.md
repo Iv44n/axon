@@ -14,3 +14,4 @@ Windows, groups, panes, the overlays built on one kit, and the screens of the se
 - [0032 · Fidelity to the second reference](0032-fidelity-second-reference.md) — 40 px title bar, panel measures, scrolling tabs, overview drag, window label from the command.
 - [0033 · Windows, groups, palette, overview and drag as one set](0033-windows-feature-set-after-the-merge.md) — what the merge connected; the groups model; what is left out on purpose.
 - [0034 · A group is the split](0034-a-group-is-the-split.md) — a group's windows are shown side by side as panes; `Ctrl+Space` makes the group.
+- [0038 · A scope per window](0038-a-scope-per-window.md) — each shell in its own systemd scope, probed first; memory and oomd kills are per window.

@@ -5,5 +5,5 @@ ADR (a statement the code made false is corrected where it stands). A new ADR go
 
 - [Core](core/INDEX.md) — 0001-0013: stack, rendering, data-oriented rules, own implementations, Wayland client.
 - [Interface](interface/INDEX.md) — 0012-0022, 0036-0037: glass look, config and settings file, prompt chips, text quality, i18n, the reference cleaner, the docked prompt.
-- [Workspace](workspace/INDEX.md) — 0023-0034: windows, panes, overlays, palette, overview, groups, drag, fidelity.
+- [Workspace](workspace/INDEX.md) — 0023-0034, 0038: windows, panes, overlays, palette, overview, groups, drag, fidelity, a scope per window.
 - [Distribution](distribution/INDEX.md) — 0035: release bundles, the `curl | sh` installer, the website on GitHub Pages.

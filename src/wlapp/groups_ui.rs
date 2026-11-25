@@ -108,7 +108,8 @@ impl App {
         let n = self.next_win;
         self.next_win += 1;
         let dir = o.dir.or_else(|| self.win_dir(self.cur));
-        let pane = Pane::spawn(&self.wake, n, (self.cols, self.rows, self.cw, self.ch), self.cfg.input.cursor, self.chips_on(), dir);
+        let scope = self.scope_for_new();
+        let pane = Pane::spawn(&self.wake, n, (self.cols, self.rows, self.cw, self.ch), self.cfg.input.cursor, self.chips_on(), dir, scope);
         if let Some(cmd) = o.cmd {
             // The shell reads it as soon as it is up: what is typed ahead waits in the terminal.
             pane.pty.notify(format!("{cmd}\r").into_bytes());
