@@ -36,7 +36,9 @@ use crate::{
     chrome::{self, EDGE_BOTTOM, EDGE_LEFT, EDGE_RIGHT, EDGE_TOP, Hit, Ui},
     config::{self, Chip, Config, FontCfg},
     context::{self, Context, Probe},
-    input, mouse, palette, session,
+    input, mouse,
+    overlay::{self, Click, Geo, Overlay, Ran, Reply, Stack},
+    overlay_demo, palette, session,
     settings::{self, Effect, Settings},
     soft::Soft,
     view::View,
@@ -139,6 +141,19 @@ struct Refresh {
     clock_at: Option<Instant>,
 }
 
+/// The app's clipboard as the overlays see it (read only when one asks to paste).
+struct WlClip<'a>(&'a mut Wl);
+
+impl overlay::Clipboard for WlClip<'_> {
+    fn get(&mut self) -> Option<String> {
+        self.0.clipboard_text()
+    }
+
+    fn set(&mut self, text: &str) {
+        self.0.set_clipboard(text);
+    }
+}
+
 /// A key being held: sent again at `at`, then every `1 / rate` seconds.
 struct Repeat {
     code: u32,
@@ -227,6 +242,10 @@ struct App {
     waiting: Option<Instant>,
     /// The settings screen, while it is open.
     panel: Option<Box<Settings>>,
+    /// The overlays (palette, dialogs, menus) and the toast: the first to get the keyboard and the pointer
+    /// (`overlay.rs`), and the pointer image they asked for last.
+    overlays: Stack,
+    overlay_cursor: Option<overlay::Cursor>,
     dirty: bool,
     quit: bool,
     mouse: (f32, f32),
@@ -439,6 +458,8 @@ impl App {
             cfg,
             opacity,
             panel: None,
+            overlays: Stack::default(),
+            overlay_cursor: None,
             dirty: true,
             waiting: None,
             quit: false,
@@ -471,6 +492,12 @@ impl App {
         if std::env::var_os("AXON_SETTINGS").is_some() {
             app.toggle_settings();
         }
+        // Another: start with one of the overlay kit's screens open (`field`, `list`, `menu`, `toast`, `modal`).
+        if let Ok(kind) = std::env::var("AXON_DEMO_OVERLAY") {
+            if app.panel.is_none() && !app.demo_overlay(&kind) {
+                eprintln!("axon: AXON_DEMO_OVERLAY is one of {}", overlay_demo::KINDS.join(", "));
+            }
+        }
         Ok(app)
     }
 
@@ -482,7 +509,7 @@ impl App {
             // Block until the compositor, the PTY thread or a held key needs us; and, when a redraw is
             // stuck waiting for the compositor, only until it is clear that it will not answer.
             let now = Instant::now();
-            let timeout = [self.repeat.as_ref().map(|r| r.at), self.waiting.map(|t| t + STALL), self.wins[self.cur].refresh.due, self.wins[self.cur].refresh.clock_at]
+            let timeout = [self.repeat.as_ref().map(|r| r.at), self.waiting.map(|t| t + STALL), self.wins[self.cur].refresh.due, self.wins[self.cur].refresh.clock_at, self.overlays.deadline(now)]
                 .into_iter()
                 .flatten()
                 .min()
@@ -515,6 +542,15 @@ impl App {
             }
             self.tick_repeat();
             self.tick_context();
+            // A toast fades out and goes by itself; the grid under it is painted again.
+            match self.overlays.tick(Instant::now()) {
+                overlay::Tick::Gone => {
+                    self.soft.invalidate();
+                    self.dirty = true;
+                }
+                overlay::Tick::Repaint => self.dirty = true,
+                overlay::Tick::Rest => {}
+            }
             if self.waiting.is_some_and(|t| t.elapsed() >= STALL) {
                 self.wl.give_up_waiting();
                 self.waiting = None;
@@ -536,6 +572,7 @@ impl App {
         // The buffer is the window plus the margin its shadow is drawn in.
         let (ml, mt, mb) = chrome::margins(self.ui.maximized);
         let (w, h) = (self.w as usize + 2 * ml, self.h as usize + mt + mb);
+        let geo = self.geo();
         let chips_on = self.chips_on();
         let Some(fb) = self.wl.framebuffer(w, h) else {
             self.waiting.get_or_insert_with(Instant::now);
@@ -548,8 +585,8 @@ impl App {
         let shell = shell.as_deref().and_then(|s| s.rsplit('/').next()).unwrap_or("shell");
         self.soft.set_status(shell, branch, self.cols, self.rows);
         self.soft.set_ui(self.ui);
-        if self.panel.is_some() {
-            self.soft.invalidate(); // the panel is painted over a complete grid, every time
+        if self.panel.is_some() || !self.overlays.is_empty() {
+            self.soft.invalidate(); // the panel and the overlays are painted over a complete grid, every time
         }
         let win = &mut self.wins[self.cur];
         let mut t = win.term.lock();
@@ -573,6 +610,7 @@ impl App {
             p.draw(fb, w, h, (ml, mt), (self.w, self.h), self.ui.maximized);
             p.draw_preview(&self.soft, &self.wins[self.cur].ctx, fb, (self.w, self.h));
         }
+        animating |= self.overlays.draw(fb, (w, h), (ml, mt), geo, Instant::now());
         self.wl.present();
         // A fade in progress asks for the next frame itself; at rest nothing does (idle is 0 % CPU).
         self.dirty = animating;
@@ -854,6 +892,12 @@ impl App {
             Event::Scroll { pixels, clicks } => self.on_scroll(pixels, clicks),
             Event::PointerMove { x, y } => self.on_pointer_move(x, y),
             Event::PointerLeave => {
+                if !self.overlays.is_empty() {
+                    // Nothing is under the pointer any more: a lit menu item or toast button goes dark.
+                    let g = self.geo();
+                    let r = self.overlays.pointer(-1e4, -1e4, g);
+                    self.overlay_reply(Reply { cursor: None, ..r });
+                }
                 self.hover = Hit::Client;
                 if self.side_hover.take().is_some() {
                     self.side_dirty = true;
@@ -871,6 +915,9 @@ impl App {
                     BTN_RIGHT => 2,
                     _ => return,
                 };
+                if self.overlay_button(b, pressed, time) {
+                    return;
+                }
                 if self.panel.is_some() && b == 0 && self.panel_button(pressed) {
                     return;
                 }
@@ -1196,6 +1243,14 @@ impl App {
 
     /// Runs a shortcut or sends the key to the shell. Returns whether anything was done.
     fn handle_key(&mut self, k: &Key) -> bool {
+        // An overlay open has the keyboard before everything: the shell hears nothing, Esc closes the top one.
+        if self.overlays.is_open() {
+            let g = self.geo();
+            let r = self.overlays.key(k, g, &mut WlClip(&mut self.wl));
+            let closed = r.closed;
+            self.overlay_reply(r);
+            return !closed; // the key that closed it must not repeat into the shell
+        }
         let m = k.mods;
         if m.ctrl && !m.alt && !m.shift && k.sym == 0x2c {
             self.toggle_settings();
@@ -1267,6 +1322,117 @@ impl App {
         self.wins[self.cur].pty.notify(bytes);
         self.dirty = true;
         true
+    }
+
+    // ------------------------------------------------------------ overlays --
+
+    /// The window as the overlays see it.
+    fn geo(&self) -> Geo {
+        Geo { w: self.w as i32, h: self.h as i32, square: self.ui.maximized }
+    }
+
+    /// Whatever the pointer or a held key was doing stops when an overlay takes the window.
+    fn grab_input(&mut self) {
+        (self.selecting, self.held, self.repeat) = (false, None, None);
+        self.wins[self.cur].term.lock().selection = None;
+    }
+
+    /// Opens an overlay over the grid (the palette, the overview, a dialog, a menu) under the app's `tag` for
+    /// it; the settings screen has the window while it is open and keeps it. Its command comes back through
+    /// `overlay_ran`.
+    #[allow(dead_code)]
+    fn open_overlay(&mut self, tag: u32, o: Box<dyn Overlay>) {
+        if self.panel.is_some() {
+            return;
+        }
+        self.grab_input();
+        self.overlays.open(tag, o);
+        self.dirty = true;
+    }
+
+    /// Opens one of the kit's debug screens by name (`AXON_DEMO_OVERLAY`). False if there is no such one.
+    fn demo_overlay(&mut self, kind: &str) -> bool {
+        self.grab_input();
+        let g = self.geo();
+        let ok = overlay_demo::open(kind, &mut self.overlays, g, Instant::now());
+        self.dirty |= ok;
+        ok
+    }
+
+    /// What the overlays did with an input: repaint, paint the grid again where one went away, the pointer
+    /// image they want, and the command they ran.
+    fn overlay_reply(&mut self, r: Reply) {
+        if r.redraw || r.closed {
+            self.dirty = true;
+        }
+        if r.closed {
+            self.soft.invalidate();
+            self.repeat = None;
+            if self.overlays.is_empty() {
+                self.overlay_cursor = None;
+                self.wl.set_cursor(cursor_for(self.hover));
+            }
+        }
+        if let Some(c) = r.cursor.filter(|&c| Some(c) != self.overlay_cursor) {
+            self.overlay_cursor = Some(c);
+            self.wl.set_cursor(match c {
+                overlay::Cursor::Default => cursor::DEFAULT,
+                overlay::Cursor::Pointer => cursor::POINTER,
+                overlay::Cursor::Text => cursor::TEXT,
+            });
+        }
+        if let Some(ran) = r.ran {
+            self.overlay_ran(ran);
+        }
+    }
+
+    /// A command an overlay chose. The kit's own screens only say so; the real ones (palette, menus,
+    /// dialogs) match on their tag here.
+    fn overlay_ran(&mut self, ran: Ran) {
+        match ran.tag {
+            overlay_demo::TAG => {
+                eprintln!("axon: demo overlay ran command {}", ran.id);
+                self.overlays.toast(tr(Str::OvToastClosed), Some(tr(Str::OvUndo)), overlay_demo::CMD_UNDO, Instant::now());
+            }
+            overlay::TOAST => eprintln!("axon: toast action {}", ran.id),
+            _ => {}
+        }
+    }
+
+    /// A button press or release while overlays are shown. Returns whether they took it: with one open every
+    /// press in the window's client area is theirs (on the scrim it closes the top one), and over a toast the
+    /// toast's.
+    fn overlay_button(&mut self, button: u8, pressed: bool, time: u32) -> bool {
+        let (x, y) = self.mouse;
+        if !self.overlay_owns(x, y) {
+            return false;
+        }
+        if button == 0 {
+            let g = self.geo();
+            let r = self.overlays.button(Click { x, y, pressed, time }, g);
+            self.overlay_reply(r);
+        }
+        true
+    }
+
+    /// Whether the overlays own the pointer at window pixel `(x, y)`: over a toast, or, with one open, anywhere
+    /// but the window's own controls (the buttons, the edges, the title bar where it moves the window).
+    fn overlay_owns(&self, x: f32, y: f32) -> bool {
+        if self.overlays.is_empty() {
+            return false;
+        }
+        if self.overlays.on_toast(x, y, self.geo()) {
+            return true;
+        }
+        if !self.overlays.is_open() {
+            return false;
+        }
+        match chrome::hit(x, y, self.w, self.h, self.ui.maximized, self.ui.side != 0) {
+            Hit::Client | Hit::Side | Hit::Settings | Hit::SideBtn => true,
+            // The tabs in the title bar are part of what is dimmed; the bar itself still moves the window.
+            Hit::Title => self.side_part_at(x, y).is_some(),
+            Hit::Close | Hit::Minimize | Hit::Maximize | Hit::Edge(_) => false,
+        }
     }
 
     // ---------------------------------------------------------- clipboard --
@@ -1353,6 +1519,23 @@ impl App {
         let (ml, mt, _) = chrome::margins(self.ui.maximized);
         let (x, y) = (x - ml as f32, y - mt as f32);
         self.mouse = (x, y);
+        if !self.overlays.is_empty() {
+            let g = self.geo();
+            let r = self.overlays.pointer(x, y, g);
+            if self.overlay_owns(x, y) {
+                self.overlay_reply(r);
+                // The window's own hover lights (title buttons, the panel's rows) go dark under an overlay.
+                if self.hover != Hit::Client || self.ui.hover != 0 || self.side_hover.is_some() {
+                    (self.hover, self.ui.hover, self.side_hover) = (Hit::Client, 0, None);
+                    self.side_dirty = true;
+                    self.dirty = true;
+                }
+                return;
+            }
+            // Off the overlays, the window's own pointer image is back: the next reply sets theirs again.
+            self.overlay_cursor = None;
+            self.overlay_reply(Reply { cursor: None, ..r });
+        }
         if let Some(p) = self.panel.as_mut() {
             let was = p.hover;
             let e = p.pointer(x, y, self.w, self.h);
@@ -1469,6 +1652,14 @@ impl App {
 
     fn on_scroll(&mut self, pixels: f32, clicks: i32) {
         if self.panel.is_some() {
+            return;
+        }
+        if self.overlays.is_open() {
+            // The wheel is the top overlay's, a notch as many pixels as the terminal's three lines.
+            let dy = if clicks != 0 { clicks as f32 * WHEEL_LINES * self.ch as f32 } else { pixels };
+            let (g, (x, y)) = (self.geo(), self.mouse);
+            let r = self.overlays.scroll(dy, x, y, g);
+            self.overlay_reply(r);
             return;
         }
         // Wayland counts down as positive; the terminal's `Scroll::Delta` counts up into history.

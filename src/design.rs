@@ -32,6 +32,8 @@ use crate::{
     view::View,
 };
 
+mod overlay_scenes;
+
 /// Window size of every scene, in logical pixels (the frame adds the shadow margin around it).
 const W: u32 = 900;
 const H: u32 = 620;
@@ -440,6 +442,15 @@ fn frames() {
         list += &format!(
             "    {{ name: {:?}, label: {:?}, group: {:?}, w: {w}, h: {h}, ox: {ox}, oy: {oy}, opacity: {} }},\n",
             s.name, s.label, s.group, s.opacity
+        );
+    }
+    // The overlay kit's scenes (`design/overlay_scenes.rs`), over the same window.
+    let (ox, oy, _) = chrome::margins(false);
+    for f in overlay_scenes::frames() {
+        std::fs::write(dir.join(format!("{}.png", f.name)), png(&f.fb, f.w, f.h)).unwrap();
+        list += &format!(
+            "    {{ name: {:?}, label: {:?}, group: \"overlays\", w: {}, h: {}, ox: {ox}, oy: {oy}, opacity: {OPACITY} }},\n",
+            f.name, f.label, f.w, f.h
         );
     }
     std::fs::write(dir.join("frames.js"), tokens(&list)).unwrap();

@@ -140,6 +140,33 @@ strings! {
     HintComplete: "complete", "completar";
     HintClear: "clear", "limpiar";
     HintSettings: "settings", "ajustes";
+    OvNoMatches: "Nothing matches", "Nada coincide con";
+    OvKeyMove: "move", "moverse";
+    OvKeyRun: "run", "ejecutar";
+    OvKeyClose: "close", "cerrar";
+    OvGroupActions: "Actions", "Acciones";
+    OvGroupGroups: "Groups", "Grupos";
+    OvSearch: "Search windows, groups, actions…", "Busca ventanas, grupos, acciones…";
+    OvActNewWindow: "New window", "Nueva ventana";
+    OvActNewGroup: "New group…", "Nuevo grupo…";
+    OvActSplit: "Split into columns", "Dividir en columnas";
+    OvActOverview: "Overview of windows", "Vista general de ventanas";
+    OvActPanel: "Show or hide the windows panel", "Mostrar u ocultar el panel de ventanas";
+    OvActClose: "Close the window", "Cerrar la ventana";
+    OvThreeWindows: "3 windows", "3 ventanas";
+    OvDialogTitle: "New group", "Nuevo grupo";
+    OvDialogHint: "groups related windows", "agrupa ventanas relacionadas";
+    OvFieldName: "Name", "Nombre";
+    OvFieldNameHint: "e.g. arcton, api, docs", "p. ej. arcton, api, docs";
+    OvFieldSearch: "Filter windows…", "Filtrar ventanas…";
+    OvCreateGroup: "Create group", "Crear grupo";
+    OvMenuRename: "Rename", "Renombrar";
+    OvMenuDuplicate: "Duplicate", "Duplicar";
+    OvMenuGroup: "Group", "Grupo";
+    OvMenuNewGroupWith: "New group with this window…", "Nuevo grupo con esta ventana…";
+    OvMenuCloseOthers: "Close the others", "Cerrar las demás";
+    OvToastClosed: "Group “arcton” closed", "Grupo «arcton» cerrado";
+    OvUndo: "Undo", "Deshacer";
     PreviewCommand: "echo \"The quick brown fox\"", "echo \"El veloz murciélago\"";
 }
 

@@ -192,6 +192,7 @@ axis of a font like `JetBrainsMono[wght].ttf`; the own font reader (task 12) wil
 | `AXON_OPACITY` | `0.93` (`winit`), `0.88` (`wl`) | Opacity of the glass body (if the compositor supports transparency) |
 | `AXON_DECORATIONS` | off | `1` to use the system title bar (`winit` fallback only) |
 | `AXON_BACKEND` | `wl` on Wayland, else `winit` | `wl`: own Wayland client + CPU renderer (~14 MB idle). `winit`: `winit` + `wgpu` (~150 MB idle), also the automatic fallback if `wl` cannot start |
+| `AXON_DEMO_OVERLAY` | — | A debugging aid: start with one of the overlay kit's screens open (`field`, `list`, `menu`, `toast`, `modal`) |
 
 ## Design
 
@@ -298,6 +299,13 @@ src/
 ├─ history.rs   each prompt's chips as they were, and how long its command ran (the hook's title escapes)
 ├─ context.rs   what the chips say: directory, git, Python, Kubernetes, time (read on a thread)
 ├─ settings.rs  the settings screen (Font and Input tabs)
+├─ overlay.rs   the overlay kit: the `Overlay` trait, the stack that takes keys and pointer, the modal frame, text
+├─ field.rs     a line of text being edited (caret, selection, paste) and its painting
+├─ list.rs      filtered, scrolling list model and its painting (the palette's)
+├─ menu.rs      the context menu
+├─ toast.rs     the toast
+├─ icons.rs     the overlays' outline icons
+├─ overlay_demo.rs  the kit's debug screens (`AXON_DEMO_OVERLAY`)
 ├─ config.rs    the settings file: parser, writer, `axon config`, `axon shell-init`
 ├─ view.rs      grid → cells for any renderer (damage, cursor, selection)
 ├─ session.rs   Term + PTY thread
