@@ -19,6 +19,8 @@ poll wakes wlapp ─► View::build ─► soft.rs rows ─► wl_shm buffer ─
 
 - The PTY thread belongs to `alacritty_terminal::EventLoop`; the UI thread only locks the `FairMutex`
   during `build()` (walking the visible cells) and `resize/selection`.
+- Overlays ([0025](../../../knowledge/decisions/0025-overlay-kit.md)): in `wlapp.rs` every key, pointer move, button and wheel event goes to `overlay::Stack` first; only
+  what it does not take continues to the settings screen, `input.rs` and the selection. An overlay is a pure function of its state and the window size, painted over a complete grid.
 - One direction: UI -> session (bytes, resize); session -> UI (`Ev` events). Never cross calls
   from the PTY thread into the UI except `Proxy::send_event`.
 
@@ -41,12 +43,19 @@ poll wakes wlapp ─► View::build ─► soft.rs rows ─► wl_shm buffer ─
 | `context.rs` | what the chips say (`gather` on a thread: `/proc`, `.git/HEAD`, kubeconfig, shell report file with the `git diff --numstat` totals; axon itself never runs git) plus the pure formatters, all tested | `config` (`Chip`) |
 | `side.rs` | the panel of windows: pure layout and hit testing (`hit`, `fit`), rows for a window's panes, painting over the box `Soft::side_rect` gives (grid font, no UI font); one `Win` per window lives in `wlapp.rs` ([0023](../../../knowledge/decisions/0023-windows-and-side-panel.md)) | `paint`, `palette`, `soft` |
 | `panes.rs` | split panes of a window, pure: `Kind` (single, columns, rows, grid), `rect(kind, n, i, area)`, `at`, `after_split` / `after_remove`, `cycle`, `fits` (the 20 x 5 minimum), `grid`; no state, no dependencies ([0024](../../../knowledge/decisions/0024-split-panes.md)) | — |
+| `overlay.rs` | the overlay kit ([0025](../../../knowledge/decisions/0025-overlay-kit.md)): the `Overlay` trait, the `Stack` the app owns (top overlay gets keys, pointer and wheel; `Esc` and a press on the scrim close it; the terminal hears nothing), `Modal` (scrim, glass card, fade), `Text` (UI font loaded while open), `Ink`, key caps, buttons, `Fade` | `chrome`, `paint`, `font`, `palette`, `icons`, `toast`, `xkb::Key` |
+| `field.rs` | a line of text being edited: pure state machine over `xkb::Key` (caret, selection, paste/copy through the app, longest length) and its three looks (`.f-input`, `.ov-search`, `.pal-input-row`) | `overlay`, `icons`, `input::sym` |
+| `list.rs` | filtered, scrolling list model (the palette's: ranking as the reference, matched positions, Up/Down/Page/Home/End/Enter, wheel, hover) and its painting; entries in a text pool, no cache | `overlay`, `icons`, `side::group_color` |
+| `menu.rs` | the context menu, an `Overlay`: items with shortcut, check, dot, danger, disabled, separators; placed at the pointer and clamped | `overlay`, `icons`, `side::group_color` |
+| `toast.rs` | a toast: bottom-centre message with an action, a pure function of the moment (fades), `deadline` is the loop's only timer for it | `overlay` |
+| `icons.rs` | the outline icons of the overlays on the reference's 16-unit grid, drawn as per-pixel coverage | `paint`, `chrome` |
+| `overlay_demo.rs` | the kit's debug screens (`AXON_DEMO_OVERLAY=field\|list\|menu\|toast\|modal`) and the usage example: `Dialog`, `Picker` (palette-shaped), `window_menu` | `overlay`, `field`, `list`, `menu` |
 | `config.rs` | settings file (`config.toml`), own parser, `FontCfg`, env overrides; read at startup and on reload | — |
 | `mouse.rs` | mouse reports for programs (xterm 1000/1002/1003; SGR, UTF-8, classic): pure `encode`, own tests | `xkb` (`Mods`), alacritty (`TermMode`) |
 | `view.rs` | grid -> cells: `View::build(term, focused, &mut impl Backend)`, damage, cursor and selection rows | `cell`, `palette`, alacritty |
 | `session.rs` | `Term` + PTY thread (`spawn`, `resize`), `grid_size` | alacritty |
 | `wl.rs` | own Wayland client: wire protocol, `xdg_toplevel`, `wl_shm` buffers, frame callbacks, `wl_seat` pointer + keyboard, cursor shape, `wl_data_device` clipboard | `rustix` |
-| `wlapp.rs` | the default app on `wl.rs` + `soft.rs` + `session.rs`: windows (`Win`) made of panes (`Pane`: one shell each), keyboard to the focused pane, pointer to the pane under it, selection, clipboard; one blocking `poll` loop | all of the above |
+| `wlapp.rs` | the default app on `wl.rs` + `soft.rs` + `session.rs`: windows (`Win`) made of panes (`Pane`: one shell each), keyboard to the focused pane, pointer to the pane under it, selection, clipboard; one blocking `poll` loop; routes keys, pointer and wheel to `overlay::Stack` first (`overlay_owns`, `overlay_reply`) | all of the above |
 | `xkb.rs` | keyboard layouts: `libxkbcommon` through `dlopen`, keymap text → keysym + text, compose | libc only |
 | `input.rs` | `encode_key(xkb key)` and the winit `encode` → xterm bytes | `xkb`, winit (until stage E), alacritty `TermMode` |
 | `palette.rs` | The `terminal.html` tokens (text, `DIM`, amber `ACCENT`, six hues), the ANSI table, `Color`→`Rgb` resolution, `unit()` | alacritty `vte::ansi` |
