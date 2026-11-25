@@ -56,6 +56,7 @@ Always use `--release`: debug mode is much slower.
 | `Alt+\` / `Alt+-` | Split the focused pane in columns / in rows (mixing the two gives the grid) |
 | `Alt+,` / `Alt+.` | Focus the previous / the next pane (a click on a pane focuses it too) |
 | `Alt+Shift+W` | Close the focused pane (a shell that exits closes its pane; the window closes with its last one); the cross at a pane's corner and the cross of its row in the panel do the same |
+| `Alt+O` | The overview of windows: every window as a card (the last rows of its terminal, status, name, panes, directory) in a section per group; type to filter (name, directory, group or terminal text), arrows or `Tab` to move, `Enter` or a click to go to a window, `Alt+N` for a new one, `Esc` clears the filter and then closes it |
 | `Alt+B` | Show or hide the panel of windows (`[windows] tabs = "left" \| "right" \| "top"`, `side`, `side_width`); the button right of the window buttons does the same |
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copy / paste |
 | `Ctrl+Shift+Q` | Quit |
@@ -206,6 +207,7 @@ axis of a font like `JetBrainsMono[wght].ttf`; the own font reader (task 12) wil
 | `AXON_OPACITY` | `0.93` (`winit`), `0.88` (`wl`) | Opacity of the glass body (if the compositor supports transparency) |
 | `AXON_DECORATIONS` | off | `1` to use the system title bar (`winit` fallback only) |
 | `AXON_BACKEND` | `wl` on Wayland, else `winit` | `wl`: own Wayland client + CPU renderer (~14 MB idle). `winit`: `winit` + `wgpu` (~150 MB idle), also the automatic fallback if `wl` cannot start |
+| `AXON_OVERVIEW` | — | A debugging aid: start with the overview of windows open |
 | `AXON_DEMO_OVERLAY` | — | A debugging aid: start with one of the overlay kit's screens open (`field`, `list`, `menu`, `toast`, `modal`) |
 
 ## Design
@@ -320,11 +322,13 @@ src/
 ├─ toast.rs     the toast
 ├─ icons.rs     the overlays' outline icons
 ├─ overlay_demo.rs  the kit's debug screens (`AXON_DEMO_OVERLAY`)
+├─ overview.rs  the overview of windows (`Alt+O`): cards, sections, filter, keyboard and pointer, an overlay
 ├─ config.rs    the settings file: parser, writer, `axon config`, `axon shell-init`
 ├─ view.rs      grid → cells for any renderer (damage, cursor, selection)
 ├─ session.rs   Term + PTY thread
 ├─ wl.rs        own Wayland client: wire protocol, window, shm buffers
 ├─ wlapp.rs     the default app on wl.rs + soft.rs: keyboard, pointer, clipboard, one poll loop
+│  └─ windows_overview.rs  the app's side of the overview: cards from the windows, the terminals' text for the previews
 ├─ xkb.rs       keyboard layouts through libxkbcommon (dlopen)
 ├─ input.rs     Keys → xterm sequences (pure)
 ├─ mouse.rs     mouse reports for programs (xterm 1000/1002/1003, SGR, UTF-8, classic; pure)

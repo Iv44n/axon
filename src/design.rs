@@ -34,6 +34,7 @@ use crate::{
 };
 
 mod overlay_scenes;
+mod overview_scenes;
 
 /// Window size of every scene, in logical pixels (the frame adds the shadow margin around it).
 const W: u32 = 900;
@@ -710,6 +711,14 @@ fn frames() {
         std::fs::write(dir.join(format!("{}.png", f.name)), png(&f.fb, f.w, f.h)).unwrap();
         list += &format!(
             "    {{ name: {:?}, label: {:?}, group: \"overlays\", w: {}, h: {}, ox: {ox}, oy: {oy}, opacity: {OPACITY} }},\n",
+            f.name, f.label, f.w, f.h
+        );
+    }
+    // The overview of windows (`design/overview_scenes.rs`).
+    for f in overview_scenes::frames() {
+        std::fs::write(dir.join(format!("{}.png", f.name)), png(&f.fb, f.w, f.h)).unwrap();
+        list += &format!(
+            "    {{ name: {:?}, label: {:?}, group: \"overview\", w: {}, h: {}, ox: {ox}, oy: {oy}, opacity: {OPACITY} }},\n",
             f.name, f.label, f.w, f.h
         );
     }

@@ -18,7 +18,7 @@
 // The kit's API is wider than what the app uses yet: the palette, the overview and the dialogs are built on it next (ADR 0025).
 #![allow(dead_code)]
 
-use std::{borrow::Cow, cell::RefCell, time::Instant};
+use std::{any::Any, borrow::Cow, cell::RefCell, time::Instant};
 
 use crate::{
     chrome::{self, TITLE_H},
@@ -276,6 +276,8 @@ pub enum Out {
     Close,
     /// Close this overlay and run the app's command `id` (a palette entry, a menu item, a button).
     Run(u32),
+    /// Run the app's command `id` and keep this overlay open (the overview's "new window": the list goes on).
+    Act(u32),
     /// Wants the clipboard's text: the stack reads it and calls `Overlay::paste`.
     Paste,
     /// Put this text on the clipboard.
@@ -349,6 +351,47 @@ pub trait Overlay {
     fn handles_escape(&self) -> bool {
         false
     }
+
+    /// Paints what only the terminal can give (the overview's preview of a window's last rows) right after `draw`,
+    /// through `grid`, with the same paint.
+    fn draw_grid(&self, _p: &mut Paint, _grid: &mut dyn Grid, _cx: &Cx) {}
+
+    /// The overlay as `Any`, for the app to refresh what it shows while it is open (`Stack::with`): the
+    /// overview lists the windows, which change under it. Most overlays are a snapshot and say `None`.
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+        None
+    }
+}
+
+/// What an overlay needs from the terminal and its grid font, which the kit does not have: the app gives it at
+/// draw time (`Stack::draw_with`), so an overlay never holds a terminal or a font of the grid.
+pub trait Grid {
+    /// Appends to `out` the last `rows` text rows of window `id`'s focused pane (what is on its screen, ending at
+    /// the last row with text or the cursor's, trailing blanks cut), one `\n` between rows. True while a command
+    /// runs in it.
+    fn tail(&mut self, id: u32, rows: usize, out: &mut String) -> bool;
+
+    /// `s` in the grid's font at `scale` of its size, its left edge at `x`, its vertical centre at `cy`, in the
+    /// colour `c`, fully inside `p`.
+    fn text(&mut self, p: &mut Paint, x: i32, cy: i32, s: &str, scale: f32, c: [f32; 3]);
+
+    /// The width of a character and the height of a line at `scale`.
+    fn metrics(&self, scale: f32) -> (i32, i32);
+}
+
+/// No terminal: the previews are left out (the kit's own tests and screens).
+pub struct NoGrid;
+
+impl Grid for NoGrid {
+    fn tail(&mut self, _id: u32, _rows: usize, _out: &mut String) -> bool {
+        false
+    }
+
+    fn text(&mut self, _p: &mut Paint, _x: i32, _cy: i32, _s: &str, _scale: f32, _c: [f32; 3]) {}
+
+    fn metrics(&self, scale: f32) -> (i32, i32) {
+        ((7.0 * scale / 0.75) as i32, (16.0 * scale / 0.75) as i32)
+    }
 }
 
 /// What the app learns from an input: whether the overlays took it, what to repaint and what to run.
@@ -417,6 +460,16 @@ impl Stack {
         self.slots.iter().any(|s| s.tag == tag)
     }
 
+    /// The tag of the overlay on top: the one with the keyboard.
+    pub fn top(&self) -> Option<u32> {
+        self.slots.last().map(|s| s.tag)
+    }
+
+    /// The overlay opened under `tag`, as its own type, for the app to bring up to date what it lists.
+    pub fn with<T: Any>(&mut self, tag: u32) -> Option<&mut T> {
+        self.slots.iter_mut().find(|s| s.tag == tag)?.o.as_any_mut()?.downcast_mut::<T>()
+    }
+
     /// An overlay is open: it has the keyboard and the pointer.
     pub fn is_open(&self) -> bool {
         !self.slots.is_empty()
@@ -455,6 +508,7 @@ impl Stack {
                 self.close(tag);
                 (r.closed, r.ran) = (true, Some(Ran { tag, id }));
             }
+            Out::Act(id) => (r.redraw, r.ran) = (true, Some(Ran { tag, id })),
             Out::Copy(text) => {
                 if let Some(c) = clip {
                     c.set(&text);
@@ -568,7 +622,12 @@ impl Stack {
 
     /// Paints everything open over a finished frame: the overlays bottom to top, then the toast. `(w, h)` is
     /// the framebuffer and `(ox, oy)` where the window starts in it. True while an animation wants another frame.
-    pub fn draw(&mut self, fb: &mut [u32], (w, h): (usize, usize), (ox, oy): (usize, usize), g: Geo, now: Instant) -> bool {
+    pub fn draw(&mut self, fb: &mut [u32], size: (usize, usize), origin: (usize, usize), g: Geo, now: Instant) -> bool {
+        self.draw_with(fb, size, origin, g, now, &mut NoGrid)
+    }
+
+    /// `draw`, with the app's terminal text and grid font for the overlays that show some (`Overlay::draw_grid`).
+    pub fn draw_with(&mut self, fb: &mut [u32], (w, h): (usize, usize), (ox, oy): (usize, usize), g: Geo, now: Instant, grid: &mut dyn Grid) -> bool {
         let Stack { slots, text, toast } = self;
         let Some(font) = text.as_ref() else { return false };
         if fb.len() < w * h {
@@ -580,6 +639,7 @@ impl Stack {
         for s in slots.iter_mut() {
             animating |= s.o.step(now);
             s.o.draw(&mut p, &cx);
+            s.o.draw_grid(&mut p, grid, &cx);
             p.fade = 1.0;
         }
         if let Some(t) = toast.as_ref() {
@@ -1095,6 +1155,90 @@ mod tests {
         assert_eq!(s.button(Click { x: 1.0, y: 1.0, pressed: true, time: 0 }, G), Reply::default());
         assert_eq!(s.scroll(10.0, 1.0, 1.0, G), Reply::default());
         assert!(!s.draw(&mut [], (0, 0), (0, 0), G, Instant::now()));
+    }
+
+    /// An overlay the app can reach by its type, that paints through the app's grid.
+    struct Typed {
+        n: u32,
+    }
+
+    impl Overlay for Typed {
+        fn key(&mut self, _: &Key, _: &Cx) -> Out {
+            Out::None
+        }
+        fn draw(&self, _: &mut Paint, _: &Cx) {}
+        fn draw_grid(&self, p: &mut Paint, grid: &mut dyn Grid, _: &Cx) {
+            let mut rows = String::new();
+            let running = grid.tail(self.n, 3, &mut rows);
+            grid.text(p, 4, 5, &format!("{rows}{running}"), 0.75, [1.0; 3]);
+        }
+        fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+            Some(self)
+        }
+    }
+
+    /// A grid that records what it was asked and says one row of text is running.
+    #[derive(Default)]
+    struct Spy(Vec<String>);
+
+    impl Grid for Spy {
+        fn tail(&mut self, id: u32, rows: usize, out: &mut String) -> bool {
+            self.0.push(format!("tail {id} {rows}"));
+            out.push_str("row");
+            true
+        }
+        fn text(&mut self, _: &mut Paint, x: i32, cy: i32, s: &str, scale: f32, _: [f32; 3]) {
+            self.0.push(format!("text {x},{cy} {s} {scale}"));
+        }
+        fn metrics(&self, _: f32) -> (i32, i32) {
+            (7, 16)
+        }
+    }
+
+    #[test]
+    fn an_act_runs_the_command_and_keeps_the_overlay_open() {
+        let (mut s, _) = open(Out::Act(9), false);
+        let mut clip = Clip(None, vec![]);
+        let r = s.key(&key(0x61), G, &mut clip);
+        assert_eq!(r, Reply { taken: true, redraw: true, ran: Some(Ran { tag: 1, id: 9 }), ..Reply::default() });
+        assert!(s.is_open() && s.has(1), "unlike Run, the overlay stays");
+        let (mut s, _) = open(Out::Run(9), false);
+        let r = s.key(&key(0x61), G, &mut clip);
+        assert!(r.closed && !s.is_open(), "Run closes it");
+    }
+
+    #[test]
+    fn the_app_reaches_an_open_overlay_by_its_tag_and_type_and_the_top_one_is_known() {
+        let mut s = Stack::default();
+        assert_eq!(s.top(), None);
+        s.open(5, Box::new(Typed { n: 1 }));
+        let (log, _) = (Rc::new(RefCell::new(Vec::new())), ());
+        s.open(6, Box::new(Probe { log, on_key: Out::None, card: (0, 0, 1, 1), esc: false }));
+        assert_eq!(s.top(), Some(6));
+        s.with::<Typed>(5).expect("the overlay under tag 5 is a Typed").n = 42;
+        assert_eq!(s.with::<Typed>(5).map(|t| t.n), Some(42));
+        assert!(s.with::<Typed>(6).is_none(), "the probe does not offer itself, and is not a Typed");
+        assert!(s.with::<Typed>(7).is_none(), "nothing under tag 7");
+        assert!(s.with::<Probe>(5).is_none(), "the wrong type");
+        s.close(6);
+        assert_eq!(s.top(), Some(5));
+    }
+
+    #[test]
+    fn the_grid_is_handed_to_each_overlay_after_it_is_drawn() {
+        let mut s = Stack::default();
+        s.open(5, Box::new(Typed { n: 7 }));
+        let mut fb = vec![0u32; 20 * 20];
+        let mut spy = Spy::default();
+        s.draw_with(&mut fb, (20, 20), (0, 0), G, Instant::now(), &mut spy);
+        assert_eq!(spy.0, ["tail 7 3", "text 4,5 rowtrue 0.75"]);
+        // Plain `draw` has no terminal: an overlay that asks gets nothing and draws nothing.
+        s.draw(&mut fb, (20, 20), (0, 0), G, Instant::now());
+        assert_eq!(spy.0.len(), 2);
+        let mut none = NoGrid;
+        let mut rows = String::new();
+        assert!(!none.tail(1, 3, &mut rows) && rows.is_empty());
+        assert!(none.metrics(0.75).0 > 0 && none.metrics(0.75).1 > 0);
     }
 
     #[test]

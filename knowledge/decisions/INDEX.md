@@ -16,6 +16,7 @@ One leaf per decision. Never edited: superseded by a new ADR.
 - [0012 · Black-and-white glass chrome](0012-glass-chrome-black-white.md) — superseded by 0015 (its look); CPU-drawn chrome and round buttons stand.
 - [0013 · Wayland default, xkb via dlopen](0013-wayland-default-xkb-dlopen.md) — accepted 2026-11-23: `wl` is the default backend; `libxkbcommon` loaded at run time; fallback to `winit`.
 - [0014 · Own shadow, design board](0014-client-shadow-design-board.md) — accepted 2026-11-23: shadow in a margin (`set_window_geometry`, input region); visual changes judged on real frames; opacity 0.88.
+- [0028 · The overview of windows](0028-overview.md) — accepted 2026-11-24: `Alt+O`, an overlay over the workspace: a card per window with the terminal's last rows, sections per group, filter, keys; the app refreshes its snapshot every frame; small kit additions (`Out::Act`, `Stack::with`, `overlay::Grid`).
 - [0026 · Docked settings panel](0026-docked-settings-panel.md) — accepted 2026-11-24: settings beside the terminal (non-modal, opposite the windows' panel), applied and saved as you change; supersedes the modal part of 0017.
 - [0025 · The overlay kit](0025-overlay-kit.md) — accepted 2026-11-24: one `overlay::Stack` takes the keyboard and pointer; `Field`, `List`, `Menu`, `Toast` and the modal frame are what palette, overview, dialogs and menus are built from.
 - [0024 · Split panes](0024-split-panes.md) — accepted 2026-11-24: panes per window (`panes.rs` layout, `Slot`s in `soft.rs`), focus ring, dimming, panel rows; a split below 20x5 cells is refused.

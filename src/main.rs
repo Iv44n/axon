@@ -17,6 +17,7 @@ mod menu;
 mod mouse;
 mod overlay;
 mod overlay_demo;
+mod overview;
 mod paint;
 mod panes;
 mod palette;

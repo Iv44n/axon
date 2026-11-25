@@ -27,6 +27,8 @@ use rustix::{
     io::{read, write},
 };
 
+mod windows_overview;
+
 use crate::{
     bar,
     side,
@@ -38,13 +40,15 @@ use crate::{
     context::{self, Context, Probe},
     input, mouse,
     overlay::{self, Click, Geo, Overlay, Ran, Reply, Stack},
-    overlay_demo, palette, panes, session,
+    paint::Paint,
+    overlay_demo, overview, palette, panes, session,
     settings::{self, Effect, Settings},
     soft::{Dock, Slot, Soft, UNFOCUSED},
     view::View,
     wl::{Event, Wl, cursor},
     xkb::{Key, Xkb},
 };
+use windows_overview::AppGrid;
 
 /// How long a redraw may wait for the compositor's frame callback or buffer release before axon
 /// assumes it was lost (suspend and resume, a hidden window) and draws anyway.
@@ -610,6 +614,10 @@ impl App {
         if std::env::var_os("AXON_SETTINGS").is_some() {
             app.toggle_settings();
         }
+        // Another: start with the overview of windows open (screenshots, memory measurements).
+        if std::env::var_os("AXON_OVERVIEW").is_some() {
+            app.toggle_overview();
+        }
         // Another: start with one of the overlay kit's screens open (`field`, `list`, `menu`, `toast`, `modal`).
         if let Ok(kind) = std::env::var("AXON_DEMO_OVERLAY") {
             if !app.demo_overlay(&kind) {
@@ -713,6 +721,10 @@ impl App {
                 self.wins[cur].panes[i].view.invalidate_row(r);
             }
         }
+        // The overview lists the windows as they are now.
+        if self.overlays.has(overview::TAG) {
+            self.sync_overview();
+        }
         let Some(fb) = self.wl.framebuffer(w, h) else {
             self.waiting.get_or_insert_with(Instant::now);
             return;
@@ -768,7 +780,8 @@ impl App {
             }
         }
         self.prefs_dirty = false;
-        animating |= self.overlays.draw(fb, (w, h), (ml, mt), geo, Instant::now());
+        let mut grid = AppGrid { soft: &self.soft, wins: &self.wins, scratch: &mut self.side_scratch };
+        animating |= self.overlays.draw_with(fb, (w, h), (ml, mt), geo, Instant::now(), &mut grid);
         self.wl.present();
         // A fade in progress asks for the next frame itself; at rest nothing does (idle is 0 % CPU).
         self.dirty = animating;
@@ -910,6 +923,15 @@ impl App {
 
     /// Opens a window with a shell of its own and goes to it.
     fn new_win(&mut self) {
+        self.close_overview();
+        let id = self.open_win();
+        if let Some(i) = self.wins.iter().position(|w| w.id == id) {
+            self.switch_to(i);
+        }
+    }
+
+    /// Opens a window with a shell of its own, in none of the groups, and stays where it is. Returns its number.
+    fn open_win(&mut self) -> u64 {
         let n = self.next_win;
         self.next_win += 1;
         let cfg_chips = self.chips_on();
@@ -918,8 +940,8 @@ impl App {
         let pane = Pane::spawn(&self.wake, n, (self.cols, self.rows, self.cw, self.ch), self.cfg.input.cursor, cfg_chips, dir);
         self.wins.push(Win::new(pane, n));
         self.rebuild_side();
-        self.switch_to(self.wins.len() - 1);
         self.sync_flag();
+        n
     }
 
     /// Closes window `i` (its shell is told to end); the last one closing quits.
@@ -1081,10 +1103,15 @@ impl App {
 
     /// A new group, named and coloured for the next in line, around the window on screen.
     fn new_group(&mut self) {
+        self.new_group_for(self.cur);
+    }
+
+    /// A new group around window `wi` (the overview makes one around the card it has selected).
+    fn new_group_for(&mut self, wi: usize) {
         self.groups_made += 1;
         let color = (self.groups.len() % 8) as u8;
         self.groups.push(Group { name: format!("{} {}", tr(Str::GroupName), self.groups_made), color, collapsed: false });
-        self.wins[self.cur].group = Some(self.groups.len() - 1);
+        self.wins[wi].group = Some(self.groups.len() - 1);
         self.prune_groups();
         self.rebuild_side();
     }
@@ -1659,6 +1686,7 @@ impl App {
                 }
                 (Some('w'), _) => self.close_win(self.cur),
                 (Some('b'), _) => self.toggle_side(),
+                (Some('o'), _) => self.toggle_overview(),
                 (Some('g'), _) if m.shift => self.ungroup(),
                 (Some('g'), _) => self.new_group(),
                 (_, 0x5c) => {
@@ -1803,6 +1831,7 @@ impl App {
                 eprintln!("axon: demo overlay ran command {}", ran.id);
                 self.overlays.toast(tr(Str::OvToastClosed), Some(tr(Str::OvUndo)), overlay_demo::CMD_UNDO, Instant::now());
             }
+            overview::TAG => self.overview_ran(ran.id),
             overlay::TOAST => eprintln!("axon: toast action {}", ran.id),
             _ => {}
         }
@@ -1835,6 +1864,10 @@ impl App {
         }
         if !self.overlays.is_open() {
             return false;
+        }
+        // The overview is the workspace's: the panel of windows, the tabs and the title bar beside it stay live.
+        if self.overlays.top() == Some(overview::TAG) {
+            return overlay::inside(self.overview_area(), x, y);
         }
         match chrome::hit(x, y, self.w, self.h, self.ui.maximized, self.ui.side != 0) {
             Hit::Client | Hit::Side | Hit::Prefs | Hit::Settings | Hit::SideBtn => true,
@@ -2081,12 +2114,12 @@ impl App {
             Hit::Edge(edges) => self.wl.begin_resize(edges),
             Hit::Prefs => {}
             Hit::Side => match self.side_hover {
-                Some(side::Part::Row(i)) => self.switch_to(i),
+                Some(side::Part::Row(i)) => self.go_to(i),
                 Some(side::Part::Close(i)) => self.close_win(i),
                 Some(side::Part::New) => self.new_win(),
                 Some(side::Part::Head(g)) => self.fold(g),
                 Some(side::Part::Pane(wi, pi)) => {
-                    self.switch_to(wi);
+                    self.go_to(wi);
                     self.set_focus(pi);
                 }
                 Some(side::Part::ClosePane(wi, pi)) => self.close_pane(wi, pi),

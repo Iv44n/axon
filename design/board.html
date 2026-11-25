@@ -152,6 +152,9 @@
   <section><h2>Prompt chips</h2>
     <p><code>[input] mode = "chips"</code> draws a row of context chips on the line above the prompt you are typing at: time, user, conda or venv environment, pyenv, user@host, directory, git branch, git changes (files, lines added, lines removed) and the Kubernetes context. The shell reserves that line (a concealed space in its first column) and axon draws the pills over it, so they sit exactly where you type, move with the prompt and disappear while a program runs. They use the grid's own font, so they cost no memory. The chips listed in <code>chips = [...]</code> appear in that order; one with nothing to say is skipped, one that does not fit is shortened with an ellipsis and then dropped. The pills are two pixels shorter than the row so they never touch the lines around them. The colours are the one splash of colour in the chrome, and opt-in.</p>
     <div class="grid" data-group="prompt chips"></div></section>
+  <section><h2>Overview of windows</h2>
+    <p><code>Alt+O</code>: every window as a card over the workspace (the panel of windows beside it stays live): the last rows of its terminal, its status, name, panes, number and directory, in a tinted section per group and one for the windows in none. Type to filter, arrows or <code>Tab</code> to move, <code>Enter</code> or a click to go to a window. Painted by the same <code>Stack</code> the app uses, over made-up terminals; English and Spanish, the panel hidden, the settings docked.</p>
+    <div class="grid wide" data-group="overview"></div></section>
   <section><h2>Font</h2>
     <p>What <code>[font]</code> in <code>~/.config/axon/config.toml</code> changes: <code>weight</code>, <code>letter_spacing</code> and <code>line_height</code>. The default is weight 400, spacing 0 and height 1.0 (the first frame above). Weight is synthesized until the own font reader can read the variable axis.</p>
     <div class="grid" data-group="font"></div></section>

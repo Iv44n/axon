@@ -155,6 +155,18 @@ strings! {
     OvActNewGroup: "New group…", "Nuevo grupo…";
     OvActSplit: "Split into columns", "Dividir en columnas";
     OvActOverview: "Overview of windows", "Vista general de ventanas";
+    OvWindow1: "window", "ventana";
+    OvWindowsN: "windows", "ventanas";
+    OvGroup1: "group", "grupo";
+    OvGroupsN: "groups", "grupos";
+    OvBtnNewGroup: "New group", "Nuevo grupo";
+    OvBtnAdd: "Window", "Ventana";
+    OvLoose: "No group", "Sin grupo";
+    OvNoneBefore: "No window matches “", "Ninguna ventana coincide con «";
+    OvNoneAfter: "”.", "».";
+    OvTileHint: "around the selected window", "con la ventana seleccionada";
+    OvToastNewWindow: "New window created", "Ventana nueva creada";
+    OvToastAdded: "Window added to the group", "Ventana añadida al grupo";
     OvActPanel: "Show or hide the windows panel", "Mostrar u ocultar el panel de ventanas";
     OvActClose: "Close the window", "Cerrar la ventana";
     OvThreeWindows: "3 windows", "3 ventanas";
