@@ -71,7 +71,7 @@ const KS_KP_0: u32 = 0xffb0;
 
 fn cursor_for(hit: Hit) -> u32 {
     match hit {
-        Hit::Close | Hit::Minimize | Hit::Maximize | Hit::Settings => cursor::POINTER,
+        Hit::Close | Hit::Minimize | Hit::Maximize | Hit::Settings | Hit::SideBtn => cursor::POINTER,
         Hit::Edge(e) => match e {
             EDGE_TOP => cursor::N_RESIZE,
             EDGE_BOTTOM => cursor::S_RESIZE,
@@ -236,9 +236,22 @@ fn side_box(soft: &Soft) -> Option<(i32, i32, i32, i32)> {
     Some((x0 as i32 - ox as i32, y0 as i32 - oy as i32, (x1 - x0) as i32, (y1 - y0) as i32))
 }
 
-/// The title of a window: what its program set, else the name of its directory.
+/// Whether a program set a title of its own: the one a shell sets by default says `user@host: path`, which
+/// the window's directory says better.
+fn own_title(t: &str) -> bool {
+    !t.is_empty() && !t.split_once(':').is_some_and(|(host, _)| host.contains('@') && !host.contains(' '))
+}
+
+/// The directory of a window's shell, in short form (`~/lab/axon`).
+fn win_place(w: &Win) -> String {
+    let cwd = std::fs::read_link(format!("/proc/{}/cwd", w.shell)).unwrap_or_default();
+    let home = std::env::var("HOME").ok();
+    context::tidy_dir(&cwd.to_string_lossy(), home.as_deref())
+}
+
+/// The name of a window: what its program set, else the name of its directory.
 fn win_title(w: &Win) -> String {
-    if !w.title.is_empty() {
+    if own_title(&w.title) {
         return w.title.clone();
     }
     let cwd = std::fs::read_link(format!("/proc/{}/cwd", w.shell)).unwrap_or_default();
@@ -248,12 +261,29 @@ fn win_title(w: &Win) -> String {
     cwd.file_name().map_or_else(|| "/".into(), |n| n.to_string_lossy().into_owned())
 }
 
+/// The title bar between the window buttons and the settings button, where the tabs go (window pixels).
+fn tabs_span(w: u32) -> (i32, i32) {
+    (chrome::TITLE_CLEAR as i32 - 8, w as i32 - 50)
+}
+
+/// The list of windows as the panel and the tabs show it.
+fn items(wins: &[Win], cur: usize) -> Vec<side::Item> {
+    wins.iter().enumerate().map(|(i, w)| side::Item { title: win_title(w), selected: i == cur, unread: w.unread }).collect()
+}
+
 /// Paints the panel of windows over its cleared box.
 fn paint_side(soft: &Soft, fb: &mut [u32], wins: &[Win], cur: usize, right: bool, hover: Option<side::Part>, scratch: &mut Vec<u8>) {
     let (Some(rect), Some(b)) = (soft.side_rect(), side_box(soft)) else { return };
     soft.clear_rect(fb, rect);
-    let items: Vec<side::Item> = wins.iter().enumerate().map(|(i, w)| side::Item { title: win_title(w), selected: i == cur, unread: w.unread }).collect();
-    side::paint(soft, fb, b, !right, &tr(Str::Windows), &items, hover, scratch);
+    side::paint(soft, fb, b, !right, &tr(Str::Windows), &items(wins, cur), hover, scratch);
+}
+
+/// Paints the tabs in the title bar, over the bar cleared between the buttons.
+fn paint_tabs(soft: &Soft, fb: &mut [u32], wins: &[Win], cur: usize, w: u32, hover: Option<side::Part>, scratch: &mut Vec<u8>) {
+    let (ox, oy) = soft.origin();
+    let (x0, x1) = tabs_span(w);
+    soft.clear_rect(fb, (ox + x0 as usize, oy, ox + x1 as usize, oy + chrome::TITLE_H));
+    side::paint_top(soft, fb, (x0, x1), &items(wins, cur), hover, scratch);
 }
 
 /// Runs the app. Returns false, with nothing shown, if this backend cannot start here (no Wayland
@@ -311,7 +341,7 @@ impl App {
         let opacity = cfg.opacity.unwrap_or(chrome::OPACITY);
         let mut soft = Soft::new(&cfg.font, opacity);
         soft.cursor_color = pack(palette::CURSOR.r, palette::CURSOR.g, palette::CURSOR.b, 255);
-        soft.set_title("axon");
+        soft.set_title("axon", "");
         let (cw, ch) = soft.cell();
 
         let mut wl = Wl::connect("axon", "axon")?;
@@ -348,6 +378,11 @@ impl App {
         let wake = Arc::new(eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)?);
         let side = if cfg.windows.side && cfg.windows.tabs != config::TabsPos::Top { cfg.windows.side_w } else { 0 };
         soft.set_inset(if cfg.windows.tabs == config::TabsPos::Right { 0 } else { side }, if cfg.windows.tabs == config::TabsPos::Right { side } else { 0 });
+        ui.side = match (cfg.windows.tabs, cfg.windows.side) {
+            (config::TabsPos::Top, _) => 0,
+            (_, true) => 2,
+            (_, false) => 1,
+        };
         let (cols, rows) = session::grid_size(w.saturating_sub(side), h, cw, ch, soft.pad, soft.top, soft.bottom);
         if let Some(dir) = context::report_path(std::process::id(), 0).as_deref().and_then(std::path::Path::parent) {
             context::remove_stale_reports(dir);
@@ -489,9 +524,14 @@ impl App {
         win.chips.frame(chips_on, win.ctx_dirty, &win.history, chips, &mut t, &mut win.view, &mut self.soft, fb, (w, h), self.ui.focused);
         drop(t);
         win.ctx_dirty = false;
-        if self.soft.last_full || self.side_dirty {
-            let right = self.cfg.windows.tabs == config::TabsPos::Right;
-            paint_side(&self.soft, fb, &self.wins, self.cur, right, self.side_hover, &mut self.side_scratch);
+        let top = self.cfg.windows.tabs == config::TabsPos::Top;
+        if self.soft.last_full || self.side_dirty || (self.soft.title_painted && top) {
+            if top {
+                paint_tabs(&self.soft, fb, &self.wins, self.cur, self.w, self.side_hover, &mut self.side_scratch);
+            } else {
+                let right = self.cfg.windows.tabs == config::TabsPos::Right;
+                paint_side(&self.soft, fb, &self.wins, self.cur, right, self.side_hover, &mut self.side_scratch);
+            }
             self.side_dirty = false;
         }
         let mut animating = false;
@@ -570,12 +610,12 @@ impl App {
         }
     }
 
-    /// The window `i` got a new title: the compositor's title is the one on screen.
+    /// The window `i` got a new title or moved: the title bar shows the current one.
     fn titled(&mut self, i: usize) {
         if i == self.cur {
-            let t = if self.wins[i].title.is_empty() { "axon" } else { self.wins[i].title.as_str() };
-            self.wl.set_title(t);
-            self.soft.set_title(t);
+            let (name, place) = (win_title(&self.wins[i]), win_place(&self.wins[i]));
+            self.wl.set_title(&format!("{name} {place}"));
+            self.soft.set_title(&name, &place);
         }
         self.side_dirty = true;
         self.dirty = true;
@@ -594,18 +634,35 @@ impl App {
         let w = self.side_w();
         let (l, r) = if self.cfg.windows.tabs == config::TabsPos::Right { (0, w) } else { (w, 0) };
         self.soft.set_inset(l, r);
+        self.soft.set_tabs_top(self.cfg.windows.tabs == config::TabsPos::Top);
+        self.ui.side = match (self.cfg.windows.tabs, self.cfg.windows.side) {
+            (config::TabsPos::Top, _) => 0,
+            (_, true) => 2,
+            (_, false) => 1,
+        };
     }
 
     fn side_box(&self) -> Option<(i32, i32, i32, i32)> {
         side_box(&self.soft)
     }
 
+    fn tabs_on_top(&self) -> bool {
+        self.cfg.windows.tabs == config::TabsPos::Top
+    }
+
     fn side_part_at(&self, x: f32, y: f32) -> Option<side::Part> {
+        if self.tabs_on_top() {
+            let (x0, x1) = tabs_span(self.w);
+            if y < 0.0 || y >= chrome::TITLE_H as f32 - 1.0 {
+                return None;
+            }
+            return side::Layout::Top { x0, x1, n: self.wins.len() }.hit(self.wins.len(), x, y);
+        }
         let (bx, by, bw, bh) = self.side_box()?;
         if x < bx as f32 || x >= (bx + bw) as f32 || y < by as f32 || y >= (by + bh) as f32 {
             return None;
         }
-        side::hit(bx, by, bw, self.wins.len(), x, y)
+        side::Layout::Side { x0: bx, y0: by, w: bw }.hit(self.wins.len(), x, y)
     }
 
     fn toggle_side(&mut self) {
@@ -803,10 +860,14 @@ impl App {
         let done = win.refresh.done.lock().unwrap().take();
         if let Some(c) = done {
             if c != win.ctx {
+                let moved = c.cwd != win.ctx.cwd;
                 win.ctx = c;
                 win.history.set_ctx(&win.ctx);
                 win.ctx_dirty = true;
                 self.dirty = true;
+                if moved {
+                    self.titled(self.cur);
+                }
             }
         }
         if !self.chips_on() {
@@ -1229,9 +1290,10 @@ impl App {
             self.dirty = true;
             return;
         }
-        let mut now = chrome::hit(x, y, self.w, self.h, self.ui.maximized);
+        let mut now = chrome::hit(x, y, self.w, self.h, self.ui.maximized, self.ui.side != 0);
         let part = self.side_part_at(x, y);
-        if now == Hit::Client && self.side_box().is_some_and(|(bx, by, bw, bh)| x >= bx as f32 && x < (bx + bw) as f32 && y >= by as f32 && y < (by + bh) as f32) {
+        let in_panel = self.side_box().is_some_and(|(bx, by, bw, bh)| x >= bx as f32 && x < (bx + bw) as f32 && y >= by as f32 && y < (by + bh) as f32);
+        if (now == Hit::Client && in_panel) || (now == Hit::Title && part.is_some()) {
             now = Hit::Side;
         }
         if part != self.side_hover {
@@ -1261,13 +1323,14 @@ impl App {
                     Hit::Minimize => self.wl.minimize(),
                     Hit::Maximize => self.wl.toggle_maximized(),
                     Hit::Settings => self.toggle_settings(),
+                    Hit::SideBtn => self.toggle_side(),
                     _ => {}
                 }
             }
             return;
         }
         match self.hover {
-            Hit::Close | Hit::Minimize | Hit::Maximize | Hit::Settings => {
+            Hit::Close | Hit::Minimize | Hit::Maximize | Hit::Settings | Hit::SideBtn => {
                 self.ui.down = true;
                 self.dirty = true;
             }

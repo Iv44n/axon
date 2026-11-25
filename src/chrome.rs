@@ -43,7 +43,7 @@ pub const STATUS_H: usize = 28;
 /// Pixels from an edge beyond which the background no longer varies along a row.
 pub const REACH: usize = 32;
 /// Left edge of the area the title text must stay clear of; the right side mirrors it.
-pub const TITLE_CLEAR: usize = 90;
+pub const TITLE_CLEAR: usize = 118;
 
 // Pixels are sampled at their centre (`x + 0.5`), so the button centres sit on `n + 0.5`: a 13 px
 // disc then ends exactly on pixel borders and a 1 px stroke through the centre fills one row.
@@ -54,6 +54,8 @@ const BTN_CY: f32 = 21.0;
 /// The settings button is a 28 px square whose centre is this far from the right edge of the window.
 const GEAR_FROM_RIGHT: f32 = 28.0;
 const GEAR_HALF: f32 = 14.0;
+/// The button that shows and hides the panel of windows: a 28 px square right of the window buttons.
+const SIDE_CX: f32 = 90.0;
 /// Resting grey of the window buttons and the colours they take under the pointer (`#3a3a3e`,
 /// close `#ff5f57`, minimize `#febc2e`, maximize `#28c840`).
 const BTN_REST: [f32; 3] = [0.227, 0.227, 0.243];
@@ -83,6 +85,8 @@ pub enum Hit {
     Maximize,
     /// The gear at the right end of the title bar: the settings screen.
     Settings,
+    /// The button right of the window buttons: shows or hides the panel of windows.
+    SideBtn,
     Title,
     /// The panel of windows (the app finds out what in it; `side.rs`).
     Side,
@@ -91,13 +95,14 @@ pub enum Hit {
 }
 
 impl Hit {
-    /// 1..=3 for the window buttons, 4 for the gear, 0 for everything else.
+    /// 1..=3 for the window buttons, 4 for the gear, 5 for the panel button, 0 for everything else.
     pub fn button(self) -> u8 {
         match self {
             Hit::Close => 1,
             Hit::Minimize => 2,
             Hit::Maximize => 3,
             Hit::Settings => 4,
+            Hit::SideBtn => 5,
             _ => 0,
         }
     }
@@ -115,10 +120,12 @@ pub struct Ui {
     pub maximized: bool,
     /// The status bar is shown: its hairline and its faint tint belong to the frame.
     pub status: bool,
+    /// The panel button: 0 absent (the windows are tabs at the top), 1 the panel is hidden, 2 it is shown.
+    pub side: u8,
 }
 
 impl Ui {
-    pub const IDLE: Ui = Ui { hover: 0, down: false, focused: true, maximized: false, status: true };
+    pub const IDLE: Ui = Ui { hover: 0, down: false, focused: true, maximized: false, status: true, side: 1 };
 }
 
 fn button_center(i: u8) -> (f32, f32) {
@@ -131,7 +138,8 @@ pub fn margins(maximized: bool) -> (usize, usize, usize) {
 }
 
 /// What is at `(x, y)` in a `w` x `h` window, in window pixels (negative over the shadow margin).
-pub fn hit(x: f32, y: f32, w: u32, h: u32, maximized: bool) -> Hit {
+/// The panel button counts when it is there (`Ui::side != 0`: `side_btn`).
+pub fn hit(x: f32, y: f32, w: u32, h: u32, maximized: bool, side_btn: bool) -> Hit {
     let (w, h) = (w as f32, h as f32);
     if !maximized {
         let mut edges = 0;
@@ -172,6 +180,9 @@ pub fn hit(x: f32, y: f32, w: u32, h: u32, maximized: bool) -> Hit {
         if (x - cx).hypot(y - cy) <= BTN_R + 3.0 {
             return hit;
         }
+    }
+    if side_btn && (x - SIDE_CX).abs() <= GEAR_HALF && (y - BTN_CY).abs() <= GEAR_HALF {
+        return Hit::SideBtn;
     }
     if (x - (w - GEAR_FROM_RIGHT)).abs() <= GEAR_HALF && (y - BTN_CY).abs() <= GEAR_HALF {
         return Hit::Settings;
@@ -304,6 +315,34 @@ fn gear_button(base: P, px: f32, py: f32, wf: f32, ui: &Ui) -> P {
     tint(colour, a * sliders(dx, dy)).over(p)
 }
 
+/// Coverage of the panel icon (a rounded frame with a vertical divider, on a 16 px grid) at offset `(dx, dy)`
+/// from its centre.
+fn sidebar(dx: f32, dy: f32) -> f32 {
+    let (x, y) = (dx + 8.0, dy + 8.0);
+    let frame = (0.75 + 0.5 - rounded_rect(x - 2.5, y - 3.0, 11.0, 10.0, 2.0).abs()).clamp(0.0, 1.0);
+    frame.max((0.75 + 0.5 - seg(x, y, (6.5, 3.0), (6.5, 13.0))).clamp(0.0, 1.0))
+}
+
+/// The panel button over `base`: dim, and lit on a rounded highlight under the pointer and while the panel is shown.
+fn side_button(base: P, px: f32, py: f32, ui: &Ui) -> P {
+    let (dx, dy) = (px - SIDE_CX, py - BTN_CY);
+    if ui.side == 0 || dx.abs() > GEAR_HALF + 1.0 || dy.abs() > GEAR_HALF + 1.0 {
+        return base;
+    }
+    let (hovered, on) = (ui.hover == 5, ui.side == 2);
+    let mut p = base;
+    if hovered || on {
+        let d = rounded_rect(dx + GEAR_HALF, dy + GEAR_HALF, 2.0 * GEAR_HALF, 2.0 * GEAR_HALF, 8.0);
+        p = P::white(if hovered && ui.down { 0.12 } else { 0.07 } * (0.5 - d).clamp(0.0, 1.0)).over(p);
+    }
+    let (colour, a) = match (hovered || on, ui.focused) {
+        (true, _) => (ICON_FG, 1.0),
+        (false, true) => (ICON_DIM, 1.0),
+        (false, false) => (ICON_DIM, 0.55),
+    };
+    tint(colour, a * sidebar(dx, dy)).over(p)
+}
+
 /// Signed distance from `(px, py)` to a `w` x `h` rectangle at the origin with corner radius `r`:
 /// negative inside.
 pub fn rounded_rect(px: f32, py: f32, w: f32, h: f32, r: f32) -> f32 {
@@ -386,6 +425,7 @@ pub fn pixel(x: usize, y: usize, w: usize, h: usize, opacity: f32, ui: &Ui) -> u
     }
     p = buttons(p, px, py, ui);
     p = gear_button(p, px, py, wf, ui);
+    p = side_button(p, px, py, ui);
 
     // The window over its own shadow (only its anti-aliased edge lets any through).
     let p = p.scale(cov);

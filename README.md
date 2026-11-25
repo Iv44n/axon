@@ -51,7 +51,7 @@ Always use `--release`: debug mode is much slower.
 | `Ctrl+,` | Open or close the settings screen (also the sliders icon in the title bar) |
 | `Alt+N` / `Alt+W` | New window (a shell of its own) / close the window |
 | `Alt+1…9`, `Alt+[` / `Alt+]` | Go to window *n* / the previous / the next one |
-| `Alt+B` | Show or hide the panel of windows (`[windows] tabs = "left" \| "right"`, `side`, `side_width`) |
+| `Alt+B` | Show or hide the panel of windows (`[windows] tabs = "left" \| "right" \| "top"`, `side`, `side_width`); the button right of the window buttons does the same |
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copy / paste |
 | `Ctrl+Shift+Q` | Quit |
 | `Ctrl` + `+` / `-` / `0` | Increase / decrease / reset font size |
@@ -221,7 +221,7 @@ Last measured: 2026-11-24, on top of `02c3490` plus mouse reporting, the config 
 
 | Binary | Cold release build |
 |---|---|
-| 7.4 MiB (7,730,960 bytes) | 96 s |
+| 7.4 MiB (7,733,936 bytes) | 96 s |
 
 **Idle memory and CPU** (`AXON_BACKEND` selects the backend; `wl` is the own Wayland client with the CPU renderer and the
 default on Wayland, `winit` is the `winit` + `wgpu` fallback)
@@ -243,8 +243,10 @@ the target: the Vulkan loader and the drivers map ~94 MB.
 
 | Backend | Time | RSS afterwards |
 |---|---|---|
-| `wl` | 1.64 s | 37 MB |
-| `winit` | 1.31 s | 178 MB |
+| `wl` | 1.64 s* | 37 MB |
+| `winit` | 1.28 s* | 179 MB |
+
+\* Quiet machine, before the title bar work. The title bar build measured 1.95-2.08 s (`wl`) and 1.57-1.61 s (`winit`) while a browser held the load average at 3-4: `winit`, which runs none of this code, slowed down as much, so it is the machine. Re-measure on an idle machine.
 
 Not measured yet: startup time, input latency, and a comparison with Alacritty, Ghostty and foot (not installed here).
 
@@ -252,6 +254,7 @@ Not measured yet: startup time, input latency, and a comparison with Alacritty, 
 
 | Date | Change | Binary | Idle RSS `winit` | Idle RSS `wl` |
 |---|---|---|---|---|
+| 2026-11-24 | Title bar after the reference: panel button, name and place as the title, windows as tabs at the top (`tabs = "top"`) | 7,733,936 B | 149 MB | 15 MB |
 | 2026-11-24 | Windows and the side panel (`Win` per shell, `side.rs`, `[windows]`, `Alt+N/W/1-9/[/]/B`, ADR 0023); one window idle 15 MB, three windows ~18 MB | 7,730,960 B | 150 MB | 15 MB |
 | 2026-11-24 | The changes chip comes from the shell's hook (`git diff` with the repository's hooks and filters off, `timeout 0.5`), axon no longer runs git: `safe.directory` works, the 3 s timer and the git thread are gone | 7,694,984 B | 150 MB | 15 MB |
 | 2026-11-24 | Interface in English and Spanish (`i18n.rs`, `[ui] language`, a Language row in the settings) | 7,694,728 B | 150 MB | 15 MB |

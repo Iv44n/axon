@@ -36,8 +36,13 @@ pub struct Soft {
     inset: (u32, u32),
     /// The last frame repainted everything: whatever is drawn beside the grid has to be drawn again.
     pub last_full: bool,
+    /// The last frame repainted the title bar: the tabs drawn in it have to be drawn again.
+    pub title_painted: bool,
+    /// The windows are tabs in the title bar, which then has no title text.
+    tabs_top: bool,
     ui: Ui,
     title: String,
+    place: String,
     /// What the status bar says: the shell, the git branch (may be empty) and the grid size.
     status: Status,
     /// The title bar no longer shows `ui` and `title`.
@@ -74,8 +79,11 @@ impl Soft {
             bottom: 0,
             inset: (0, 0),
             last_full: true,
+            title_painted: true,
+            tabs_top: false,
             ui: Ui::IDLE,
             title: String::new(),
+            place: String::new(),
             status: Status::default(),
             chrome_dirty: true,
             status_dirty: true,
@@ -98,6 +106,14 @@ impl Soft {
         if (left, right) != self.inset {
             self.inset = (left, right);
             self.stale = true;
+        }
+    }
+
+    /// Whether the title bar holds the tabs of the windows instead of the window's title.
+    pub fn set_tabs_top(&mut self, on: bool) {
+        if on != self.tabs_top {
+            self.tabs_top = on;
+            self.chrome_dirty = true;
         }
     }
 
@@ -210,10 +226,13 @@ impl Soft {
         }
     }
 
-    pub fn set_title(&mut self, title: &str) {
-        if title != self.title {
+    /// The title bar's text: the window's name (bold) and, after it, dim, where it is (its directory).
+    pub fn set_title(&mut self, name: &str, place: &str) {
+        if (name, place) != (self.title.as_str(), self.place.as_str()) {
             self.title.clear();
-            self.title.push_str(title);
+            self.title.push_str(name);
+            self.place.clear();
+            self.place.push_str(place);
             self.chrome_dirty = true;
         }
     }
@@ -259,6 +278,7 @@ impl Soft {
                 self.paint_status(fb);
             }
         }
+        self.title_painted = full || self.chrome_dirty;
         self.chrome_dirty = false;
         self.status_dirty = false;
         self.last_full = full;
@@ -427,21 +447,25 @@ impl Soft {
     /// A `user@host:` prefix is dim, the rest the foreground colour.
     fn paint_title(&mut self, fb: &mut [u32]) {
         let (cw, ch, w) = (self.fonts.cell_w as usize, self.fonts.cell_h as usize, self.w);
+        if self.tabs_top {
+            return;
+        }
         let (ox, oy) = self.origin();
         let ww = w - 2 * ox;
         let room = ww.saturating_sub(2 * TITLE_CLEAR) / cw;
-        let title = std::mem::take(&mut self.title);
-        let count = title.chars().count().min(room);
+        // The name in bold, a gap, the place dim; what does not fit is cut from the end with an ellipsis.
+        let (name, place) = (std::mem::take(&mut self.title), std::mem::take(&mut self.place));
+        let all: Vec<(char, bool)> = name.chars().map(|c| (c, true)).chain(std::iter::once((' ', false)).filter(|_| !place.is_empty() && !name.is_empty())).chain(place.chars().map(|c| (c, false))).collect();
+        let count = all.len().min(room);
         // The title bar is TITLE_H rows, the last of them the hairline.
         let y0 = oy + (TITLE_H - 1 - ch) / 2;
         let x0 = ox + (ww - count * cw) / 2;
         let strength = if self.ui.focused { 255 } else { 140 };
-        let host_end = title.find(':').filter(|&i| title[..i].contains('@')).map_or(0, |i| title[..=i].chars().count());
         let len = cw * ch * 3;
-        for (n, c) in title.chars().take(count).enumerate() {
-            let c = if n + 1 == count && title.chars().count() > count { '\u{2026}' } else { c };
-            let tile = self.glyph(c, false, false) as usize;
-            let rgb = if n < host_end { palette::DIM } else { palette::FG };
+        for (n, &(c, bold)) in all.iter().take(count).enumerate() {
+            let c = if n + 1 == count && all.len() > count { '\u{2026}' } else { c };
+            let tile = self.glyph(c, bold, false) as usize;
+            let rgb = if bold { palette::FG } else { palette::DIM };
             let fg = [rgb.r as u32, rgb.g as u32, rgb.b as u32, 255];
             for y in 0..ch {
                 for x in 0..cw {
@@ -454,7 +478,7 @@ impl Soft {
                 }
             }
         }
-        self.title = title;
+        (self.title, self.place) = (name, place);
     }
 
     /// The status bar: shell, encoding and branch on the left; key hints and the grid size on the

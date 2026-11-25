@@ -22,7 +22,7 @@ use alacritty_terminal::{
 use crate::{
     bar,
     chrome::{self, Ui},
-    config::{Chip, FontCfg, Smoothing},
+    config::{Chip, FontCfg, Smoothing, TabsPos},
     context::Context,
     history::History,
     i18n::{self, Lang},
@@ -115,8 +115,8 @@ struct Scene {
     /// The prompt chips: what they say, and which are listed. The last prompt of `input` is marked
     /// the way the shell's hook marks it (`prompt`).
     bar: Option<(Context, Vec<Chip>)>,
-    /// The panel of windows: on the right, and what the pointer is over. The windows are made up.
-    side: Option<(bool, Option<crate::side::Part>)>,
+    /// The list of windows: where it is, and what the pointer is over. The windows are made up.
+    side: Option<(crate::config::TabsPos, Option<crate::side::Part>)>,
 }
 
 /// What the bar says in the board's scenes: made-up values, the same on every machine.
@@ -138,7 +138,8 @@ fn sample_context() -> Context {
     c
 }
 
-const TITLE: &str = "ivan@axon: ~/lab/apps/axon";
+/// The window title: the name (bold) and the place (dim), split at `|`.
+const TITLE: &str = "arcton|~/lab/apps/arcton";
 
 fn scenes() -> Vec<Scene> {
     let base = |name, label, group, ui| Scene {
@@ -171,7 +172,7 @@ fn scenes() -> Vec<Scene> {
         base("pressed", "Maximize held down", "states", Ui { hover: 3, down: true, ..Ui::IDLE }),
         base("unfocused", "Unfocused", "states", Ui { focused: false, ..Ui::IDLE }),
         base("maximized", "Maximized or tiled (square, no shadow)", "states", Ui { maximized: true, ..Ui::IDLE }),
-        Scene { title: "~: palette", input: COLORS, select: Some((10, 13)), ..base("colors", "Palette, attributes and selection", "colour", Ui::IDLE) },
+        Scene { title: "colores|~", input: COLORS, select: Some((10, 13)), ..base("colors", "Palette, attributes and selection", "colour", Ui::IDLE) },
         Scene { opacity: 0.80, ..base("opacity-80", "Opacity 0.80", "opacity", Ui::IDLE) },
         Scene { opacity: 0.88, ..base("opacity-88", "Opacity 0.88 (default)", "opacity", Ui::IDLE) },
         Scene { opacity: 0.94, ..base("opacity-94", "Opacity 0.94", "opacity", Ui::IDLE) },
@@ -218,9 +219,12 @@ fn scenes() -> Vec<Scene> {
             hold: Some((Chip::Branch, (330, 190))),
             ..base("settings-chip-drag", "Input page: a chip held mid-drag", "settings", Ui::IDLE)
         },
-        Scene { side: Some((false, None)), ..base("side", "Panel of windows at the left (Alt+B hides it)", "windows", Ui::IDLE) },
-        Scene { side: Some((false, Some(crate::side::Part::Close(2)))), bar: bar(&[Chip::Time, Chip::Dir, Chip::Branch, Chip::Changes]), input: hooked, ..base("side-hover", "Pointer over a row's cross, chips on", "windows", Ui::IDLE) },
-        Scene { side: Some((true, Some(crate::side::Part::New))), ..base("side-right", "Panel at the right, pointer over the +", "windows", Ui::IDLE) },
+        Scene { side: Some((TabsPos::Left, None)), ..base("side", "Panel of windows at the left (Alt+B hides it)", "windows", Ui { side: 2, ..Ui::IDLE }) },
+        Scene { side: Some((TabsPos::Left, Some(crate::side::Part::Close(2)))), bar: bar(&[Chip::Time, Chip::Dir, Chip::Branch, Chip::Changes]), input: hooked, ..base("side-hover", "Pointer over a row's cross, chips on", "windows", Ui { side: 2, ..Ui::IDLE }) },
+        Scene { side: Some((TabsPos::Right, Some(crate::side::Part::New))), ..base("side-right", "Panel at the right, pointer over the +", "windows", Ui { side: 2, ..Ui::IDLE }) },
+        Scene { side: Some((TabsPos::Top, Some(crate::side::Part::Row(1)))), ..base("tabs-top", "Windows as tabs in the title bar, pointer over one", "windows", Ui { side: 0, ..Ui::IDLE }) },
+        Scene { side: Some((TabsPos::Top, Some(crate::side::Part::Close(2)))), bar: bar(&[Chip::Time, Chip::Dir, Chip::Branch]), input: hooked, ..base("tabs-top-close", "Tabs, pointer over a cross, chips on", "windows", Ui { side: 0, ..Ui::IDLE }) },
+        base("side-btn-hover", "Pointer over the panel button, panel hidden", "windows", Ui { side: 1, hover: 5, ..Ui::IDLE }),
         Scene { font: font(300, 0.0, 1.0), ..base("font-light", "Weight 300 (light)", "font", Ui::IDLE) },
         Scene { font: font(500, 0.0, 1.0), ..base("font-medium", "Weight 500 (medium)", "font", Ui::IDLE) },
         Scene { font: font(400, 1.0, 1.0), ..base("font-spaced", "Letter spacing +1 px", "font", Ui::IDLE) },
@@ -233,12 +237,13 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
     i18n::set(s.lang);
     let mut soft = Soft::new(&s.font, s.opacity);
     soft.cursor_color = crate::cell::pack(palette::CURSOR.r, palette::CURSOR.g, palette::CURSOR.b, 255);
-    soft.set_title(s.title);
+    soft.set_title(s.title.split_once('|').map_or(s.title, |t| t.0), s.title.split_once('|').map_or("", |t| t.1));
     soft.set_ui(s.ui);
     let (cw, ch) = soft.cell();
-    let side_w = if s.side.is_some() { 220 } else { 0 };
-    if let Some((right, _)) = s.side {
-        soft.set_inset(if right { 0 } else { side_w }, if right { side_w } else { 0 });
+    let side_w = if matches!(s.side, Some((TabsPos::Left | TabsPos::Right, _))) { 220 } else { 0 };
+    if let Some((pos, _)) = s.side {
+        soft.set_inset(if pos == TabsPos::Right { 0 } else { side_w }, if pos == TabsPos::Right { side_w } else { 0 });
+        soft.set_tabs_top(pos == TabsPos::Top);
     }
     let (cols, rows) = session::grid_size(W - side_w, H, cw, ch, soft.pad, soft.top, soft.bottom);
     let mut term = Term::new(Config::default(), &session::Size { cols, rows }, VoidListener);
@@ -255,13 +260,19 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
     soft.set_status("zsh", "main", cols, rows);
     let (ctx, chips) = s.bar.clone().unwrap_or_default();
     bar::Chips::default().frame(s.bar.is_some(), true, &demo_history(&ctx), &chips, &mut term, &mut View::new(), &mut soft, &mut fb, (w, h), s.ui.focused);
-    if let (Some((right, hover)), Some(rect)) = (s.side, soft.side_rect()) {
-        let (ox, oy) = soft.origin();
-        let b = ((rect.0 - ox) as i32, (rect.1 - oy) as i32, (rect.2 - rect.0) as i32, (rect.3 - rect.1) as i32);
+    if let Some((pos, hover)) = s.side {
         let item = |title: &str, selected, unread| crate::side::Item { title: title.to_string(), selected, unread };
         let items = [item("arcton", true, false), item("servidor", false, false), item("pruebas", false, true), item("~", false, false)];
-        soft.clear_rect(&mut fb, rect);
-        crate::side::paint(&soft, &mut fb, b, !right, &i18n::tr(i18n::Str::Windows), &items, hover, &mut Vec::new());
+        let (ox, oy) = soft.origin();
+        if let (TabsPos::Top, _) | (_, None) = (pos, soft.side_rect()) {
+            let (x0, x1) = (chrome::TITLE_CLEAR as i32 - 8, W as i32 - 50);
+            soft.clear_rect(&mut fb, (ox + x0 as usize, oy, ox + x1 as usize, oy + chrome::TITLE_H));
+            crate::side::paint_top(&soft, &mut fb, (x0, x1), &items, hover, &mut Vec::new());
+        } else if let Some(rect) = soft.side_rect() {
+            let b = ((rect.0 - ox) as i32, (rect.1 - oy) as i32, (rect.2 - rect.0) as i32, (rect.3 - rect.1) as i32);
+            soft.clear_rect(&mut fb, rect);
+            crate::side::paint(&soft, &mut fb, b, pos == TabsPos::Left, &i18n::tr(i18n::Str::Windows), &items, hover, &mut Vec::new());
+        }
     }
     if let Some((sel, hover, typing)) = s.settings {
         // Fixed fonts, not whatever is installed: the board must look the same on every machine.
@@ -317,14 +328,14 @@ fn incremental_repaint_matches_a_full_one() {
             fb = vec![0xdead_beef; w * h]; // a new buffer holds garbage until painted
         }
         Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::new().advance(&mut term, out.as_bytes());
-        soft.set_title(title);
+        soft.set_title(title, "");
         soft.set_ui(ui);
         view.build(&mut term, ui.focused, &mut Target { soft: &mut soft, fb: &mut fb, w, h });
 
         let mut fresh = Soft::new(&FontCfg::sized(PX), OPACITY);
         let mut fresh_term = new(&fresh);
         Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::new().advance(&mut fresh_term, input.as_bytes());
-        fresh.set_title(title);
+        fresh.set_title(title, "");
         fresh.set_ui(ui);
         let mut full = vec![0u32; w * h];
         View::new().build(&mut fresh_term, ui.focused, &mut Target { soft: &mut fresh, fb: &mut full, w, h });

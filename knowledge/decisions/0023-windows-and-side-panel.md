@@ -32,5 +32,13 @@ takes clicks (`Hit::Side`): a row goes to it, the cross closes, `+` opens one. `
 **Files:** each window reports through `$XDG_RUNTIME_DIR/axon-<pid>-<n>.ctx` and `.chips` (the stale-file cleaner reads
 the pid before the first `-`).
 
-**Not yet:** tabs at the top (`tabs = "top"` hides the panel today), groups, split panes, the overview, the palette, window
-titles that can be renamed, a status that says a command is running or failed.
+**Title bar (second slice):** after the reference's top bar, a 28 px button right of the window buttons shows and hides
+the panel (`Hit::SideBtn`, `Ui::side`: 0 absent, 1 hidden, 2 shown, lit while the panel is on); the title is the
+window's name in bold and its directory dim (`Soft::set_title(name, place)`; a program's own title wins, the shell's
+default `user@host: path` does not). With `tabs = "top"` the windows are tabs in the title bar instead
+(`side::Layout::Top`: 28 px tabs, 168 px wide down to 96, a `+` after the last), the panel button is gone, and the
+title text is not drawn. `side::Layout` is the one place that knows where rows and tabs are, for painting and for hit
+testing; `Soft::title_painted` says when the bar was repainted so the tabs are drawn again over it.
+
+**Not yet:** groups, split panes, the overview, the palette, window titles that can be renamed, a status that says a
+command is running or failed.
