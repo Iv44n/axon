@@ -299,13 +299,13 @@ impl List {
     }
 
     /// The `n`th shown row's matched characters of its label.
-    pub fn label_hits(&self, n: usize) -> impl Iterator<Item = usize> + '_ {
+    pub fn label_hits(&self, n: usize) -> impl Iterator<Item = usize> + Clone + '_ {
         let len = self.index(n).map_or(0, |e| self.label(e).chars().count());
         self.hits(n).iter().map(|&p| p as usize).take_while(move |&p| p < len)
     }
 
     /// The `n`th shown row's matched characters of its description.
-    pub fn desc_hits(&self, n: usize) -> impl Iterator<Item = usize> + '_ {
+    pub fn desc_hits(&self, n: usize) -> impl Iterator<Item = usize> + Clone + '_ {
         let (from, len) = self.index(n).map_or((0, 0), |e| (self.label(e).chars().count() + 1, self.desc(e).chars().count()));
         self.hits(n).iter().map(|&p| p as usize).filter(move |&p| p >= from && p < from + len).map(move |p| p - from)
     }
@@ -564,30 +564,29 @@ pub fn paint_footer(p: &mut Paint, t: &Text, (x, y, w, _): Rect, hints: &[Hint])
     }
 }
 
-/// Draws `s` at `x` with the characters whose index is in `hits` in the accent colour. Returns its width.
-fn highlighted(p: &mut Paint, t: &Text, x: i32, cy: i32, s: &str, ink: Ink, hits: &[usize]) -> i32 {
-    if hits.is_empty() {
+/// Draws `s` at `x` with the characters whose index is in `hits` in the accent colour. Returns its width. The runs of
+/// lit and plain characters are slices of `s`: nothing is copied.
+fn highlighted(p: &mut Paint, t: &Text, x: i32, cy: i32, s: &str, ink: Ink, hits: impl Iterator<Item = usize> + Clone) -> i32 {
+    if hits.clone().next().is_none() {
         t.draw(p, x, cy, s, ink);
         return t.width(s, ink.px);
     }
     let mut at = x;
-    let (mut run, mut lit) = (String::new(), false);
-    let flush = |p: &mut Paint, run: &mut String, lit: bool, at: &mut i32| {
+    let (mut from, mut lit) = (0, false);
+    let flush = |p: &mut Paint, run: &str, lit: bool, at: &mut i32| {
         if !run.is_empty() {
             t.draw(p, *at, cy, run, if lit { Ink { c: accent(), ..ink } } else { ink });
             *at += t.width(run, ink.px);
-            run.clear();
         }
     };
-    for (i, c) in s.chars().enumerate() {
-        let on = hits.contains(&i);
+    for (i, (b, _)) in s.char_indices().enumerate() {
+        let on = hits.clone().any(|h| h == i);
         if on != lit {
-            flush(p, &mut run, lit, &mut at);
-            lit = on;
+            flush(p, &s[from..b], lit, &mut at);
+            (from, lit) = (b, on);
         }
-        run.push(c);
     }
-    flush(p, &mut run, lit, &mut at);
+    flush(p, &s[from..], lit, &mut at);
     at - x
 }
 
@@ -663,17 +662,13 @@ fn paint_item(p: &mut Paint, t: &Text, l: &List, n: usize, (x, y, w, h): Rect) {
     }
     let room = (right - tx).max(0);
     let desc = l.desc(e);
-    let label_hits: Vec<usize> = l.label_hits(n).collect();
+    // Hits past a cut are not drawn: the cut text is a prefix of the label, and only its characters are asked about.
     let label = t.fit(l.label(e), PX, room);
-    // Hits past a cut are not drawn: the cut text is a prefix of the label.
-    let cut = label.chars().count();
-    let label_hits: Vec<usize> = label_hits.into_iter().filter(|&i| i < cut).collect();
     if desc.is_empty() {
-        highlighted(p, t, tx, cy, &label, Ink::new(PX, fg()), &label_hits);
+        highlighted(p, t, tx, cy, &label, Ink::new(PX, fg()), l.label_hits(n));
     } else {
-        highlighted(p, t, tx, y + 8 + 9, &label, Ink::new(PX, fg()), &label_hits);
-        let desc_hits: Vec<usize> = l.desc_hits(n).collect();
-        highlighted(p, t, tx, y + 8 + 18 + 1 + 8, &t.fit(desc, PX_SMALL, room), Ink::new(PX_SMALL, dim()), &desc_hits);
+        highlighted(p, t, tx, y + 8 + 9, &label, Ink::new(PX, fg()), l.label_hits(n));
+        highlighted(p, t, tx, y + 8 + 18 + 1 + 8, &t.fit(desc, PX_SMALL, room), Ink::new(PX_SMALL, dim()), l.desc_hits(n));
     }
 }
 

@@ -124,7 +124,7 @@ impl App {
     /// What a close of the windows at `idx` says in its toast.
     fn closed_label(&self, idx: &[usize]) -> String {
         match idx {
-            [i] => fill(tr(Str::ToastClosed), &[&win_title(&self.wins[*i])]),
+            [i] => fill(tr(Str::ToastClosed), &[win_title(&self.wins[*i])]),
             _ => fill(tr(Str::ToastClosedMany), &[&idx.len().to_string()]),
         }
     }
@@ -204,7 +204,7 @@ impl App {
 
     /// Moves window `wi` into the group with id `to`, or out of its group (none).
     pub(super) fn move_to_group(&mut self, wi: usize, to: Option<u32>) {
-        let name = win_title(&self.wins[wi]);
+        let name = win_title(&self.wins[wi]).to_string();
         match to {
             Some(gid) => {
                 let Some(g) = groups::index_of(&self.groups, gid) else { return };
@@ -278,7 +278,7 @@ impl App {
         let wins: Vec<WinRow> = self
             .wins
             .iter()
-            .map(|w| WinRow { id: w.id, title: win_title(w), place: win_place(w), group: w.group.and_then(|g| self.groups.get(g)).map(|g| (g.name.clone(), g.color)) })
+            .map(|w| WinRow { id: w.id, title: win_title(w).to_string(), place: win_place(w).to_string(), group: w.group.and_then(|g| self.groups.get(g)).map(|g| (g.name.clone(), g.color)) })
             .collect();
         let taken = taken.iter().map(|s| s.to_string()).collect();
         self.answer.borrow_mut().take();
@@ -505,7 +505,7 @@ impl App {
             return;
         }
         let mut field = Field::new(groups::RENAME_MAX, "");
-        field.set(&win_title(&self.wins[wi]));
+        field.set(win_title(&self.wins[wi]));
         field.select_all();
         self.rename = Some(Rename { win: self.wins[wi].id, field, clicks: Clicks::default() });
         self.side_dirty = true;
@@ -517,8 +517,8 @@ impl App {
     pub(super) fn finish_rename(&mut self, commit: bool) {
         let Some(r) = self.rename.take() else { return };
         if commit && let Some(wi) = self.win_index(r.win) {
-            let auto = auto_title(&self.wins[wi]);
-            self.wins[wi].name = groups::rename_result(r.field.text(), &auto);
+            let name = groups::rename_result(r.field.text(), auto_title(&self.wins[wi]));
+            self.wins[wi].name = name;
             self.titled(wi);
         }
         self.side_dirty = true;

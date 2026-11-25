@@ -105,6 +105,14 @@ impl Toast {
         Place { card: (x, y, w, h), action, msg_room: w - fixed }
     }
 
+    /// Every pixel the toast can paint, in window pixels: its card and the reach of its shadow, and the rise of its
+    /// fade in. What `Stack::extent` says the frame under it has to give back each time it is painted.
+    pub fn extent(&self, cx: &Cx) -> Rect {
+        let (x, y, w, h) = self.place(cx).card;
+        let m = (SHADOW_POP.reach + SHADOW_POP.dy) as i32 + 8;
+        (x - m, y - m, w + 2 * m, h + 2 * m + RISE as i32)
+    }
+
     /// Whether window pixel `(x, y)` is on the toast.
     pub fn contains(&self, x: f32, y: f32, cx: &Cx) -> bool {
         inside(self.place(cx).card, x, y)
@@ -268,5 +276,28 @@ mod tests {
         assert!(paint(at(1000, t0)) > 2000);
         assert_eq!(paint(at(7000, t0)), 0);
         assert_eq!(paint(t0), 0, "the first frame is invisible");
+    }
+
+    #[test]
+    fn everything_it_paints_is_inside_its_extent_whatever_the_moment() {
+        let text = Text::load();
+        for (w, msg, action) in [(900, "Window closed", Some("Undo")), (900, "Saved", None), (320, "A message much longer than a narrow window has room for", Some("Undo"))] {
+            let g = Geo { w, h: 620, square: false };
+            let cx = Cx { g, text: &text };
+            let t0 = Instant::now();
+            let t = Toast::new(msg, action, 5, t0);
+            let (ex, ey, ew, eh) = t.extent(&cx);
+            // Over a background that no pixel of the toast can equal: whatever it touches shows.
+            for ms in [10, 40, 90, 150, 180, 1000, 6300, 6450] {
+                let mut fb = vec![0xff12_3456u32; w as usize * 620];
+                let mut p = Paint { fb: &mut fb, w: w as usize, h: 620, ox: 0, oy: 0, fade: 1.0 };
+                t.paint(&mut p, &cx, at(ms, t0));
+                for (i, px) in fb.iter().enumerate() {
+                    let (x, y) = ((i % w as usize) as i32, (i / w as usize) as i32);
+                    let inside = x >= ex && x < ex + ew && y >= ey && y < ey + eh;
+                    assert!(inside || *px == 0xff12_3456, "{msg:?} at {ms} ms painted ({x}, {y}) outside its extent {:?}", (ex, ey, ew, eh));
+                }
+            }
+        }
     }
 }

@@ -17,9 +17,13 @@ const SEARCH_ROWS: usize = 30;
 
 /// The last `rows` rows of text of `p`'s screen, ending at its last row with text (or the cursor's row), with the
 /// trailing blanks of each row cut and `\n` between them, appended to `out`. Read under the terminal's lock and
-/// copied at once: nothing of the terminal is kept.
-pub(super) fn pane_tail(p: &Pane, rows: usize, out: &mut String) {
-    term_tail(&p.term.lock(), rows, out);
+/// copied at once: nothing of the terminal is kept. A terminal whose lock the PTY thread holds (it is parsing) is not
+/// waited for, as the window on screen is: the frame must not block on a window out of sight. False then, and
+/// nothing is appended.
+pub(super) fn pane_tail(p: &Pane, rows: usize, out: &mut String) -> bool {
+    let Some(t) = p.term.try_lock_unfair() else { return false };
+    term_tail(&t, rows, out);
+    true
 }
 
 /// `pane_tail` of a terminal.
@@ -58,9 +62,9 @@ fn fill_cards(wins: &[Win], groups: &[Group], cur: usize, needle: &str, cards: &
         c.id = w.id as u32;
         c.group = w.group.map(|g| g as u8);
         c.title.clear();
-        c.title.push_str(&win_title(w));
+        c.title.push_str(win_title(w));
         c.meta.clear();
-        c.meta.push_str(&win_place(w));
+        c.meta.push_str(win_place(w));
         let branch = w.pane().ctx.get(Chip::Branch);
         if !branch.is_empty() {
             c.meta.push_str(" \u{b7} ");
@@ -70,12 +74,24 @@ fn fill_cards(wins: &[Win], groups: &[Group], cur: usize, needle: &str, cards: &
         c.unread = w.unread;
         c.panes = w.panes.len() as u16;
         c.current = i == cur;
-        c.text_hit = !needle.is_empty()
-            && w.panes.iter().any(|p| {
+        if needle.is_empty() {
+            c.text_hit = false;
+        } else {
+            // A terminal that is busy says nothing this frame: the card keeps the answer it had.
+            let (mut hit, mut busy) = (false, false);
+            for p in &w.panes {
                 scratch.clear();
-                pane_tail(p, SEARCH_ROWS, scratch);
-                overview::contains_ci(scratch, needle)
-            });
+                if !pane_tail(p, SEARCH_ROWS, scratch) {
+                    busy = true;
+                } else if overview::contains_ci(scratch, needle) {
+                    hit = true;
+                    break;
+                }
+            }
+            if hit || !busy {
+                c.text_hit = hit;
+            }
+        }
     }
     out.resize_with(groups.len(), overview::Group::default);
     for (o, g) in out.iter_mut().zip(groups) {
@@ -95,6 +111,7 @@ pub(super) struct AppGrid<'a> {
 impl overlay::Grid for AppGrid<'_> {
     fn tail(&mut self, id: u32, rows: usize, out: &mut String) -> bool {
         let Some(w) = self.wins.iter().find(|w| w.id as u32 == id) else { return false };
+        // A busy terminal leaves the card's text out for this frame; the next one tries again.
         pane_tail(w.pane(), rows, out);
         w.pane().history.running()
     }

@@ -82,6 +82,9 @@ pub struct Soft {
     cols: usize,
     /// The framebuffer no longer matches the glyph tiles or the geometry: repaint every row.
     stale: bool,
+    /// A box, in window pixels, that the glass is painted over again at the next frame (`restore`): what an overlay
+    /// painted there goes away, and the rows and the status bar are painted over the glass as they are.
+    restore: Option<Rect>,
     /// Which grid rows were repainted in the last frame: whatever is drawn over a row (the prompt
     /// chips) has to be drawn again when the row was.
     touched: Vec<bool>,
@@ -127,6 +130,7 @@ impl Soft {
             rows: 0,
             cols: 0,
             stale: true,
+            restore: None,
             touched: Vec::new(),
             slots: Vec::new(),
             cur: 0,
@@ -240,6 +244,42 @@ impl Soft {
         self.stale = true;
     }
 
+    /// Takes away what was drawn over window pixels `r` (a toast, the way it moved or faded) without painting the
+    /// whole window again: the next frame paints the glass over `r` and the status bar over it, and the caller
+    /// invalidates the rows `rows_under` says. False, and nothing done, when `r` is not a part of the frame that
+    /// can be painted alone: it reaches the title bar, a panel, or a pane's frame, which are painted whole or not
+    /// at all; the caller then repaints everything (`invalidate`).
+    pub fn restore(&mut self, r: Rect) -> bool {
+        let (ww, wh) = self.window();
+        let ws = self.workspace(ww as u32, wh as u32);
+        // Past the window's bottom edge there is only the margin of its shadow, which nothing paints over.
+        let r = Rect::new(r.x, r.y, r.w, r.y2().min(wh as i32) - r.y);
+        if r.w <= 0 || r.h <= 0 || r.x < ws.x || r.x2() > ws.x2() || r.y < ws.y {
+            return false;
+        }
+        let framed = self.slots.iter().any(|s| s.framed && s.rect.x < r.x2() && r.x < s.rect.x2() && s.rect.y < r.y2() && r.y < s.rect.y2());
+        if framed {
+            return false;
+        }
+        self.restore = Some(self.restore.map_or(r, |o| {
+            let (x, y) = (o.x.min(r.x), o.y.min(r.y));
+            Rect::new(x, y, o.x2().max(r.x2()) - x, o.y2().max(r.y2()) - y)
+        }));
+        if self.ui.status && r.y2() > wh as i32 - STATUS_H as i32 {
+            self.status_dirty = true;
+        }
+        true
+    }
+
+    /// The rows of pane `i`'s text that window pixels `y0..y1` touch.
+    pub fn rows_under(&self, i: usize, y0: i32, y1: i32) -> std::ops::Range<usize> {
+        let slot = self.slot(i);
+        let (g, ch) = (self.grid_of(&slot), (self.fonts.cell_h as i32).max(1));
+        let first = ((y0 - g.y).max(0) / ch) as usize;
+        let last = ((y1 - g.y).max(0) + ch - 1) / ch;
+        first.min(g.rows)..(last as usize).min(g.rows)
+    }
+
     /// Changes the glass alpha (reload).
     pub fn set_opacity(&mut self, opacity: f32) {
         if opacity != self.opacity {
@@ -328,11 +368,15 @@ impl Soft {
             let (ox, oy) = self.origin();
             if full {
                 self.stale = false;
+                self.restore = None;
                 (self.w, self.h, self.shape0) = (w, h, (rows, cols));
                 self.paint_bg(fb, 0, h, 0, w);
                 self.paint_title(fb);
                 self.paint_status(fb);
             } else if fb.len() >= self.w * self.h {
+                if let Some(r) = self.restore.take() {
+                    self.paint_bg(fb, oy + r.y as usize, oy + r.y2() as usize, ox + r.x as usize, ox + r.x2() as usize);
+                }
                 if self.chrome_dirty {
                     self.paint_bg(fb, oy, oy + TITLE_H, ox, self.w - ox);
                     self.paint_title(fb);

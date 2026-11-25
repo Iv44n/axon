@@ -44,7 +44,7 @@ command in an English window.
   palette alike).
 
 **Cost and rules:** the entries are built when the palette opens (a few dozen strings copied into the list's pool, one
-`/proc/<pid>/cwd` read per window for its place), never per frame; the palette holds no cache and no per-frame allocation
+`/proc/<pid>/cwd` read per window for its place, since 0031 a field of the pane read when the shell may have moved), never per frame; the palette holds no cache and no per-frame allocation
 beyond the kit's (3.6 ms a frame with it open, measured in 0025). Idle stays 0 % CPU. `Ctrl+K` does not repeat while held and
 is taken from the shell (`kill-line` in readline), as in the reference. Strings: 18 new ones in `i18n.rs` (both languages); the
 design board has `palette-*` scenes (empty, selection moved, scrolled to the end, typed, a window's name typed, no match) and the

@@ -173,21 +173,101 @@ pub fn spin_phase(ms: u128) -> f32 {
 
 /// A pane as its row shows it: the text (`Pane 2`, plus what a program set as its title), whether it is the
 /// one with the focus in the window on screen, and its status.
-pub struct PaneItem {
-    pub title: String,
+pub struct PaneItem<'a> {
+    pub title: &'a str,
     pub active: bool,
     pub status: Status,
 }
 
 /// A window as the list shows it. `badge` is the number of panes written in a tab at the top (0: none); `status`
 /// is what its panes say together (`Status::of`).
-pub struct Item {
-    pub title: String,
+pub struct Item<'a> {
+    pub title: &'a str,
     pub selected: bool,
     pub unread: bool,
     pub badge: usize,
     pub status: Status,
-    pub panes: Vec<PaneItem>,
+}
+
+/// Where a text is in `Items::text`: its start and its length in bytes.
+#[derive(Clone, Copy)]
+struct Span(u32, u32);
+
+struct WinRow {
+    title: Span,
+    selected: bool,
+    unread: bool,
+    badge: usize,
+    status: Status,
+    /// Where its panes begin in `Items::panes` (they follow one another, window after window).
+    first: u32,
+}
+
+struct PaneRow {
+    title: Span,
+    active: bool,
+    status: Status,
+}
+
+/// What the list shows of the windows and of the panes under them, flat: one pool of text, the windows in the order of
+/// the list, and the panes of all of them in the same order. The painters read an `Item` or a `PaneItem` from it
+/// (`win`, `pane`) with no copy; the app keeps one and fills it again for each paint (`clear`, `push_win`,
+/// `push_pane`), which allocates nothing once its three arrays have grown to fit.
+#[derive(Default)]
+pub struct Items {
+    text: String,
+    wins: Vec<WinRow>,
+    panes: Vec<PaneRow>,
+}
+
+impl Items {
+    /// Forgets what was listed, keeping the room.
+    pub fn clear(&mut self) {
+        self.text.clear();
+        self.wins.clear();
+        self.panes.clear();
+    }
+
+    /// How many windows are listed.
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.wins.len()
+    }
+
+    /// Adds the next window; the panes added after it (`push_pane`) are its own.
+    pub fn push_win(&mut self, title: &str, selected: bool, unread: bool, badge: usize, status: Status) {
+        let title = self.put(|t| t.push_str(title));
+        self.wins.push(WinRow { title, selected, unread, badge, status, first: self.panes.len() as u32 });
+    }
+
+    /// Adds a pane to the window added last; `label` writes its text.
+    pub fn push_pane(&mut self, active: bool, status: Status, label: impl FnOnce(&mut String)) {
+        let title = self.put(label);
+        self.panes.push(PaneRow { title, active, status });
+    }
+
+    /// Window `i` as the painters read it.
+    pub fn win(&self, i: usize) -> Item<'_> {
+        let w = &self.wins[i];
+        Item { title: self.str(w.title), selected: w.selected, unread: w.unread, badge: w.badge, status: w.status }
+    }
+
+    /// Pane `idx` of window `win`.
+    pub fn pane(&self, win: usize, idx: usize) -> PaneItem<'_> {
+        let p = &self.panes[self.wins[win].first as usize + idx];
+        PaneItem { title: self.str(p.title), active: p.active, status: p.status }
+    }
+
+    /// What `write` appends to the pool, and where it went.
+    fn put(&mut self, write: impl FnOnce(&mut String)) -> Span {
+        let start = self.text.len();
+        write(&mut self.text);
+        Span(start as u32, (self.text.len() - start) as u32)
+    }
+
+    fn str(&self, s: Span) -> &str {
+        &self.text[s.0 as usize..(s.0 + s.1) as usize]
+    }
 }
 
 /// What the tabs at the top list, left to right: like `entries`, but no window lists its panes (a tab says how
@@ -198,7 +278,7 @@ pub fn top_entries(win_group: &[Option<usize>], collapsed: &[bool], active: usiz
 
 /// How many digits `n` is written with.
 fn digits(n: usize) -> i32 {
-    n.to_string().len() as i32
+    n.checked_ilog10().map_or(1, |l| l as i32 + 1)
 }
 
 /// How many characters of group `g`'s name its chip shows: all, or what a 180 px chip has room for.
@@ -644,14 +724,16 @@ fn inside((x, y, w, h): Rect, px: f32, py: f32) -> bool {
     px >= x as f32 && px < (x + w) as f32 && py >= y as f32 && py < (y + h) as f32
 }
 
-/// `text` cut to `max` characters, with `…` where it was.
-pub fn fit(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_string();
-    }
-    let mut s: String = text.chars().take(max.saturating_sub(1)).collect();
-    s.push('…');
-    s
+/// `text` cut to `max` characters, with `…` where it was: its characters, for `Soft::paint_text`, with no string made.
+pub fn fit(text: &str, max: usize) -> impl Iterator<Item = char> + '_ {
+    let long = text.chars().count() > max;
+    text.chars().take(if long { max.saturating_sub(1) } else { usize::MAX }).chain(long.then_some('…'))
+}
+
+/// A count written in decimal, a character at a time, with no string made: it is painted again with every list.
+fn dec(n: usize) -> impl Iterator<Item = char> {
+    let width = digits(n) as u32;
+    (0..width).rev().map(move |i| char::from(b'0' + (n / 10usize.pow(i) % 10) as u8))
 }
 
 fn plus(p: &mut Paint, b: Rect, hot: bool) {
@@ -742,7 +824,7 @@ fn status_icon(p: &mut Paint, cx: f32, cy: f32, st: Status, idle: [f32; 3], phas
 
 /// The width of the box that says how many panes a tab has (10 px of padding round the digits), or 0.
 fn badge_w(panes: usize, cw: i32) -> i32 {
-    if panes < 2 { 0 } else { panes.to_string().len() as i32 * cw + 10 }
+    if panes < 2 { 0 } else { digits(panes) * cw + 10 }
 }
 
 /// Where the pane count's box is in a tab's box `b`: just left of the cross, 16 px tall.
@@ -906,13 +988,13 @@ fn row_text(soft: &Soft, fb: &mut [u32], b: Rect, it: &Item, over: bool, fade: f
     let bm = soft.small(0.72);
     let bw = badge_w(it.badge, bm.cell_w as i32);
     let room = (rw - 9 - 13 - 7 - 5 - if over { CLOSE + 6 } else { 18 } - if bw > 0 { bw + 7 } else { 0 }).max(0);
-    let label = fit(&it.title, (room / m.cell_w as i32).max(1) as usize);
+    let label = fit(it.title, (room / m.cell_w as i32).max(1) as usize);
     let c: Rgb = faded(if it.selected || over { palette::FG } else { palette::DIM }, fade);
-    soft.paint_text(fb, ox + (x + 9 + 13 + 7) as usize, oy + (y + rh / 2) as usize, label.chars(), pack(c.r, c.g, c.b, 255), false, &m, scratch);
+    soft.paint_text(fb, ox + (x + 9 + 13 + 7) as usize, oy + (y + rh / 2) as usize, label, pack(c.r, c.g, c.b, 255), false, &m, scratch);
     if bw > 0 {
         let bb = badge_box(b, bw);
         let d = faded(palette::DIM, fade);
-        soft.paint_text(fb, ox + (bb.0 + 5) as usize, oy + (bb.1 + bb.3 / 2) as usize, it.badge.to_string().chars(), pack(d.r, d.g, d.b, 255), false, &bm, scratch);
+        soft.paint_text(fb, ox + (bb.0 + 5) as usize, oy + (bb.1 + bb.3 / 2) as usize, dec(it.badge), pack(d.r, d.g, d.b, 255), false, &bm, scratch);
     }
 }
 
@@ -922,9 +1004,9 @@ fn pane_text(soft: &Soft, fb: &mut [u32], b: Rect, it: &PaneItem, over: bool, sc
     let m = soft.small(0.82);
     let (x, y, rw, rh) = b;
     let room = (rw - 8 - 13 - 7 - PANE_RIGHT - CLOSE - 7).max(0);
-    let label = fit(&it.title, (room / m.cell_w as i32).max(1) as usize);
+    let label = fit(it.title, (room / m.cell_w as i32).max(1) as usize);
     let c: Rgb = if it.active || over { palette::FG } else { palette::DIM };
-    soft.paint_text(fb, ox + (x + 8 + 13 + 7) as usize, oy + (y + rh / 2) as usize, label.chars(), pack(c.r, c.g, c.b, 255), false, &m, scratch);
+    soft.paint_text(fb, ox + (x + 8 + 13 + 7) as usize, oy + (y + rh / 2) as usize, label, pack(c.r, c.g, c.b, 255), false, &m, scratch);
 }
 
 /// A group's name and, at the right end, how many windows it has.
@@ -932,15 +1014,14 @@ fn head_text(soft: &Soft, fb: &mut [u32], b: Rect, g: &GroupItem, fade: f32, scr
     let (ox, oy) = soft.origin();
     let m = soft.small(0.85);
     let (x, y, w, h) = b;
-    let count = g.count.to_string();
     let cw = m.cell_w as i32;
-    let count_w = count.chars().count() as i32 * cw;
+    let count_w = digits(g.count) * cw;
     let room = (w - 6 - 7 - 6 - 8 - count_w - 22).max(0);
     let name = fit(&g.name, (room / cw).max(1) as usize);
     let (fg, faint) = (faded(palette::FG, fade), faded(palette::FAINT, fade));
     let cy = oy + (y + h / 2) as usize;
-    soft.paint_text(fb, ox + (x + 6 + 7 + 6) as usize, cy, name.chars(), pack(fg.r, fg.g, fg.b, 255), true, &m, scratch);
-    soft.paint_text(fb, ox + (x + w - 22 - count_w) as usize, cy, count.chars(), pack(faint.r, faint.g, faint.b, 255), false, &m, scratch);
+    soft.paint_text(fb, ox + (x + 6 + 7 + 6) as usize, cy, name, pack(fg.r, fg.g, fg.b, 255), true, &m, scratch);
+    soft.paint_text(fb, ox + (x + w - 22 - count_w) as usize, cy, dec(g.count), pack(faint.r, faint.g, faint.b, 255), false, &m, scratch);
 }
 
 /// A group chip's name (medium weight, dim, bright under the pointer) and its count, in the tabs.
@@ -954,8 +1035,8 @@ fn chip_text(soft: &Soft, fb: &mut [u32], b: Rect, g: &GroupItem, over: bool, fa
     let (fg, faint) = (faded(if over { palette::FG } else { palette::DIM }, fade), faded(palette::FAINT, fade));
     let cy = oy + (y + h / 2) as usize;
     let nx = x + CHIP_PAD + CHIP_DOT + CHIP_GAP;
-    soft.paint_text(fb, ox + nx as usize, cy, name.chars(), pack(fg.r, fg.g, fg.b, 255), true, &m, scratch);
-    soft.paint_text(fb, ox + (nx + chars * cw + CHIP_GAP) as usize, cy, g.count.to_string().chars(), pack(faint.r, faint.g, faint.b, 255), false, &m, scratch);
+    soft.paint_text(fb, ox + nx as usize, cy, name, pack(fg.r, fg.g, fg.b, 255), true, &m, scratch);
+    soft.paint_text(fb, ox + (nx + chars * cw + CHIP_GAP) as usize, cy, dec(g.count), pack(faint.r, faint.g, faint.b, 255), false, &m, scratch);
 }
 
 fn over_row(hover: Option<Part>, i: usize) -> bool {
@@ -1022,7 +1103,7 @@ fn ghost_backing(p: &mut Paint, (x, y, w, h): Rect) {
 /// be as the last full paint left it (same pointer, same selection, nothing dragged). `bottom` is where the panel
 /// ends; at the top, what is not shown (`Layout::shown`) is left out.
 #[allow(clippy::too_many_arguments)]
-pub fn paint_spin(soft: &Soft, fb: &mut [u32], lay: Layout, bottom: i32, entries: &[Entry], groups: &[GroupItem], items: &[Item], look: Look) {
+pub fn paint_spin(soft: &Soft, fb: &mut [u32], lay: Layout, bottom: i32, entries: &[Entry], groups: &[GroupItem], items: &Items, look: Look) {
     let (fw, fh) = soft.fb_size();
     let (ox, oy) = soft.origin();
     if fb.len() < fw * fh {
@@ -1044,16 +1125,16 @@ pub fn paint_spin(soft: &Soft, fb: &mut [u32], lay: Layout, bottom: i32, entries
         };
         // Where the ring is, what lies on the glass under it besides the tint, and how big it is.
         let (cx, lit, d) = match *e {
-            Entry::Row { win, grouped } if items[win].status == Status::Running => {
+            Entry::Row { win, grouped } if items.win(win).status == Status::Running => {
                 let g = match (grouped, panel) {
                     (false, _) => Grouping::No,
                     (true, true) => Grouping::Bar(group_of(entries, k, groups)),
                     (true, false) => Grouping::Tint(group_of(entries, k, groups)),
                 };
-                ((b.0 + 9) as f32 + 6.5, row_bg(&items[win], over_row(look.hover, win), g), 11.0)
+                ((b.0 + 9) as f32 + 6.5, row_bg(&items.win(win), over_row(look.hover, win), g), 11.0)
             }
-            Entry::Pane { win, idx, .. } if items[win].panes[idx].status == Status::Running => {
-                let it = &items[win].panes[idx];
+            Entry::Pane { win, idx, .. } if items.pane(win, idx).status == Status::Running => {
+                let it = items.pane(win, idx);
                 ((b.0 + 8) as f32 + 6.5, (WHITE, if it.active { 0.07 } else if over_pane(look.hover, win, idx) { 0.045 } else { 0.0 }), 11.0)
             }
             Entry::Head(g) if groups[g].busy => {
@@ -1081,7 +1162,7 @@ pub fn paint_spin(soft: &Soft, fb: &mut [u32], lay: Layout, bottom: i32, entries
 /// The top layer of a drag, over the finished list: the ghost of what is dragged (its row or header or chip at
 /// `DRAGGED` opacity on a little glass, where the pointer took it), and the mark of where a drop would put it.
 #[allow(clippy::too_many_arguments)]
-fn paint_drag(soft: &Soft, fb: &mut [u32], lay: Layout, entries: &[Entry], groups: &[GroupItem], items: &[Item], look: Look, scratch: &mut Vec<u8>) {
+fn paint_drag(soft: &Soft, fb: &mut [u32], lay: Layout, entries: &[Entry], groups: &[GroupItem], items: &Items, look: Look, scratch: &mut Vec<u8>) {
     let Some(d) = look.drag else { return };
     let (fw, fh) = soft.fb_size();
     let (ox, oy) = soft.origin();
@@ -1099,13 +1180,13 @@ fn paint_drag(soft: &Soft, fb: &mut [u32], lay: Layout, entries: &[Entry], group
                     Some(Entry::Row { grouped: true, .. }) => Grouping::Tint(group_of(entries, k, groups)),
                     _ => Grouping::No,
                 };
-                row_shapes(&mut p, gb, &items[win], Ink { over: false, cross_hot: false, group, bcw, phase: look.phase, fade: DRAGGED });
+                row_shapes(&mut p, gb, &items.win(win), Ink { over: false, cross_hot: false, group, bcw, phase: look.phase, fade: DRAGGED });
             }
             Grab::Group(g) if panel => head_shapes(&mut p, gb, &groups[g], false, look.phase, DRAGGED),
             Grab::Group(g) => chip_shapes(&mut p, gb, &groups[g], false, look.phase, DRAGGED),
         }
         match d.grab {
-            Grab::Win(win) => row_text(soft, fb, gb, &items[win], false, DRAGGED, scratch),
+            Grab::Win(win) => row_text(soft, fb, gb, &items.win(win), false, DRAGGED, scratch),
             Grab::Group(g) if panel => head_text(soft, fb, gb, &groups[g], DRAGGED, scratch),
             Grab::Group(g) => chip_text(soft, fb, gb, &groups[g], false, DRAGGED, scratch),
         }
@@ -1120,7 +1201,7 @@ fn paint_drag(soft: &Soft, fb: &mut [u32], lay: Layout, entries: &[Entry], group
 /// then `entries`. `look` says what the pointer is over, what is being dragged and how far the spinners have
 /// turned; `grid_on_right` says which side the hairline is on.
 #[allow(clippy::too_many_arguments)]
-pub fn paint(soft: &Soft, fb: &mut [u32], (x0, y0, w, h): Rect, grid_on_right: bool, title: &str, entries: &[Entry], groups: &[GroupItem], items: &[Item], look: Look, scratch: &mut Vec<u8>) {
+pub fn paint(soft: &Soft, fb: &mut [u32], (x0, y0, w, h): Rect, grid_on_right: bool, title: &str, entries: &[Entry], groups: &[GroupItem], items: &Items, look: Look, scratch: &mut Vec<u8>) {
     let (fw, fh) = soft.fb_size();
     let (ox, oy) = soft.origin();
     if fb.len() < fw * fh {
@@ -1153,10 +1234,10 @@ pub fn paint(soft: &Soft, fb: &mut [u32], (x0, y0, w, h): Rect, grid_on_right: b
                 Entry::Head(g) => head_shapes(&mut p, b, &groups[g], hover == Some(Part::Head(g)), look.phase, fade_of(*e)),
                 Entry::Row { win, grouped } => {
                     let group = if grouped { Grouping::Bar(group_of(entries, k, groups)) } else { Grouping::No };
-                    row_shapes(&mut p, b, &items[win], ink(over_row(hover, win), hover == Some(Part::Close(win)), group, fade_of(*e)));
+                    row_shapes(&mut p, b, &items.win(win), ink(over_row(hover, win), hover == Some(Part::Close(win)), group, fade_of(*e)));
                 }
                 Entry::Pane { win, idx, grouped } => {
-                    pane_shapes(&mut p, b, &items[win].panes[idx], over_pane(hover, win, idx), hover == Some(Part::ClosePane(win, idx)), grouped.then_some(group_of(entries, k, groups)), look.phase)
+                    pane_shapes(&mut p, b, &items.pane(win, idx), over_pane(hover, win, idx), hover == Some(Part::ClosePane(win, idx)), grouped.then_some(group_of(entries, k, groups)), look.phase)
                 }
             }
         }
@@ -1164,7 +1245,7 @@ pub fn paint(soft: &Soft, fb: &mut [u32], (x0, y0, w, h): Rect, grid_on_right: b
     let m = soft.small(0.85);
     let head = fit(title, ((w - 24) / m.cell_w as i32).max(1) as usize);
     let f = palette::FAINT;
-    soft.paint_text(fb, ox + (x0 + 16) as usize, oy + (y0 + HEAD_H / 2 + 2) as usize, head.chars(), pack(f.r, f.g, f.b, 255), false, &m, scratch);
+    soft.paint_text(fb, ox + (x0 + 16) as usize, oy + (y0 + HEAD_H / 2 + 2) as usize, head, pack(f.r, f.g, f.b, 255), false, &m, scratch);
     for (k, e) in entries.iter().enumerate() {
         let b = lay.rect(k);
         if b.1 + b.3 > bottom {
@@ -1172,8 +1253,8 @@ pub fn paint(soft: &Soft, fb: &mut [u32], (x0, y0, w, h): Rect, grid_on_right: b
         }
         match *e {
             Entry::Head(g) => head_text(soft, fb, b, &groups[g], fade_of(*e), scratch),
-            Entry::Row { win, .. } => row_text(soft, fb, b, &items[win], over_row(hover, win), fade_of(*e), scratch),
-            Entry::Pane { win, idx, .. } => pane_text(soft, fb, b, &items[win].panes[idx], over_pane(hover, win, idx), scratch),
+            Entry::Row { win, .. } => row_text(soft, fb, b, &items.win(win), over_row(hover, win), fade_of(*e), scratch),
+            Entry::Pane { win, idx, .. } => pane_text(soft, fb, b, &items.pane(win, idx), over_pane(hover, win, idx), scratch),
         }
     }
     paint_drag(soft, fb, lay, entries, groups, items, look, scratch);
@@ -1192,7 +1273,7 @@ pub fn chip_cw(soft: &Soft) -> i32 {
 /// Paints the tabs in the title bar between window pixels `x0` and `x1`, over a cleared bar: each group in a
 /// container tinted with its colour, with its chip and tabs, the loose windows' tabs, the `+`.
 #[allow(clippy::too_many_arguments)]
-pub fn paint_top(soft: &Soft, fb: &mut [u32], (x0, x1): (i32, i32), entries: &[Entry], groups: &[GroupItem], items: &[Item], look: Look, scratch: &mut Vec<u8>) {
+pub fn paint_top(soft: &Soft, fb: &mut [u32], (x0, x1): (i32, i32), entries: &[Entry], groups: &[GroupItem], items: &Items, look: Look, scratch: &mut Vec<u8>) {
     let (fw, fh) = soft.fb_size();
     let (ox, oy) = soft.origin();
     if fb.len() < fw * fh {
@@ -1219,7 +1300,7 @@ pub fn paint_top(soft: &Soft, fb: &mut [u32], (x0, x1): (i32, i32), entries: &[E
                 Entry::Head(g) => chip_shapes(&mut p, b, &groups[g], hover == Some(Part::Head(g)), look.phase, fade_of(*e)),
                 Entry::Row { win, grouped } => {
                     let group = if grouped { Grouping::Tint(group_of(entries, k, groups)) } else { Grouping::No };
-                    row_shapes(&mut p, b, &items[win], ink(over_row(hover, win), hover == Some(Part::Close(win)), group, fade_of(*e)));
+                    row_shapes(&mut p, b, &items.win(win), ink(over_row(hover, win), hover == Some(Part::Close(win)), group, fade_of(*e)));
                 }
                 Entry::Pane { .. } => {}
             }
@@ -1233,7 +1314,7 @@ pub fn paint_top(soft: &Soft, fb: &mut [u32], (x0, x1): (i32, i32), entries: &[E
         }
         match *e {
             Entry::Head(g) => chip_text(soft, fb, b, &groups[g], hover == Some(Part::Head(g)), fade_of(*e), scratch),
-            Entry::Row { win, .. } => row_text(soft, fb, b, &items[win], over_row(hover, win), fade_of(*e), scratch),
+            Entry::Row { win, .. } => row_text(soft, fb, b, &items.win(win), over_row(hover, win), fade_of(*e), scratch),
             Entry::Pane { .. } => {}
         }
     }
@@ -1793,8 +1874,40 @@ mod tests {
 
     #[test]
     fn titles_are_cut_with_an_ellipsis() {
-        assert_eq!(fit("short", 10), "short");
-        assert_eq!(fit("a very long title", 8), "a very …");
-        assert_eq!(fit("abc", 1), "…");
+        let cut = |t: &str, n| fit(t, n).collect::<String>();
+        assert_eq!(cut("short", 10), "short");
+        assert_eq!(cut("a very long title", 8), "a very …");
+        assert_eq!(cut("abc", 1), "…");
+        assert_eq!(cut("abc", 0), "…");
+        assert_eq!(cut("abc", 3), "abc");
+    }
+
+    #[test]
+    fn counts_are_written_without_a_string() {
+        for n in [0, 1, 9, 10, 99, 100, 12345, usize::MAX] {
+            assert_eq!(dec(n).collect::<String>(), n.to_string());
+            assert_eq!(digits(n), n.to_string().len() as i32);
+        }
+    }
+
+    #[test]
+    fn the_items_are_read_back_as_they_were_pushed() {
+        let mut it = Items::default();
+        for round in 0..2 {
+            // Filled again after a clear: the second round reuses what the first allocated.
+            it.clear();
+            it.push_win("one", true, false, 2, Status::Running);
+            it.push_pane(true, Status::Running, |t| t.push_str("Pane 1"));
+            it.push_pane(false, Status::Idle, |t| t.push_str("Pane 2 \u{b7} vim"));
+            it.push_win("two", false, true, 0, Status::Idle);
+            it.push_win("three", false, false, 3, Status::Failed);
+            it.push_pane(false, Status::Failed, |t| t.push_str("Pane 1"));
+            assert_eq!(it.len(), 3, "round {round}");
+            let one = it.win(0);
+            assert_eq!((one.title, one.selected, one.unread, one.badge, one.status), ("one", true, false, 2, Status::Running));
+            assert_eq!((it.pane(0, 1).title, it.pane(0, 1).active, it.pane(0, 1).status), ("Pane 2 \u{b7} vim", false, Status::Idle));
+            assert_eq!(it.win(1).title, "two");
+            assert_eq!((it.pane(2, 0).title, it.pane(2, 0).status), ("Pane 1", Status::Failed), "a pane belongs to the window before it");
+        }
     }
 }

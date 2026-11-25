@@ -1030,17 +1030,18 @@ fn paint_card(p: &mut Paint, t: &Text, r: Rect, c: &Card, active: bool, s: &Card
         icons::paint(p, Icon::Cross, (close.0 + 9) as f32, cy as f32, 12.0, 1.6, if s.close_lit { fg() } else { dim() }, 1.0);
     }
     let mut right = close.0 - 8;
+    let mut buf = [0u8; 20];
     if number < 9 {
-        let n = (number + 1).to_string();
-        let kw = kbd_width(t, Cap::Text(&n));
-        kbd(p, t, right - kw, cy, Cap::Text(&n), 1.0);
+        let n = overlay::dec(number + 1, &mut buf);
+        let kw = kbd_width(t, Cap::Text(n));
+        kbd(p, t, right - kw, cy, Cap::Text(n), 1.0);
         right -= kw + 8;
     }
     if c.panes > 1 {
-        let n = c.panes.to_string();
-        let bw = t.width(&n, PX_KBD) + 10;
+        let n = overlay::dec(c.panes as usize, &mut buf);
+        let bw = t.width(n, PX_KBD) + 10;
         p.rrect(right - bw, cy - 8, bw, 16, 5.0, WHITE, 0.07);
-        t.draw(p, right - bw + 5, cy, &n, Ink::new(PX_KBD, dim()));
+        t.draw(p, right - bw + 5, cy, n, Ink::new(PX_KBD, dim()));
         right -= bw + 8;
     }
     if c.unread && !c.current {

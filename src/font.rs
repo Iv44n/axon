@@ -216,11 +216,16 @@ pub fn family_setting(name: &str, path: &Path) -> String {
 }
 
 fn find_in(dirs: Vec<PathBuf>, name: &str) -> Option<PathBuf> {
-    let want = squash(name);
-    if want.is_empty() {
-        return None;
-    }
-    let mut best: Option<((bool, usize), PathBuf)> = None;
+    find_any(dirs, &[name])
+}
+
+/// The font file of the first of `names` (families, in order of preference) that has one, as `find_family` ranks
+/// them: the directories are walked once for all of them, not once for each.
+fn find_any(dirs: Vec<PathBuf>, names: &[&str]) -> Option<PathBuf> {
+    // The name asked for does not say "mono": a file that goes on with it ("Ubuntu Sans" and `UbuntuSansMono[wght]`) is
+    // another family, whatever the length of its name.
+    let wants: Vec<(String, bool)> = names.iter().map(|n| squash(n)).filter(|w| !w.is_empty()).map(|w| (w.clone(), !w.contains("mono"))).collect();
+    let mut best: Vec<Option<((bool, bool, usize), PathBuf)>> = vec![None; wants.len()];
     let mut stack: Vec<(PathBuf, u8)> = dirs.into_iter().map(|d| (d, 0)).collect();
     while let Some((dir, depth)) = stack.pop() {
         let Ok(rd) = std::fs::read_dir(&dir) else { continue };
@@ -237,16 +242,22 @@ fn find_in(dirs: Vec<PathBuf>, name: &str) -> Option<PathBuf> {
                 continue;
             }
             let stem = squash(path.file_stem().and_then(|x| x.to_str()).unwrap_or(""));
-            if !stem.starts_with(&want) || stem.contains("italic") || stem.contains("oblique") {
+            if stem.contains("italic") || stem.contains("oblique") {
                 continue;
             }
-            let rank = (STYLE_WORDS.iter().any(|s| stem[want.len()..].contains(s)), stem.len());
-            if best.as_ref().is_none_or(|(r, _)| rank < *r) {
-                best = Some((rank, path));
+            for ((want, plain), best) in wants.iter().zip(&mut best) {
+                if !stem.starts_with(want.as_str()) {
+                    continue;
+                }
+                let rest = &stem[want.len()..];
+                let rank = (STYLE_WORDS.iter().any(|s| rest.contains(s)), *plain && rest.contains("mono"), stem.len());
+                if best.as_ref().is_none_or(|(r, _)| rank < *r) {
+                    *best = Some((rank, path.clone()));
+                }
             }
         }
     }
-    best.map(|(_, p)| p)
+    best.into_iter().flatten().next().map(|(_, p)| p)
 }
 
 pub fn expand_home(p: &str) -> PathBuf {
@@ -613,20 +624,46 @@ impl Vmap {
 
 // -------------------------------------------------------------- ui font --
 
-/// A proportional font for the interface around the terminal (the settings screen), where the grid's
-/// monospace font reads as code. Loaded when the screen opens and dropped when it closes: it is ~5 MB of
-/// parsed outlines that the terminal itself never needs.
+/// A proportional font for the interface around the terminal (the settings panel and the overlays), where the grid's
+/// monospace font reads as code. Loaded when the first of them opens, shared by whoever else opens while it lives, and
+/// dropped when the last closes (`release_memory` then gives its pages back): it is ~4 MB of parsed outlines that the
+/// terminal itself never needs.
 pub struct UiFont {
     font: Font,
+}
+
+thread_local! {
+    /// The font the holders of `UiFont::shared` have now: not a copy of it, only a way to find the one they hold.
+    static UI_FONT: std::cell::RefCell<std::rc::Weak<UiFont>> = const { std::cell::RefCell::new(std::rc::Weak::new()) };
+}
+
+/// Gives the heap pages that nothing uses any more back to the system. A dropped font is thousands of small
+/// allocations: freed, they stay in the process (the resident size does not fall) until this is asked.
+pub fn release_memory() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        unsafe extern "C" {
+            fn malloc_trim(pad: usize) -> std::ffi::c_int;
+        }
+        // SAFETY: `malloc_trim` is glibc's and takes no pointers; it only returns free pages of the heap.
+        unsafe { malloc_trim(0) };
+    }
 }
 
 /// Families tried in order: the desktop's own where it has one, then common good ones.
 const UI_FAMILIES: [&str; 6] = ["Ubuntu Sans", "Inter", "Cantarell", "Noto Sans", "Open Sans", "DejaVu Sans"];
 
 impl UiFont {
-    /// The first of `UI_FAMILIES` installed (a regular, upright file), or none.
-    pub fn load() -> Option<UiFont> {
-        UI_FAMILIES.iter().find_map(|f| find_family(f)).and_then(|p| load_font(&p)).map(|font| UiFont { font })
+    /// The font a holder already has, else the first of `UI_FAMILIES` installed (a regular, upright file) read from its
+    /// file, or none. The settings panel and the overlays hold the same one: it is parsed once, and the font
+    /// directories are walked only when it is not.
+    pub fn shared() -> Option<std::rc::Rc<UiFont>> {
+        if let Some(f) = UI_FONT.with(|w| w.borrow().upgrade()) {
+            return Some(f);
+        }
+        let font = find_any(font_dirs(), &UI_FAMILIES).and_then(|p| load_font(&p)).map(|font| std::rc::Rc::new(UiFont { font }))?;
+        UI_FONT.with(|w| *w.borrow_mut() = std::rc::Rc::downgrade(&font));
+        Some(font)
     }
 
     /// Width in pixels of `s` at `px`.
@@ -652,8 +689,7 @@ impl UiFont {
     /// Calls `put(x, y, coverage)` for every inked pixel of `s` at `px`, its pen starting at `(x, baseline)`.
     /// `bold` thickens the strokes by synthesis (the font file's variable axis is not read).
     pub fn draw(&self, s: &str, px: f32, x: i32, baseline: i32, bold: bool, mut put: impl FnMut(i32, i32, u8)) {
-        let pens: Vec<f32> = self.pen(s, px).collect();
-        for (c, &pen) in s.chars().zip(&pens) {
+        for (c, pen) in s.chars().zip(self.pen(s, px)) {
             if c == ' ' {
                 continue;
             }
@@ -907,6 +943,15 @@ mod tests {
         assert_eq!(name("JetBrains Mono").as_deref(), Some("JetBrainsMono[wght].ttf"));
         assert_eq!(name("jetbrainsmono").as_deref(), Some("JetBrainsMono[wght].ttf"));
         assert_eq!(name("other").as_deref(), Some("Other.ttf"));
+        // A family and its monospaced sibling, whose names are as long: the proportional one, unless the mono one is asked for.
+        let ub = dir.join("ubuntu");
+        std::fs::create_dir_all(&ub).unwrap();
+        for f in ["UbuntuSansMono[wght].ttf", "UbuntuSans[wdth,wght].ttf"] {
+            std::fs::write(ub.join(f), b"").unwrap();
+        }
+        let found = |n: &str| find_in(vec![ub.clone()], n).map(|p| p.file_name().unwrap().to_string_lossy().into_owned());
+        assert_eq!(found("Ubuntu Sans").as_deref(), Some("UbuntuSans[wdth,wght].ttf"));
+        assert_eq!(found("Ubuntu Sans Mono").as_deref(), Some("UbuntuSansMono[wght].ttf"));
         assert_eq!(name("Nonexistent"), None);
         assert_eq!(name(""), None);
         std::fs::remove_dir_all(&dir).unwrap();

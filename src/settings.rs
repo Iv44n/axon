@@ -14,7 +14,7 @@
 //!
 //! Coordinates in this module are panel-local (the origin is the box's top-left corner) unless the
 //! function says window pixels; the body scrolls, and its content coordinates start under the tabs.
-use std::path::PathBuf;
+use std::{path::PathBuf, rc::Rc};
 
 use crate::{
     bar,
@@ -590,7 +590,7 @@ pub struct Settings {
     edit: Option<Edit>,
     ui: Fonts,
     /// The proportional font the labels are drawn in, when the machine has one (`open` loads it).
-    prop: Option<UiFont>,
+    prop: Option<Rc<UiFont>>,
     /// The compositor can blur behind the window: when it cannot, the switch says so.
     blur_supported: bool,
     /// A line in the footer (a save that failed).
@@ -617,7 +617,7 @@ impl Settings {
 
     /// Draws the labels in the desktop's proportional font, if the machine has one.
     pub fn with_ui_font(mut self) -> Settings {
-        self.prop = UiFont::load();
+        self.prop = UiFont::shared();
         self
     }
 

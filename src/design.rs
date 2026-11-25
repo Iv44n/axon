@@ -436,16 +436,18 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
         bar::Chips::default().frame(s.bar.is_some(), true, &demo_history(&ctx), &chips, &mut term, &mut View::new(), &mut soft, &mut fb, (w, h), s.ui.focused);
     }
     if let Some((pos, hover)) = s.side {
-        let item = |title: &str, selected, unread| crate::side::Item { title: title.to_string(), selected, unread, badge: 0, status: Status::Idle, panes: Vec::new() };
-        let mut items = [item("arcton", true, false), item("servidor", false, false), item("pruebas", false, true), item("~", false, false), item("notas", false, false)];
-        for (it, st) in items.iter_mut().zip(s.list.status) {
-            it.status = st;
-        }
         // The first window's panes: rows under it in the panel, a number in its tab at the top.
         let pane_n = s.panes.map_or(1, |p| p.n);
-        if let Some(ps) = s.panes.filter(|p| p.n > 1) {
-            items[0].panes = (0..ps.n).map(|i| crate::side::PaneItem { title: format!("{} {}", i18n::tr(i18n::Str::Pane), i + 1), active: i == ps.focus, status: pane_status(i) }).collect();
-            items[0].badge = if pos == TabsPos::Top { ps.n } else { 0 };
+        let mut items = crate::side::Items::default();
+        let titles = [("arcton", true, false), ("servidor", false, false), ("pruebas", false, true), ("~", false, false), ("notas", false, false)];
+        for (i, ((title, selected, unread), st)) in titles.into_iter().zip(s.list.status).enumerate() {
+            // A window being renamed has no title under its field.
+            let title = if s.edit.is_some_and(|(wi, ..)| wi == i) { "" } else { title };
+            let ps = s.panes.filter(|p| i == 0 && p.n > 1);
+            items.push_win(title, selected, unread, ps.filter(|_| pos == TabsPos::Top).map_or(0, |p| p.n), st);
+            for j in 0..ps.map_or(0, |p| p.n) {
+                items.push_pane(j == ps.map_or(0, |p| p.focus), pane_status(j), |t| t.push_str(&format!("{} {}", i18n::tr(i18n::Str::Pane), j + 1)));
+            }
         }
         // The reference's session: a group of three windows, one in none, and a folded group of one.
         let group = |name: &str, color, collapsed, count, busy| crate::side::GroupItem { id: 0, name: name.to_string(), color, collapsed, count, busy };
@@ -455,10 +457,6 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
         let win_group = [Some(0), Some(0), Some(0), None, Some(1)];
         let folds = [s.list.fold0, s.folded];
         let (ox, oy) = soft.origin();
-        // A window being renamed has no title under its field.
-        if let Some((wi, ..)) = s.edit {
-            items[wi].title.clear();
-        }
         let edit = s.edit.map(|(wi, text, all)| (wi, text, text.chars().count(), all.then(|| (0, text.chars().count()))));
         let top = matches!((pos, soft.side_rect()), (TabsPos::Top, _) | (_, None));
         let entries = if top && !s.list.grouped_tabs {
@@ -662,6 +660,66 @@ fn the_docked_panel_survives_the_grid_repainting_beside_it() {
         let diff = fb.iter().zip(&full).filter(|(a, b)| a != b).count();
         assert_eq!(diff, 0, "step {n}: {diff} pixels differ from a full repaint");
     }
+}
+
+/// A toast fades in, stays and fades out over the window, with the terminal printing under it. Under it the frame
+/// gives back only the toast's box (`Soft::restore` and the rows it touches), and still the picture is the one painted
+/// from scratch with the toast at that moment: the translucent pixels of the frame before are not piled up.
+#[test]
+fn a_toast_fading_over_the_window_repaints_only_its_box_like_a_full_frame() {
+    use std::time::{Duration, Instant};
+
+    use crate::overlay::{Extent, Geo, Stack};
+
+    let g = Geo { w: W as i32, h: H as i32, square: false };
+    let (ml, mt, mb) = chrome::margins(false);
+    let (w, h) = (W as usize + 2 * ml, H as usize + mt + mb);
+    let make = || {
+        let mut soft = Soft::new(&FontCfg::sized(PX), OPACITY);
+        let (cw, ch) = soft.cell();
+        let (cols, rows) = session::grid_size(W, H, cw, ch, soft.pad, soft.top, soft.bottom);
+        soft.set_status("zsh", "main", cols, rows);
+        (soft, Term::new(Config::default(), &session::Size { cols, rows }, VoidListener))
+    };
+    let t0 = Instant::now();
+    let mut stack = Stack::default();
+    stack.toast("Closed \u{ab}arcton\u{bb}", Some("Undo"), 1, t0);
+    // When (ms after the toast was shown) and what the terminal printed since the frame before.
+    let steps: [(u64, &str); 8] = [(0, SHELL), (60, ""), (130, "\r\n$ ls\r\n"), (400, ""), (3000, "x"), (6300, ""), (6420, "\r\nmore output\r\n"), (6600, "")];
+    let (mut soft, mut term) = make();
+    let (mut view, mut fb, mut seen, mut extent) = (View::new(), vec![0xdead_beefu32; w * h], String::new(), Extent::Nothing);
+    let mut partial = 0;
+    for (n, (ms, out)) in steps.into_iter().enumerate() {
+        let now = t0 + Duration::from_millis(ms);
+        seen.push_str(out);
+        Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::new().advance(&mut term, out.as_bytes());
+        stack.tick(now);
+        // What the app does before painting a frame (`wlapp::give_back_to_overlays`).
+        let now_extent = stack.extent(g);
+        match std::mem::replace(&mut extent, now_extent).to_restore(now_extent) {
+            None => {}
+            Some(Extent::Part((x, y, bw, bh))) => {
+                let r = panes::Rect::new(x, y, bw, bh);
+                assert!(soft.restore(r), "step {n}: the toast's box is a part of the frame");
+                for row in soft.rows_under(0, r.y, r.y2()) {
+                    view.invalidate_row(row);
+                }
+            }
+            Some(_) => soft.invalidate(),
+        }
+        view.build(&mut term, true, &mut Target { soft: &mut soft, fb: &mut fb, w, h });
+        partial += !soft.last_full as usize;
+        stack.draw(&mut fb, (w, h), (ml, mt), g, now);
+
+        let (mut fresh, mut fterm) = make();
+        Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::new().advance(&mut fterm, seen.as_bytes());
+        let mut full = vec![0u32; w * h];
+        View::new().build(&mut fterm, true, &mut Target { soft: &mut fresh, fb: &mut full, w, h });
+        stack.draw(&mut full, (w, h), (ml, mt), g, now);
+        let diff = fb.iter().zip(&full).filter(|(a, b)| a != b).count();
+        assert_eq!(diff, 0, "step {n} ({ms} ms): {diff} pixels differ from a full repaint");
+    }
+    assert!(partial >= 6, "the fade was painted part by part, not a window each time ({partial} of {} frames)", steps.len());
 }
 
 /// The prompt chips are drawn over rows the terminal did not change, so painting row by row must still

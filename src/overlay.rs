@@ -18,7 +18,7 @@
 // The kit's API is wider than what the app uses yet: the palette, the overview and the dialogs are built on it next (ADR 0025).
 #![allow(dead_code)]
 
-use std::{any::Any, borrow::Cow, cell::RefCell, time::Instant};
+use std::{any::Any, borrow::Cow, cell::RefCell, rc::Rc, time::Instant};
 
 use crate::{
     chrome::{self, TITLE_H},
@@ -82,7 +82,7 @@ pub fn accent() -> [f32; 3] {
 /// screen), else the grid's monospace font at the size asked for. ~5 MB of parsed outlines that the terminal
 /// itself never needs: the stack loads it when the first overlay opens and drops it when the last one closes.
 pub struct Text {
-    prop: Option<UiFont>,
+    prop: Option<Rc<UiFont>>,
     mono: Option<Fonts>,
     /// One glyph of the monospace fallback.
     scratch: RefCell<Vec<u8>>,
@@ -125,7 +125,7 @@ impl Ink {
 
 impl Text {
     pub fn load() -> Text {
-        let prop = UiFont::load();
+        let prop = UiFont::shared();
         let mono = prop.is_none().then(|| Fonts::new(&FontCfg::sized(MONO_PX)));
         Text { prop, mono, scratch: RefCell::default() }
     }
@@ -187,16 +187,38 @@ pub fn fit<'a>(s: &'a str, max: i32, width: impl Fn(&str) -> i32) -> Cow<'a, str
         return Cow::Borrowed(s);
     }
     let ell = width("…");
-    let mut out = String::new();
-    for c in s.chars() {
-        out.push(c);
-        if width(&out) + ell > max {
-            out.pop();
+    // The longest prefix that fits with the ellipsis. A longer prefix is never narrower, so the cut is found by halving
+    // (measuring the text once for each halving, not once for each of its characters).
+    let prefix = |k: usize| s.char_indices().nth(k).map_or(s, |(b, _)| &s[..b]);
+    let (mut lo, mut hi) = (0, s.chars().count());
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        if width(prefix(mid)) + ell <= max {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    let kept = prefix(lo);
+    let mut out = String::with_capacity(kept.len() + '…'.len_utf8());
+    out.push_str(kept);
+    out.push('…');
+    Cow::Owned(out)
+}
+
+/// `n` in decimal in `buf`, which has room for any: a number that is painted again with every frame needs no
+/// string of its own.
+pub fn dec(n: usize, buf: &mut [u8; 20]) -> &str {
+    let (mut at, mut n) = (buf.len(), n);
+    loop {
+        at -= 1;
+        buf[at] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
             break;
         }
     }
-    out.push('…');
-    Cow::Owned(out)
+    std::str::from_utf8(&buf[at..]).unwrap_or_default()
 }
 
 // ------------------------------------------------------------------- fade --
@@ -367,8 +389,8 @@ pub trait Overlay {
 /// draw time (`Stack::draw_with`), so an overlay never holds a terminal or a font of the grid.
 pub trait Grid {
     /// Appends to `out` the last `rows` text rows of window `id`'s focused pane (what is on its screen, ending at
-    /// the last row with text or the cursor's, trailing blanks cut), one `\n` between rows. True while a command
-    /// runs in it.
+    /// the last row with text or the cursor's, trailing blanks cut), one `\n` between rows; nothing when its terminal
+    /// is busy (the app does not wait for it). True while a command runs in it.
     fn tail(&mut self, id: u32, rows: usize, out: &mut String) -> bool;
 
     /// `s` in the grid's font at `scale` of its size, its left edge at `x`, its vertical centre at `cy`, in the
@@ -430,6 +452,32 @@ struct Slot {
     o: Box<dyn Overlay>,
 }
 
+/// What the overlays paint over a frame (`Stack::extent`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Extent {
+    Nothing,
+    Window,
+    /// A box, in window pixels.
+    Part(Rect),
+}
+
+impl Extent {
+    /// What the frame under the overlays has to give back when they were `self` in the last frame and are `now` in this
+    /// one: the whole window, or one box. None when there is nothing to give back (neither painted anything, or only
+    /// the first frame of a toast, which paints over what is clean).
+    pub fn to_restore(self, now: Extent) -> Option<Extent> {
+        match (self, now) {
+            (Extent::Nothing, Extent::Nothing | Extent::Part(_)) => None,
+            (Extent::Window, _) | (_, Extent::Window) => Some(Extent::Window),
+            (Extent::Part(a), Extent::Nothing) => Some(Extent::Part(a)),
+            (Extent::Part((ax, ay, aw, ah)), Extent::Part((bx, by, bw, bh))) => {
+                let (x, y) = (ax.min(bx), ay.min(by));
+                Some(Extent::Part((x, y, (ax + aw).max(bx + bw) - x, (ay + ah).max(by + bh) - y)))
+            }
+        }
+    }
+}
+
 /// The overlays the app has open, bottom to top, and the toast. The app owns one; `wlapp.rs` sends it every
 /// key, pointer move, button and wheel event first and uses what it did not take.
 #[derive(Default)]
@@ -487,10 +535,10 @@ impl Stack {
         self.text.get_or_insert_with(Text::load);
     }
 
-    /// Drops the font once nothing is shown.
+    /// Drops the font once nothing is shown, and gives its memory back (it is kept by whoever else shares it).
     fn trim(&mut self) {
-        if self.is_empty() {
-            self.text = None;
+        if self.is_empty() && self.text.take().is_some() {
+            crate::font::release_memory();
         }
     }
 
@@ -647,6 +695,18 @@ impl Stack {
             t.paint(&mut p, &cx, now);
         }
         animating
+    }
+
+    /// What the overlays paint over a frame: all of the window while one is open (it dims it), else only the toast's box,
+    /// with its shadow. The app paints the window again under it before each frame, all of it or just that part.
+    pub fn extent(&self, g: Geo) -> Extent {
+        if self.is_open() {
+            return Extent::Window;
+        }
+        match (&self.toast, &self.text) {
+            (Some(t), Some(font)) => Extent::Part(t.extent(&Cx { g, text: font })),
+            _ => Extent::Nothing,
+        }
     }
 
     /// When the app must wake next for the toast (to start its fade, to take it away): none while there is
@@ -941,6 +1001,30 @@ mod tests {
     use super::*;
     use crate::input::sym;
 
+    #[test]
+    fn the_frame_gives_back_what_the_overlays_painted_before_and_what_they_paint_now() {
+        let (a, b) = (Extent::Part((10, 20, 30, 40)), Extent::Part((50, 10, 20, 20)));
+        assert_eq!(Extent::Nothing.to_restore(Extent::Nothing), None);
+        assert_eq!(Extent::Nothing.to_restore(a), None, "the first frame paints over a clean one");
+        assert_eq!(a.to_restore(Extent::Nothing), Some(a), "a toast that went");
+        assert_eq!(a.to_restore(b), Some(Extent::Part((10, 10, 60, 50))), "one that moved: both boxes");
+        for (was, now) in [(Extent::Window, Extent::Window), (Extent::Window, Extent::Nothing), (a, Extent::Window), (Extent::Nothing, Extent::Window)] {
+            assert_eq!(was.to_restore(now), Some(Extent::Window), "{was:?} {now:?}");
+        }
+    }
+
+    #[test]
+    fn a_stack_paints_over_the_window_while_one_is_open_and_over_the_toast_alone_otherwise() {
+        let g = Geo { w: 900, h: 620, square: false };
+        let mut s = Stack::default();
+        assert_eq!(s.extent(g), Extent::Nothing);
+        s.toast("hi", None, 0, Instant::now());
+        let Extent::Part((x, y, w, h)) = s.extent(g) else { panic!("a toast has a box") };
+        assert!(x > 0 && x + w < g.w && y > TITLE_H as i32 && y + h <= g.h, "{:?}", (x, y, w, h));
+        s.open(7, Box::new(Probe { log: Rc::default(), on_key: Out::None, card: (0, 0, 1, 1), esc: false }));
+        assert_eq!(s.extent(g), Extent::Window);
+    }
+
     const G: Geo = Geo { w: 900, h: 620, square: false };
 
     #[test]
@@ -951,6 +1035,33 @@ mod tests {
         assert!(w(&fit("a very long title", 80, w)) <= 80);
         assert_eq!(fit("abc", 8, w), "…");
         assert_eq!(fit("", 0, w), "");
+        // Halving finds what adding a character at a time did: the longest prefix that fits with the ellipsis.
+        for max in 0..200 {
+            let slow = {
+                let mut out = String::new();
+                for c in "a very long title with ünïcode".chars() {
+                    out.push(c);
+                    if w(&out) + w("…") > max {
+                        out.pop();
+                        break;
+                    }
+                }
+                out.push('…');
+                out
+            };
+            let got = fit("a very long title with ünïcode", max, w);
+            if w("a very long title with ünïcode") > max {
+                assert_eq!(got, slow, "max {max}");
+            }
+        }
+    }
+
+    #[test]
+    fn numbers_are_written_in_a_buffer() {
+        let mut b = [0u8; 20];
+        for n in [0, 7, 10, 4096, usize::MAX] {
+            assert_eq!(dec(n, &mut b), n.to_string());
+        }
     }
 
     #[test]

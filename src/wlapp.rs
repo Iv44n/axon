@@ -190,6 +190,9 @@ struct Pane {
     refresh: Refresh,
     /// The title the program set (empty: the directory's name is used).
     title: String,
+    /// The directory of its shell in short form (`~/lab/axon`), read again when the shell may have moved
+    /// (`read_dir`): the list, the tabs and the title bar show it without asking the system each time.
+    dir: String,
     /// The size, in columns and rows, its terminal and PTY were told.
     size: (usize, usize),
 }
@@ -256,6 +259,8 @@ struct App {
     side_hover: Option<side::Part>,
     side_dirty: bool,
     side_scratch: Vec<u8>,
+    /// What the list shows of the windows, filled again for each paint (`fill_items`).
+    items: side::Items,
     /// The groups, in the order the panel shows them, how many were ever made (for their names), and what
     /// the panel lists now (rebuilt whenever the windows or the groups change).
     groups: Vec<Group>,
@@ -317,6 +322,8 @@ struct App {
     overlays: Stack,
     overlay_cursor: Option<overlay::Cursor>,
     prefs_dirty: bool,
+    /// What the overlays painted over the last frame (`give_back_to_overlays`).
+    overlay_extent: overlay::Extent,
     save_at: Option<Instant>,
     dirty: bool,
     quit: bool,
@@ -348,38 +355,46 @@ fn own_title(t: &str) -> bool {
     !t.is_empty() && !t.split_once(':').is_some_and(|(host, _)| host.contains('@') && !host.contains(' '))
 }
 
-/// The directory of a pane's shell, in short form (`~/lab/axon`).
-fn pane_place(p: &Pane) -> String {
-    let cwd = std::fs::read_link(format!("/proc/{}/cwd", p.shell)).unwrap_or_default();
-    let home = std::env::var("HOME").ok();
-    context::tidy_dir(&cwd.to_string_lossy(), home.as_deref())
+/// The last part of a directory in short form (`~/lab/axon`, `…/a/b/c`, `/`): `axon`, `c`, `/`.
+fn dir_name(dir: &str) -> &str {
+    match dir.rsplit('/').next() {
+        Some("") | None => "/",
+        Some(name) => name,
+    }
+}
+
+impl Pane {
+    /// Reads the directory of the pane's shell again. True when it is another one. Asked when the shell may have
+    /// moved (a prompt, a new title, the window coming on screen), not when the list is painted: the painters
+    /// only read `dir`.
+    fn read_dir(&mut self) -> bool {
+        let cwd = std::fs::read_link(format!("/proc/{}/cwd", self.shell)).unwrap_or_default();
+        let home = std::env::var("HOME").ok();
+        let dir = context::tidy_dir(&cwd.to_string_lossy(), home.as_deref());
+        let moved = dir != self.dir;
+        self.dir = dir;
+        moved
+    }
 }
 
 /// The name of a pane: what its program set, else the name of its directory.
-fn pane_title(p: &Pane) -> String {
-    if own_title(&p.title) {
-        return p.title.clone();
-    }
-    let cwd = std::fs::read_link(format!("/proc/{}/cwd", p.shell)).unwrap_or_default();
-    if std::env::var_os("HOME").map(PathBuf::from).as_deref() == Some(cwd.as_path()) {
-        return "~".into();
-    }
-    cwd.file_name().map_or_else(|| "/".into(), |n| n.to_string_lossy().into_owned())
+fn pane_name(p: &Pane) -> &str {
+    if own_title(&p.title) { &p.title } else { dir_name(&p.dir) }
 }
 
-/// The directory of a window's shell: the one in the pane with the focus.
-fn win_place(w: &Win) -> String {
-    pane_place(w.pane())
+/// The directory of a window's shell, in short form: the one in the pane with the focus.
+fn win_place(w: &Win) -> &str {
+    &w.pane().dir
 }
 
 /// The name a window has without one of its own: that of the pane with the focus.
-fn auto_title(w: &Win) -> String {
-    pane_title(w.pane())
+fn auto_title(w: &Win) -> &str {
+    pane_name(w.pane())
 }
 
 /// The name of a window: the one the user gave it, else the automatic one.
-fn win_title(w: &Win) -> String {
-    if w.name.is_empty() { auto_title(w) } else { w.name.clone() }
+fn win_title(w: &Win) -> &str {
+    if w.name.is_empty() { auto_title(w) } else { &w.name }
 }
 
 /// A debugging aid (`AXON_RUNNING`): every pane counts as running a command, whatever its shell says (a shell with
@@ -402,10 +417,13 @@ fn pane_status(p: &Pane) -> side::Status {
     }
 }
 
-/// The text of pane `i`'s row in the panel: `Pane 2`, and what a program set as its title after it.
-fn pane_label(i: usize, p: &Pane) -> String {
-    let n = format!("{} {}", tr(Str::Pane), i + 1);
-    if own_title(&p.title) { format!("{n} \u{b7} {}", p.title) } else { n }
+/// Writes the text of pane `i`'s row in the panel: `Pane 2`, and what a program set as its title after it.
+fn pane_label(out: &mut String, i: usize, p: &Pane) {
+    use std::fmt::Write;
+    let _ = write!(out, "{} {}", tr(Str::Pane), i + 1);
+    if own_title(&p.title) {
+        let _ = write!(out, " \u{b7} {}", p.title);
+    }
 }
 
 /// Tells a program that asked for focus reports (mode 1004) that its pane got or lost the focus.
@@ -442,30 +460,21 @@ fn fit_side(ww: u32, side: u32, prefs_w: u32) -> u32 {
     if side + prefs_w + MIN_GRID <= ww { side } else { 0 }
 }
 
-/// The list of windows as the panel and the tabs show it. A tab at the top says how many panes its window has
-/// (`top`); the panel lists them under the window instead.
-fn items(wins: &[Win], cur: usize, top: bool) -> Vec<side::Item> {
-    items_with(wins, cur, top, true)
-}
-
-/// `items`, with the titles (which cost a look at each shell's directory) or without: the spinners need only the
-/// status.
-fn items_with(wins: &[Win], cur: usize, top: bool, titles: bool) -> Vec<side::Item> {
-    wins.iter()
-        .enumerate()
-        .map(|(i, w)| side::Item {
-            title: if titles { win_title(w) } else { String::new() },
-            selected: i == cur,
-            unread: w.unread,
-            badge: if top && w.panes.len() > 1 { w.panes.len() } else { 0 },
-            status: side::Status::of(w.panes.iter().map(pane_status)),
-            panes: if w.panes.len() > 1 {
-                w.panes.iter().enumerate().map(|(j, p)| side::PaneItem { title: if titles { pane_label(j, p) } else { String::new() }, active: i == cur && j == w.focus, status: pane_status(p) }).collect()
-            } else {
-                Vec::new()
-            },
-        })
-        .collect()
+/// The list of windows as the panel and the tabs show it, written into `items` (kept between frames: nothing is
+/// allocated once it has grown). A tab at the top says how many panes its window has (`top`); the panel lists them
+/// under the window instead. A window being renamed (`edit`) has no title under its field.
+fn fill_items(items: &mut side::Items, wins: &[Win], cur: usize, top: bool, edit: Editing) {
+    items.clear();
+    for (i, w) in wins.iter().enumerate() {
+        let title = if edit.is_some_and(|(wi, _)| wi == i) { "" } else { win_title(w) };
+        let badge = if top && w.panes.len() > 1 { w.panes.len() } else { 0 };
+        items.push_win(title, i == cur, w.unread, badge, side::Status::of(w.panes.iter().map(pane_status)));
+        if w.panes.len() > 1 {
+            for (j, p) in w.panes.iter().enumerate() {
+                items.push_pane(i == cur && j == w.focus, pane_status(p), |t| pane_label(t, j, p));
+            }
+        }
+    }
 }
 
 /// The groups as the panel shows them: each pane counts as a window of its group (the reference's `windowCount`).
@@ -498,14 +507,10 @@ fn edit_of(f: &field::Field) -> side::Edit<'_> {
 
 /// Paints the panel of windows over its cleared box.
 #[allow(clippy::too_many_arguments)]
-fn paint_side(soft: &Soft, fb: &mut [u32], wins: &[Win], groups: &[side::GroupItem], entries: &[side::Entry], cur: usize, right: bool, look: side::Look, edit: Editing, scratch: &mut Vec<u8>) {
+fn paint_side(soft: &Soft, fb: &mut [u32], items: &side::Items, groups: &[side::GroupItem], entries: &[side::Entry], right: bool, look: side::Look, edit: Editing, scratch: &mut Vec<u8>) {
     let (Some(rect), Some(b)) = (soft.side_rect(), side_box(soft)) else { return };
     soft.clear_rect(fb, rect);
-    let mut list = items(wins, cur, false);
-    if let Some((wi, _)) = edit {
-        list[wi].title.clear();
-    }
-    side::paint(soft, fb, b, !right, &tr(Str::Windows), entries, groups, &list, look, scratch);
+    side::paint(soft, fb, b, !right, &tr(Str::Windows), entries, groups, items, look, scratch);
     if let Some((wi, f)) = edit {
         side::paint_rename(soft, fb, side::Layout::Side { x0: b.0, y0: b.1, w: b.2, entries }, wi, &edit_of(f), look.hover, scratch);
     }
@@ -513,33 +518,51 @@ fn paint_side(soft: &Soft, fb: &mut [u32], wins: &[Win], groups: &[side::GroupIt
 
 /// Paints the tabs in the title bar, over the bar cleared between the buttons.
 #[allow(clippy::too_many_arguments)]
-fn paint_tabs(soft: &Soft, fb: &mut [u32], wins: &[Win], groups: &[side::GroupItem], entries: &[side::Entry], cur: usize, w: u32, look: side::Look, edit: Editing, scratch: &mut Vec<u8>) {
+fn paint_tabs(soft: &Soft, fb: &mut [u32], items: &side::Items, groups: &[side::GroupItem], entries: &[side::Entry], w: u32, look: side::Look, edit: Editing, scratch: &mut Vec<u8>) {
     let (ox, oy) = soft.origin();
     let (x0, x1) = tabs_span(w);
     soft.clear_rect(fb, (ox + x0 as usize, oy, ox + x1 as usize, oy + chrome::TITLE_H));
-    let mut list = items(wins, cur, true);
-    if let Some((wi, _)) = edit {
-        list[wi].title.clear();
-    }
-    side::paint_top(soft, fb, (x0, x1), entries, groups, &list, look, scratch);
+    side::paint_top(soft, fb, (x0, x1), entries, groups, items, look, scratch);
     if let Some((wi, f)) = edit {
         side::paint_rename(soft, fb, side::Layout::Top { x0, x1, entries, groups, cw: side::chip_cw(soft) }, wi, &edit_of(f), look.hover, scratch);
     }
 }
 
 /// Turns the spinners of the panel a step (`side::paint_spin`): only the rings are painted again.
-#[allow(clippy::too_many_arguments)]
-fn spin_side(soft: &Soft, fb: &mut [u32], wins: &[Win], groups: &[side::GroupItem], entries: &[side::Entry], cur: usize, look: side::Look) {
+fn spin_side(soft: &Soft, fb: &mut [u32], items: &side::Items, groups: &[side::GroupItem], entries: &[side::Entry], look: side::Look) {
     let Some(b) = side_box(soft) else { return };
-    side::paint_spin(soft, fb, side::Layout::Side { x0: b.0, y0: b.1, w: b.2, entries }, b.1 + b.3, entries, groups, &items_with(wins, cur, false, false), look);
+    side::paint_spin(soft, fb, side::Layout::Side { x0: b.0, y0: b.1, w: b.2, entries }, b.1 + b.3, entries, groups, items, look);
 }
 
 /// The same for the tabs in the title bar.
-#[allow(clippy::too_many_arguments)]
-fn spin_tabs(soft: &Soft, fb: &mut [u32], wins: &[Win], groups: &[side::GroupItem], entries: &[side::Entry], cur: usize, w: u32, look: side::Look) {
+fn spin_tabs(soft: &Soft, fb: &mut [u32], items: &side::Items, groups: &[side::GroupItem], entries: &[side::Entry], w: u32, look: side::Look) {
     let (x0, x1) = tabs_span(w);
     let lay = side::Layout::Top { x0, x1, entries, groups, cw: side::chip_cw(soft) };
-    side::paint_spin(soft, fb, lay, 0, entries, groups, &items_with(wins, cur, true, false), look);
+    side::paint_spin(soft, fb, lay, 0, entries, groups, items, look);
+}
+
+/// The overlays are painted over a frame that has to be clean under them (their translucent pixels would pile up on
+/// what the last frame left): all of the window while one is open, and under a toast only the toast's box, so the
+/// fade of a toast costs what a toast covers and not a whole window. `extent` is what they painted over the last
+/// frame; `win` is the window on screen.
+fn give_back_to_overlays(overlays: &Stack, extent: &mut overlay::Extent, soft: &mut Soft, win: &mut Win, geo: Geo) {
+    let now = overlays.extent(geo);
+    let was = std::mem::replace(extent, now);
+    let part = match was.to_restore(now) {
+        None => return,
+        Some(overlay::Extent::Part(b)) => b,
+        Some(_) => return soft.invalidate(),
+    };
+    let r = panes::Rect::new(part.0, part.1, part.2, part.3);
+    if !soft.restore(r) {
+        return soft.invalidate();
+    }
+    // The rows under it are written again (with the chips over them).
+    for (pi, pane) in win.panes.iter_mut().enumerate() {
+        for row in soft.rows_under(pi, r.y, r.y2()) {
+            pane.view.invalidate_row(row);
+        }
+    }
 }
 
 /// Runs the app. Returns false, with nothing shown, if this backend cannot start here (no Wayland
@@ -570,7 +593,7 @@ impl Pane {
         let inherited = std::env::var("PROMPT_COMMAND").ok();
         let env = context::shell_env(&shell_path, report.as_deref(), flag.as_deref(), inherited.as_deref()).into_iter().collect();
         let (term, pty, shell) = session::spawn(proxy.clone(), cols, rows, cw, ch, n, env, cursor, dir);
-        Pane {
+        let mut pane = Pane {
             term,
             pty,
             proxy,
@@ -584,8 +607,11 @@ impl Pane {
             flag,
             refresh: Refresh { due: chips.then(Instant::now), last: Instant::now(), running: Arc::new(AtomicBool::new(false)), done: Arc::default(), clock_at: None },
             title: String::new(),
+            dir: String::new(),
             size: (cols, rows),
-        }
+        };
+        pane.read_dir();
+        pane
     }
 }
 
@@ -666,6 +692,7 @@ impl App {
             side_hover: None,
             side_dirty: true,
             side_scratch: Vec::new(),
+            items: side::Items::default(),
             groups: Vec::new(),
             groups_made: 0,
             entries: Vec::new(),
@@ -704,6 +731,7 @@ impl App {
             overlays: Stack::default(),
             overlay_cursor: None,
             prefs_dirty: false,
+            overlay_extent: overlay::Extent::Nothing,
             save_at: None,
             dirty: true,
             waiting: None,
@@ -880,9 +908,7 @@ impl App {
         let (cols, rows) = win.pane().size;
         self.soft.set_status(shell, branch, cols, rows);
         self.soft.set_ui(self.ui);
-        if !self.overlays.is_empty() {
-            self.soft.invalidate(); // the overlays are painted over a complete grid, every time
-        }
+        give_back_to_overlays(&self.overlays, &mut self.overlay_extent, &mut self.soft, win, geo);
         // Every pane in turn, pane 0 first (it begins the frame); one without the focus is drawn dimmer and
         // with a hollow cursor.
         let chips = &self.cfg.input.chips;
@@ -906,18 +932,19 @@ impl App {
         if full || self.spin_due {
             let look = side::Look { hover: self.side_hover, drag, phase: side::spin_phase(self.spin_t0.elapsed().as_millis()) };
             let edit: Editing = self.rename.as_ref().and_then(|r| self.wins.iter().position(|w| w.id == r.win).map(|wi| (wi, &r.field)));
+            fill_items(&mut self.items, &self.wins, self.cur, top, edit);
             if !full {
                 // Only the spinners are due: the rings are painted again, not the list.
                 if top {
-                    spin_tabs(&self.soft, fb, &self.wins, &self.gitems, &self.entries, self.cur, self.w, look);
+                    spin_tabs(&self.soft, fb, &self.items, &self.gitems, &self.entries, self.w, look);
                 } else {
-                    spin_side(&self.soft, fb, &self.wins, &self.gitems, &self.entries, self.cur, look);
+                    spin_side(&self.soft, fb, &self.items, &self.gitems, &self.entries, look);
                 }
             } else if top {
-                paint_tabs(&self.soft, fb, &self.wins, &self.gitems, &self.entries, self.cur, self.w, look, edit, &mut self.side_scratch);
+                paint_tabs(&self.soft, fb, &self.items, &self.gitems, &self.entries, self.w, look, edit, &mut self.side_scratch);
             } else {
                 let right = self.cfg.windows.tabs == config::TabsPos::Right;
-                paint_side(&self.soft, fb, &self.wins, &self.gitems, &self.entries, self.cur, right, look, edit, &mut self.side_scratch);
+                paint_side(&self.soft, fb, &self.items, &self.gitems, &self.entries, right, look, edit, &mut self.side_scratch);
             }
             self.side_dirty = false;
             self.spin_due = false;
@@ -950,8 +977,10 @@ impl App {
         for i in 0..self.wins.len() {
             for j in 0..self.wins[i].panes.len() {
                 if i != self.cur && self.wins[i].panes[j].proxy.pending.swap(false, Ordering::AcqRel) {
-                    // A window out of sight printed: say so in the panel; the grid is read when it comes back.
+                    // A window out of sight printed: say so in the panel; the grid is read when it comes back. It may
+                    // have moved: the panel says where it is.
                     if !self.wins[i].unread {
+                        self.wins[i].panes[j].read_dir();
                         self.wins[i].unread = true;
                         self.side_dirty = true;
                         self.dirty = true;
@@ -960,24 +989,37 @@ impl App {
                 loop {
                     let Some((at, hook)) = self.wins[i].panes[j].proxy.hooks.lock().unwrap().pop_front() else { break };
                     let p = &mut self.wins[i].panes[j];
-                    match hook {
-                        Hook::Start => p.history.start(at),
-                        Hook::Prompt { n, status } => p.history.prompt(n, status, at, &p.ctx),
-                    }
+                    let moved = match hook {
+                        Hook::Start => {
+                            p.history.start(at);
+                            false
+                        }
+                        // A prompt is where the shell has moved to, if it did.
+                        Hook::Prompt { n, status } => {
+                            p.history.prompt(n, status, at, &p.ctx);
+                            p.read_dir()
+                        }
+                    };
                     // The panel and the tabs say whether a command runs or failed (a folded group, that one does).
                     self.refresh_groups();
+                    if moved {
+                        self.titled(i);
+                    }
                     self.side_dirty = true;
                     self.dirty = true;
                 }
                 loop {
                     let Some(e) = self.wins[i].panes[j].proxy.queue.lock().unwrap().pop_front() else { break };
                     match e {
+                        // Shells set the title at their prompt, with the directory in it: a moment to look where they are.
                         TermEvent::Title(t) => {
                             self.wins[i].panes[j].title = t;
+                            self.wins[i].panes[j].read_dir();
                             self.titled(i);
                         }
                         TermEvent::ResetTitle => {
                             self.wins[i].panes[j].title.clear();
+                            self.wins[i].panes[j].read_dir();
                             self.titled(i);
                         }
                         TermEvent::PtyWrite(t) => self.wins[i].panes[j].pty.notify(t.into_bytes()),
@@ -1014,7 +1056,7 @@ impl App {
         if i == self.cur {
             let (name, place) = (win_title(&self.wins[i]), win_place(&self.wins[i]));
             self.wl.set_title(&format!("{name} {place}"));
-            self.soft.set_title(&name, &place);
+            self.soft.set_title(name, place);
         }
         self.side_dirty = true;
         self.dirty = true;
@@ -1348,6 +1390,7 @@ impl App {
         for p in &mut w.panes {
             p.ctx_dirty = true;
             p.refresh.due = Some(Instant::now());
+            p.read_dir();
         }
         self.titled(i);
         self.soft.invalidate();
@@ -1550,6 +1593,7 @@ impl App {
             pane.ctx_dirty = true;
             self.dirty = true;
             if moved {
+                pane.read_dir();
                 self.titled(cur);
             }
         }
@@ -1635,6 +1679,7 @@ impl App {
         if self.panel.take().is_none() {
             return;
         }
+        crate::font::release_memory();
         self.ui.prefs = false;
         if self.hover == Hit::Prefs {
             self.hover = Hit::Client; // the grid is under the pointer now
@@ -2114,7 +2159,7 @@ impl App {
 
     /// Opens the command palette (`Ctrl+K`) over the windows and groups there are now.
     fn open_palette(&mut self) {
-        let wins: Vec<commands::WinInfo> = self.wins.iter().map(|w| commands::WinInfo { id: w.id, title: win_title(w), place: win_place(w), group: w.group }).collect();
+        let wins: Vec<commands::WinInfo> = self.wins.iter().map(|w| commands::WinInfo { id: w.id, title: win_title(w).to_string(), place: win_place(w).to_string(), group: w.group }).collect();
         let groups = group_items(&self.groups, &self.wins);
         let w = &self.wins[self.cur];
         let state = commands::State { wins: &wins, groups: &groups, cur: self.cur, panes: w.panes.len(), overview: true };
@@ -2667,7 +2712,7 @@ impl App {
         let Some(a) = dnd::arrange(&before, self.groups.len(), grab, to) else { return };
         let id = self.wins[self.cur].id;
         // What the toast says, from the window as it was: its name, and the group it was in.
-        let moved = if let dnd::Grab::Win(w) = grab { Some((win_title(&self.wins[w]), before[w].map(|g| self.groups[g].name.clone()))) } else { None };
+        let moved = if let dnd::Grab::Win(w) = grab { Some((win_title(&self.wins[w]).to_string(), before[w].map(|g| self.groups[g].name.clone()))) } else { None };
         let mut wins: Vec<Option<Win>> = self.wins.drain(..).map(Some).collect();
         self.wins = a.order.iter().filter_map(|&i| wins.get_mut(i)?.take()).collect();
         let mut groups: Vec<Option<Group>> = self.groups.drain(..).map(Some).collect();
