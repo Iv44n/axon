@@ -147,6 +147,7 @@ impl App {
         let label = label.unwrap_or_else(|| self.closed_label(&idx));
         let placeholder = (idx.len() == self.wins.len()).then(|| self.spawn_win(Spawn::default()));
         let n = self.wins.len();
+        let was = self.wins[self.cur].id;
         let cur = groups::after_close(self.cur, &idx, n);
         // Out of the list, last first so that the indices stay right; each remembers its group.
         let mut entries = Vec::with_capacity(idx.len());
@@ -162,7 +163,7 @@ impl App {
         }
         self.cur = cur;
         self.rebuild_side();
-        self.switch_to(self.cur);
+        self.show_after_close(was);
         let now = Instant::now();
         self.undo = Some(Undo { entries, placeholder, until: now + toast::TTL + Duration::from_millis(250) });
         self.overlays.toast(&label, Some(tr(Str::OvUndo)), CMD_UNDO, now);
@@ -429,7 +430,7 @@ impl App {
             }
             (Cmd::ClosePane, Target::Pane(w, pi)) => {
                 if let Some(wi) = self.win_index(w) {
-                    self.close_pane(wi, pi);
+                    self.close_pane_asked(wi, pi);
                 }
             }
             (Cmd::NewWin, _) => self.new_win(),

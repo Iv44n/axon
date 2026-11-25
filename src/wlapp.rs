@@ -424,10 +424,22 @@ fn tabs_span(w: u32) -> (i32, i32) {
 /// are tabs at the top) and the settings' (`prefs_w` wide, 0 when closed). The reference puts the settings on the
 /// edge opposite the windows' panel: `.main` is a row of windows, workspace, settings, and with the windows at the
 /// right the settings go to the left. They never share an edge, so nothing has to say how they would stack.
-fn docks(w: &config::WindowsCfg, prefs_w: u32) -> (Dock, Dock) {
+/// In a window `ww` wide the grid keeps `MIN_GRID` pixels at least: the windows' panel gives way (`fit_side`).
+fn docks(w: &config::WindowsCfg, prefs_w: u32, ww: u32) -> (Dock, Dock) {
     let right = w.tabs == config::TabsPos::Right;
-    let side = if w.side && w.tabs != config::TabsPos::Top { w.side_w } else { 0 };
+    let side = if w.side && w.tabs != config::TabsPos::Top { fit_side(ww, w.side_w, prefs_w) } else { 0 };
     (Dock { w: side, left: !right }, Dock { w: prefs_w, left: right })
+}
+
+/// The least width the grid keeps beside the panels, in pixels (the settings panel takes at most 62 % of the
+/// window, so it alone never leaves less in a window of the least size).
+const MIN_GRID: u32 = 120;
+
+/// The room of the windows' panel, `side` wide, in a window `ww` wide with the settings `prefs_w` wide: its own
+/// width, or none when that would leave the grid less than `MIN_GRID` (a narrow window, or a half-screen tile, with
+/// both panels open). A negative workspace is what `Soft::paint_rows` could not paint.
+fn fit_side(ww: u32, side: u32, prefs_w: u32) -> u32 {
+    if side + prefs_w + MIN_GRID <= ww { side } else { 0 }
 }
 
 /// The list of windows as the panel and the tabs show it. A tab at the top says how many panes its window has
@@ -464,6 +476,7 @@ fn group_items(groups: &[Group], wins: &[Win]) -> Vec<side::GroupItem> {
         .map(|(g, x)| {
             let members = || wins.iter().filter(move |w| w.group == Some(g));
             side::GroupItem {
+                id: x.id,
                 name: x.name.clone(),
                 color: x.color,
                 collapsed: x.collapsed,
@@ -627,7 +640,7 @@ impl App {
         }
 
         let wake = Arc::new(eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)?);
-        let (side_dock, prefs_dock) = docks(&cfg.windows, 0);
+        let (side_dock, prefs_dock) = docks(&cfg.windows, 0, w);
         soft.set_docks(side_dock, prefs_dock);
         ui.side = match (cfg.windows.tabs, cfg.windows.side) {
             (config::TabsPos::Top, _) => 0,
@@ -1013,7 +1026,7 @@ impl App {
     /// its box is.
     fn apply_inset(&mut self) {
         let prefs_w = if self.panel.is_some() { settings::panel_width(self.w) } else { 0 };
-        let (side, prefs) = docks(&self.cfg.windows, prefs_w);
+        let (side, prefs) = docks(&self.cfg.windows, prefs_w, self.w);
         self.soft.set_ui(self.ui);
         self.soft.set_docks(side, prefs);
         self.soft.set_tabs_top(self.cfg.windows.tabs == config::TabsPos::Top);
@@ -1071,7 +1084,8 @@ impl App {
         };
         let saved = config::save(&[("windows.tabs", Some(format!("{:?}", pos.name()))), ("windows.side", Some(windows.side.to_string()))]);
         self.cfg.windows = windows;
-        self.side_hover = None;
+        // The list differs between the tabs at the top (no pane rows) and the panel at a side.
+        self.relist();
         if let Some(p) = self.panel.as_mut() {
             p.follow_tabs(&self.cfg.windows);
             self.prefs_dirty = true;
@@ -1116,13 +1130,23 @@ impl App {
             self.quit = true;
             return;
         }
+        let was = self.wins[self.cur].id;
         self.wins.remove(i);
         if i < self.cur || self.cur >= self.wins.len() {
             self.cur = self.cur.saturating_sub(1).min(self.wins.len() - 1);
         }
         self.prune_groups();
         self.rebuild_side();
-        self.switch_to(self.cur);
+        self.show_after_close(was);
+    }
+
+    /// Windows left the list, and `was` (a window's id) was on screen: another window is shown only when that one went.
+    /// A shell that ends out of sight must not stop the key repeat, the selection or the mouse drag of the window
+    /// that stays (`switch_to` drops them); the list was painted again by `rebuild_side`.
+    fn show_after_close(&mut self, was: u64) {
+        if self.wins[self.cur].id != was {
+            self.switch_to(self.cur);
+        }
     }
 
     // -------------------------------------------------------------- panes --
@@ -1186,8 +1210,18 @@ impl App {
         }
     }
 
-    /// Closes pane `pi` of window `wi` (its shell is told to end). The last pane of a window closes the window. The
-    /// focus goes to the pane before the closed one, as in the reference.
+    /// The user closes pane `pi` of window `wi` (a shortcut, a cross, a menu or the palette): a pane that is the
+    /// last of its window closes the window as `Alt+W` does, with the toast that undoes it.
+    fn close_pane_asked(&mut self, wi: usize, pi: usize) {
+        match self.wins.get(wi) {
+            Some(w) if w.panes.len() == 1 && pi == 0 => self.close_wins(&[w.id], None),
+            _ => self.close_pane(wi, pi),
+        }
+    }
+
+    /// Closes pane `pi` of window `wi` (its shell is told to end; also what a shell that ended does). The last pane
+    /// of a window closes the window. The focus stays where it was, or, when this pane had it, goes to the pane
+    /// before it, as in the reference.
     fn close_pane(&mut self, wi: usize, pi: usize) {
         let Some(w) = self.wins.get_mut(wi) else { return };
         if pi >= w.panes.len() {
@@ -1200,14 +1234,11 @@ impl App {
         let kept = (w.focus != pi).then(|| if w.focus > pi { w.focus - 1 } else { w.focus });
         w.panes.remove(pi);
         w.kind = panes::after_remove(w.kind, w.panes.len());
-        w.focus = panes::focus_after_remove(pi);
-        if self.ui.focused && wi == self.cur {
-            if let Some(k) = kept.filter(|&k| k != w.focus) {
-                report_focus(&w.panes[k], false);
-            }
-            if kept != Some(w.focus) {
-                report_focus(&w.panes[w.focus], true);
-            }
+        // A shell that ended in a pane without the focus leaves the focus where it was.
+        w.focus = kept.unwrap_or_else(|| panes::focus_after_remove(pi));
+        // The pane that had the focus went: the one that has it now is told.
+        if self.ui.focused && wi == self.cur && kept.is_none() {
+            report_focus(&w.panes[w.focus], true);
         }
         self.pane_hover = None;
         if wi == self.cur {
@@ -1874,7 +1905,7 @@ impl App {
         let m = k.mods;
         if m.ctrl && !m.alt && !m.shift && k.sym == 0x2c {
             self.toggle_settings();
-            return true;
+            return false; // once per press: held, it would open and close the panel
         }
         // Ctrl+K: the command palette (the shell does not get it, as in the reference). Not a key that repeats.
         if m.ctrl && !m.alt && !m.shift && matches!(k.sym, 0x6b | 0x4b) {
@@ -1893,17 +1924,26 @@ impl App {
         if m.alt && !m.ctrl {
             let last = self.wins.len() - 1;
             match (letter, k.sym) {
-                (Some('n'), _) => self.new_win(),
+                (Some('n'), _) => {
+                    self.new_win();
+                    return false;
+                }
                 (Some('w'), _) if m.shift => {
-                    self.close_pane(self.cur, self.wins[self.cur].focus);
+                    self.close_pane_asked(self.cur, self.wins[self.cur].focus);
                     return false;
                 }
                 (Some('w'), _) => {
                     self.close_wins(&[self.wins[self.cur].id], None);
                     return false;
                 }
-                (Some('b'), _) => self.toggle_side(),
-                (Some('o'), _) => self.toggle_overview(),
+                (Some('b'), _) => {
+                    self.toggle_side();
+                    return false;
+                }
+                (Some('o'), _) => {
+                    self.toggle_overview();
+                    return false;
+                }
                 (Some('g'), _) if m.shift => self.ungroup(),
                 (Some('g'), _) => {
                     self.group_dialog_here();
@@ -1936,7 +1976,10 @@ impl App {
                     self.quit = true;
                     return true;
                 }
-                Some('r') => return self.reload(),
+                Some('r') => {
+                    self.reload();
+                    return false;
+                }
                 _ => {}
             }
         }
@@ -2071,7 +2114,7 @@ impl App {
 
     /// Opens the command palette (`Ctrl+K`) over the windows and groups there are now.
     fn open_palette(&mut self) {
-        let wins: Vec<commands::WinInfo> = self.wins.iter().map(|w| commands::WinInfo { title: win_title(w), place: win_place(w), group: w.group }).collect();
+        let wins: Vec<commands::WinInfo> = self.wins.iter().map(|w| commands::WinInfo { id: w.id, title: win_title(w), place: win_place(w), group: w.group }).collect();
         let groups = group_items(&self.groups, &self.wins);
         let w = &self.wins[self.cur];
         let state = commands::State { wins: &wins, groups: &groups, cur: self.cur, panes: w.panes.len(), overview: true };
@@ -2093,16 +2136,27 @@ impl App {
             Cmd::HistorySearch => self.type_into_shell(b"\x12"),
             Cmd::ClearScreen => self.type_into_shell(b"\x0c"),
             Cmd::Settings => self.open_settings(),
-            Cmd::CloseWindow => self.close_win(self.cur),
-            Cmd::ClosePane => self.close_pane(self.cur, self.wins[self.cur].focus),
+            Cmd::CloseWindow => self.close_wins(&[self.wins[self.cur].id], None),
+            Cmd::ClosePane => self.close_pane_asked(self.cur, self.wins[self.cur].focus),
             Cmd::Ungroup => self.ungroup(),
-            Cmd::Window(i) => self.switch_to(i),
-            Cmd::Group(g) => {
-                if let Some(i) = self.wins.iter().position(|w| w.group == Some(g)) {
+            // The palette names windows and groups by id: where they are now is looked up, as `menu_ran` does.
+            Cmd::Window(id) => {
+                if let Some(i) = self.wins.iter().position(|w| commands::short(w.id) == id) {
                     self.switch_to(i);
                 }
             }
-            Cmd::Fold(g) => self.fold(g),
+            Cmd::Group(id) => {
+                if let Some(g) = groups::index_of(&self.groups, id)
+                    && let Some(i) = self.wins.iter().position(|w| w.group == Some(g))
+                {
+                    self.switch_to(i);
+                }
+            }
+            Cmd::Fold(id) => {
+                if let Some(g) = groups::index_of(&self.groups, id) {
+                    self.fold(g);
+                }
+            }
         }
     }
 
@@ -2129,6 +2183,11 @@ impl App {
             return false;
         }
         if button == 0 {
+            // A drag from the list that the overlays took the pointer from (the overview's area, a toast) ends here: its
+            // release is theirs, so it would never reach `dnd_release`, and a drop would come later at a stale target.
+            if !pressed {
+                self.dnd_cancel();
+            }
             let g = self.geo();
             let r = self.overlays.button(Click { x, y, pressed, time }, g);
             self.overlay_reply(r);
@@ -2165,7 +2224,8 @@ impl App {
         let Some(p) = self.panel.as_mut() else { return false };
         let e = p.key(k);
         self.panel_effect(e);
-        true
+        // The key that closed the panel (Escape) must not repeat: held on, it would go into the shell.
+        self.panel.is_some()
     }
 
     // ---------------------------------------------------------- clipboard --
@@ -2271,6 +2331,8 @@ impl App {
             let g = self.geo();
             let r = self.overlays.pointer(x, y, g);
             if self.overlay_owns(x, y) {
+                // The pointer went from a drag in the list onto the overlay: the drag is over, no ghost is left behind.
+                self.dnd_cancel();
                 self.overlay_reply(r);
                 // The window's own hover lights (title buttons, the panels' rows) go dark under an overlay.
                 if self.hover != Hit::Client || self.ui.hover != 0 || self.side_hover.is_some() {
@@ -2374,7 +2436,7 @@ impl App {
             // The cross of a pane closes it when the button comes up over it too.
             if let Some(pi) = self.cross_down.take() {
                 if self.close_hot && self.pane_hover == Some(pi) {
-                    self.close_pane(self.cur, pi);
+                    self.close_pane_asked(self.cur, pi);
                 }
             }
             if self.ui.down {
@@ -2417,7 +2479,7 @@ impl App {
                     self.go_to(wi);
                     self.set_focus(pi);
                 }
-                Some(side::Part::ClosePane(wi, pi)) => self.close_pane(wi, pi),
+                Some(side::Part::ClosePane(wi, pi)) => self.close_pane_asked(wi, pi),
                 None => {}
             },
             Hit::Client => {
@@ -2448,7 +2510,8 @@ impl App {
 
     fn on_scroll(&mut self, pixels: f32, clicks: i32) {
         // Over the settings panel the wheel scrolls its body (a notch is `WHEEL_PX`); elsewhere the terminal.
-        if self.in_prefs(self.mouse.0, self.mouse.1) {
+        // (An overlay that owns the pointer here has the wheel too, as it has the presses: nothing scrolls behind its scrim.)
+        if self.in_prefs(self.mouse.0, self.mouse.1) && !self.overlay_owns(self.mouse.0, self.mouse.1) {
             let px = if clicks != 0 { clicks * settings::WHEEL_PX } else { pixels.round() as i32 };
             let e = self.panel.as_mut().map_or(Effect::None, |p| p.scroll_by(px));
             self.panel_effect(e);
@@ -2656,18 +2719,35 @@ mod tests {
     fn the_settings_are_at_the_edge_opposite_the_windows_panel() {
         let cfg = |tabs, side| WindowsCfg { tabs, side, side_w: 240 };
         // Windows at the left: settings at the right.
-        assert_eq!(docks(&cfg(TabsPos::Left, true), 372), (Dock { w: 240, left: true }, Dock { w: 372, left: false }));
+        assert_eq!(docks(&cfg(TabsPos::Left, true), 372, 1000), (Dock { w: 240, left: true }, Dock { w: 372, left: false }));
         // Windows at the right: settings at the left, as the reference orders them (`.prefs` is `order: -1`).
-        assert_eq!(docks(&cfg(TabsPos::Right, true), 372), (Dock { w: 240, left: false }, Dock { w: 372, left: true }));
+        assert_eq!(docks(&cfg(TabsPos::Right, true), 372, 1000), (Dock { w: 240, left: false }, Dock { w: 372, left: true }));
         // The panel hidden, or the windows as tabs at the top: only the settings take room, at the right.
-        assert_eq!(docks(&cfg(TabsPos::Left, false), 372), (Dock { w: 0, left: true }, Dock { w: 372, left: false }));
-        assert_eq!(docks(&cfg(TabsPos::Top, true), 372), (Dock { w: 0, left: true }, Dock { w: 372, left: false }));
+        assert_eq!(docks(&cfg(TabsPos::Left, false), 372, 1000), (Dock { w: 0, left: true }, Dock { w: 372, left: false }));
+        assert_eq!(docks(&cfg(TabsPos::Top, true), 372, 1000), (Dock { w: 0, left: true }, Dock { w: 372, left: false }));
         // Closed: no room; they never share an edge, so the grid is the window minus both.
-        let (a, b) = docks(&cfg(TabsPos::Right, true), 0);
+        let (a, b) = docks(&cfg(TabsPos::Right, true), 0, 1000);
         assert_eq!((a.w, b.w), (240, 0));
         for tabs in TabsPos::ALL {
-            let (a, b) = docks(&cfg(tabs, true), 372);
+            let (a, b) = docks(&cfg(tabs, true), 372, 1000);
             assert!(a.w == 0 || a.left != b.left, "{tabs:?}");
+        }
+    }
+
+    #[test]
+    fn a_narrow_window_keeps_room_for_the_grid_by_hiding_the_windows_panel() {
+        let cfg = WindowsCfg { tabs: TabsPos::Left, side: true, side_w: 220 };
+        // Roomy: both panels. At the least size with the settings open (`panel_width(320)` = 198): the grid would be
+        // 320 - 220 - 198 < 0, so the windows' panel goes.
+        assert_eq!(docks(&cfg, 198, 1000).0.w, 220);
+        let (side, prefs) = docks(&cfg, 198, 320);
+        assert_eq!((side.w, prefs.w), (0, 198));
+        // At every width a window can have, with the settings open or not, the grid keeps its room.
+        for ww in 320..1200 {
+            for prefs_w in [0, settings::panel_width(ww)] {
+                let (a, b) = docks(&cfg, prefs_w, ww);
+                assert!(ww >= a.w + b.w + MIN_GRID, "{ww} {prefs_w}");
+            }
         }
     }
 }

@@ -624,6 +624,10 @@ impl Soft {
     /// (`chrome::pixel`). Row repaints pass the window's own columns only: the shadow beside a
     /// row does not change between full repaints.
     fn paint_bg(&self, fb: &mut [u32], y0: usize, y1: usize, x0: usize, x1: usize) {
+        // Nothing to paint in an empty or inverted span (a pane narrower than its frame): `clamp` would abort.
+        if x0 >= x1 {
+            return;
+        }
         let (w, h) = (self.w, self.h);
         let (ml, mt, mb) = chrome::margins(self.ui.maximized);
         let (wh, reach) = ((h - mt - mb) as isize, REACH as isize);
@@ -959,6 +963,23 @@ mod tests {
         s.set_docks(Dock { w: 100, left: false }, Dock { w: 372, left: true });
         assert!(s.begin_frame(&mut fb, w, h, 10, 40), "a panel that opens repaints everything");
         assert!(s.prefs_rect().is_some_and(|(x0, y0, x1, y1)| x1 - x0 == 372 && y1 > y0));
+    }
+
+    #[test]
+    fn rows_are_painted_without_aborting_when_the_panels_leave_the_grid_no_width() {
+        // A 500 px window with the windows' panel (220) and the settings (310): the workspace is 30 px short.
+        let mut s = Soft::new(&FontCfg::sized(15.0), 0.88);
+        let (w, h) = (500, 400);
+        let mut fb = vec![0u32; w * h];
+        s.set_docks(Dock { w: 220, left: true }, Dock { w: 310, left: false });
+        assert!(s.workspace(w as u32, h as u32).w < 0);
+        s.begin_frame(&mut fb, w, h, 4, 10);
+        s.paint_rows(&mut fb, 0, 2, &[bytemuck::Zeroable::zeroed(); 20]);
+        // A framed pane narrower than its border is the same.
+        s.set_docks(Dock::default(), Dock::default());
+        s.set_layout(&[Slot { rect: Rect::new(10, 40, 3, 100), focus: true, framed: true }]);
+        s.begin_frame(&mut fb, w, h, 4, 10);
+        s.paint_rows(&mut fb, 0, 2, &[bytemuck::Zeroable::zeroed(); 20]);
     }
 
     #[test]

@@ -44,12 +44,13 @@ pub enum Cmd {
     CloseWindow,
     ClosePane,
     Ungroup,
-    /// Go to window `n` (its place in the panel's order).
-    Window(usize),
-    /// Go to the first window of group `n`.
-    Group(usize),
-    /// Collapse or expand group `n` in the panel.
-    Fold(usize),
+    /// Go to the window with this id (`short` of its `Win::id`). Ids, not places: while the palette is open a shell
+    /// can end or a close can be undone, and a place would then be another window.
+    Window(u32),
+    /// Go to the first window of the group with this id (`Group::id`).
+    Group(u32),
+    /// Collapse or expand the group with this id.
+    Fold(u32),
 }
 
 /// The commands with nothing to say but their name, in the order of their ids.
@@ -72,20 +73,26 @@ const FIXED: [Cmd; 16] = [
     Cmd::Ungroup,
 ];
 
-/// The id of a command that takes a number: the kind in the high half, the number in the low one.
-const WINDOW: u32 = 1 << 16;
-const GROUP: u32 = 2 << 16;
-const FOLD: u32 = 3 << 16;
-/// A window or a group beyond this has no id (nobody has 65 536 windows).
-const MAX_N: usize = 0xffff;
+/// The id of a command that takes a number: the kind in the two high bits, the number in the other thirty.
+const KIND: u32 = 3 << 30;
+const WINDOW: u32 = 1 << 30;
+const GROUP: u32 = 2 << 30;
+const FOLD: u32 = 3 << 30;
+/// The largest number a window or a group can carry (a window's id counts every window ever opened).
+const MAX_N: u32 = !KIND;
+
+/// A window's id as `Cmd::Window` carries it.
+pub fn short(id: u64) -> u32 {
+    (id & MAX_N as u64) as u32
+}
 
 impl Cmd {
     /// The number the list carries for this command (`Entry::id`).
     pub fn id(self) -> u32 {
         match self {
-            Cmd::Window(n) => WINDOW | n.min(MAX_N) as u32,
-            Cmd::Group(n) => GROUP | n.min(MAX_N) as u32,
-            Cmd::Fold(n) => FOLD | n.min(MAX_N) as u32,
+            Cmd::Window(n) => WINDOW | n.min(MAX_N),
+            Cmd::Group(n) => GROUP | n.min(MAX_N),
+            Cmd::Fold(n) => FOLD | n.min(MAX_N),
             // The rest are numbered from 1 in the order of `FIXED`.
             c => FIXED.iter().position(|&f| f == c).map_or(0, |i| i as u32 + 1),
         }
@@ -93,8 +100,8 @@ impl Cmd {
 
     /// The command an id stands for.
     pub fn from_id(id: u32) -> Option<Cmd> {
-        let n = (id & 0xffff) as usize;
-        match id & !0xffff {
+        let n = id & MAX_N;
+        match id & KIND {
             0 => FIXED.get((id as usize).checked_sub(1)?).copied(),
             WINDOW => Some(Cmd::Window(n)),
             GROUP => Some(Cmd::Group(n)),
@@ -106,6 +113,8 @@ impl Cmd {
 
 /// A window as the palette lists it.
 pub struct WinInfo {
+    /// Its `Win::id`.
+    pub id: u64,
     pub title: String,
     /// Its directory, in short form.
     pub place: String,
@@ -194,17 +203,17 @@ pub fn build(s: &State) -> List {
         };
         let keys = window_keys(i);
         let keywords = group.map_or("", |g| g.name.as_str());
-        list.push(Entry { label: &w.title, desc: &desc, keywords, keys: &keys, group: windows, mark: Mark::Icon(Icon::Prompt), id: Cmd::Window(i).id() });
+        list.push(Entry { label: &w.title, desc: &desc, keywords, keys: &keys, group: windows, mark: Mark::Icon(Icon::Prompt), id: Cmd::Window(short(w.id)).id() });
     }
 
     let heading = tr(Str::OvGroupGroups);
-    for (g, x) in s.groups.iter().enumerate() {
-        list.push(Entry { label: &x.name, desc: &count(x.count), keywords: kw::GROUP, group: heading, mark: Mark::Dot(x.color), id: Cmd::Group(g).id(), ..Entry::default() });
+    for x in s.groups {
+        list.push(Entry { label: &x.name, desc: &count(x.count), keywords: kw::GROUP, group: heading, mark: Mark::Dot(x.color), id: Cmd::Group(x.id).id(), ..Entry::default() });
     }
-    for (g, x) in s.groups.iter().enumerate() {
+    for x in s.groups {
         let verb = tr(if x.collapsed { Str::CmdUnfold } else { Str::CmdFold });
         let label = format!("{verb} {}", x.name);
-        list.push(Entry { label: &label, keywords: kw::FOLD, group: heading, mark: Mark::Dot(x.color), id: Cmd::Fold(g).id(), ..Entry::default() });
+        list.push(Entry { label: &label, keywords: kw::FOLD, group: heading, mark: Mark::Dot(x.color), id: Cmd::Fold(x.id).id(), ..Entry::default() });
     }
     list.filter("");
     list
@@ -213,10 +222,16 @@ pub fn build(s: &State) -> List {
 /// A window of the design board and of the tests: a group of three windows and one apart.
 #[cfg(test)]
 pub fn sample() -> (Vec<WinInfo>, Vec<GroupItem>) {
-    let win = |title: &str, place: &str, group| WinInfo { title: title.into(), place: place.into(), group };
+    // Ids that are their places, so that the tests read `Window(1)` for the second one.
+    let win = |id, title: &str, place: &str, group| WinInfo { id, title: title.into(), place: place.into(), group };
     (
-        vec![win("arcton", "~/lab/apps/arcton", Some(0)), win("servidor", "~/lab/apps/arcton", Some(0)), win("pruebas", "~/lab/apps/arcton", Some(0)), win("~", "~", None)],
-        vec![GroupItem { name: "arcton".into(), color: 1, collapsed: false, count: 3, busy: false }],
+        vec![
+            win(0, "arcton", "~/lab/apps/arcton", Some(0)),
+            win(1, "servidor", "~/lab/apps/arcton", Some(0)),
+            win(2, "pruebas", "~/lab/apps/arcton", Some(0)),
+            win(3, "~", "~", None),
+        ],
+        vec![GroupItem { id: 0, name: "arcton".into(), color: 1, collapsed: false, count: 3, busy: false }],
     )
 }
 
@@ -244,7 +259,7 @@ mod tests {
     #[test]
     fn every_command_has_its_own_id_and_the_id_gives_it_back() {
         let mut ids = std::collections::HashSet::new();
-        let all = FIXED.iter().copied().chain([Cmd::Window(0), Cmd::Window(9), Cmd::Window(MAX_N), Cmd::Group(0), Cmd::Group(3), Cmd::Fold(0), Cmd::Fold(7)]);
+        let all = FIXED.iter().copied().chain([Cmd::Window(0), Cmd::Window(9), Cmd::Window(MAX_N), Cmd::Group(0), Cmd::Group(3), Cmd::Fold(0), Cmd::Fold(7), Cmd::Fold(MAX_N)]);
         for c in all {
             assert!(ids.insert(c.id()), "{c:?} shares its id");
             assert_eq!(Cmd::from_id(c.id()), Some(c), "{c:?}");
@@ -343,15 +358,29 @@ mod tests {
         let g = entry(Cmd::Group(0));
         assert_eq!((l.label(g), l.desc(g), l.mark(g)), ("arcton", "3 windows", Mark::Dot(1)));
         // Ten windows: the tenth has no digit.
-        let many: Vec<WinInfo> = (0..10).map(|i| WinInfo { title: format!("w{i}"), place: "~".into(), group: None }).collect();
+        let many: Vec<WinInfo> = (0..10).map(|i| WinInfo { id: i, title: format!("w{i}"), place: "~".into(), group: None }).collect();
         let l = build(&State { wins: &many, groups: &[], cur: 0, panes: 1, overview: false });
         let tenth = (0..l.total()).find(|&e| l.id(e) == Cmd::Window(9).id()).unwrap();
         assert_eq!(l.keys(tenth), "");
         // A group of one says "1 window".
-        let one = [GroupItem { name: "solo".into(), color: 0, collapsed: false, count: 1, busy: false }];
+        let one = [GroupItem { id: 0, name: "solo".into(), color: 0, collapsed: false, count: 1, busy: false }];
         let l = build(&state(&wins, &one));
         let g = (0..l.total()).find(|&e| l.id(e) == Cmd::Group(0).id()).unwrap();
         assert_eq!(l.desc(g), "1 window");
+    }
+
+    #[test]
+    fn a_window_or_group_entry_names_its_id_and_not_its_place() {
+        // Window 7 is the first in the list and group 5 the only one: when the list changes under the palette (a shell
+        // ends, a close is undone) the entry still means the same window and group.
+        let win = |id, title: &str, group| WinInfo { id, title: title.into(), place: "~".into(), group };
+        let wins = [win(7, "a", Some(0)), win(2, "b", None)];
+        let groups = [GroupItem { id: 5, name: "g".into(), color: 0, collapsed: false, count: 1, busy: false }];
+        let cmds = shown(&build(&state(&wins, &groups)));
+        assert_eq!(&cmds[cmds.len() - 4..], &[Cmd::Window(7), Cmd::Window(2), Cmd::Group(5), Cmd::Fold(5)]);
+        // A window's id is long: what does not fit in an entry's number is dropped, as the app's lookup does.
+        assert_eq!(short(7), 7);
+        assert_eq!(short((1 << 40) | 9), 9);
     }
 
     #[test]

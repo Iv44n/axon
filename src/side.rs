@@ -106,6 +106,8 @@ pub enum Entry {
 /// dot says by turning (`.gchip .spin`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GroupItem {
+    /// The group's `Group::id`: what a command names it by, as places change.
+    pub id: u32,
     pub name: String,
     pub color: u8,
     pub collapsed: bool,
@@ -1432,7 +1434,7 @@ mod tests {
     }
 
     fn group(name: &str, count: usize) -> GroupItem {
-        GroupItem { name: name.into(), color: 1, collapsed: false, count, busy: false }
+        GroupItem { id: 0, name: name.into(), color: 1, collapsed: false, count, busy: false }
     }
 
     #[test]

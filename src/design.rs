@@ -448,7 +448,7 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
             items[0].badge = if pos == TabsPos::Top { ps.n } else { 0 };
         }
         // The reference's session: a group of three windows, one in none, and a folded group of one.
-        let group = |name: &str, color, collapsed, count, busy| crate::side::GroupItem { name: name.to_string(), color, collapsed, count, busy };
+        let group = |name: &str, color, collapsed, count, busy| crate::side::GroupItem { id: 0, name: name.to_string(), color, collapsed, count, busy };
         // A folded group is busy while a window in it runs a command: the windows 0 to 2 are in the first, 4 in the second.
         let running = |ws: &[usize]| ws.iter().any(|&w| s.list.status[w] == Status::Running);
         let groups = [group("arcton", 1, s.list.fold0, 2 + pane_n, s.list.fold0 && running(&[0, 1, 2])), group("docs", 3, s.folded, 1, s.folded && running(&[4]))];
