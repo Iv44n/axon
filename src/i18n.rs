@@ -206,7 +206,8 @@ strings! {
     OvLoose: "No group", "Sin grupo";
     OvNoneBefore: "No window matches “", "Ninguna ventana coincide con «";
     OvNoneAfter: "”.", "».";
-    OvTileHint: "around the selected window", "con la ventana seleccionada";
+    OvTileHint: "or drag a window here to create it with that window", "o arrastra una ventana aquí para crearlo con ella";
+    OvLooseEmpty: "Drag a window here.", "Arrastra una ventana aquí.";
     OvToastNewWindow: "New window created", "Ventana nueva creada";
     OvToastAdded: "Window added to the group", "Ventana añadida al grupo";
     OvActPanel: "Show or hide the windows panel", "Mostrar u ocultar el panel de ventanas";

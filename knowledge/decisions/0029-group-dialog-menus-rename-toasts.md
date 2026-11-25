@@ -56,7 +56,7 @@ a group, out of its group, dissolved, made (`· n windows`), updated, *With the 
 there) and, not in the reference, *No room for another pane* when a split is refused (it refused silently).
 
 **Header:** a second button, new group (`Part::NewGroup`), right of a `+` that moved 26 px left; the tab strip has none (the
-reference puts one in the title bar). **Aid:** `AXON_LIST_UI=dialog|edit|menu|group-menu|pane-menu|strip-menu|rename|close|toast`
+reference puts one in the title bar: it has had one since 0032). **Aid:** `AXON_LIST_UI=dialog|edit|menu|group-menu|pane-menu|strip-menu|rename|close|toast`
 starts with one open (`edit` and `group-menu` need `AXON_GROUPS=1`).
 
 **Rejected:** a dialog that hands the app a half-checked form (it would check twice); closing for good and "undoing" by respawning

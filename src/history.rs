@@ -2,8 +2,9 @@
 //! prompt's chips (the exit mark and how long the command ran).
 //!
 //! The shell's hook (`context.rs`) talks to axon through window-title escapes that the terminal
-//! thread recognises and swallows (`parse`): `S` when a command starts, `E <n> <status>` at every
-//! prompt, where `n` counts the prompts. The start and the next prompt are timed when the PTY thread
+//! thread recognises and swallows (`parse`): `S` when a command starts (bash adds a token, which arms its own
+//! `DEBUG` trap), `L <line>` with the command line that starts (the window is labelled with its first word while it
+//! runs), `E <n> <status>` at every prompt, where `n` counts the prompts. The start and the next prompt are timed when the PTY thread
 //! parses them, so the time is the command's, not the UI's. The prompt's reserved line carries its `n`
 //! in the colour of its concealed cell (`view::prompt_rows`), so a row on screen, in the scrollback or
 //! after a scroll finds its record again. A bounded ring: the oldest prompts forget their chips.
@@ -17,11 +18,16 @@ const KEEP: usize = 256;
 /// What the shell's hook says, as a window title that starts with this.
 const PREFIX: &str = "axon!hook ";
 
+/// How many characters of a command's name a window's label keeps.
+const LABEL_MAX: usize = 24;
+
 /// What a hook escape means.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Hook {
     /// A command is about to run.
     Start,
+    /// The command that runs, as a window's label: its first word (`cargo` of `cargo build --release`).
+    Label(String),
     /// A new prompt, number `n`; the command before it ended with `status`.
     Prompt { n: u32, status: i32 },
 }
@@ -29,11 +35,28 @@ pub enum Hook {
 /// The hook a window title carries, if it is one.
 pub fn parse(title: &str) -> Option<Hook> {
     let rest = title.strip_prefix(PREFIX)?;
-    let mut it = rest.split(' ');
-    match (it.next()?, it.next(), it.next(), it.next()) {
-        ("S", None, None, None) => Some(Hook::Start),
-        ("E", Some(n), Some(status), None) => Some(Hook::Prompt { n: n.parse().ok()?, status: status.parse().ok()? }),
+    let (kind, arg) = rest.split_once(' ').unwrap_or((rest, ""));
+    match kind {
+        // What follows an `S` is bash's arming token: nothing to read.
+        "S" if !arg.contains(' ') => Some(Hook::Start),
+        "L" => Some(Hook::Label(command_word(arg).to_string())),
+        "E" => match arg.split(' ').collect::<Vec<_>>()[..] {
+            [n, status] => Some(Hook::Prompt { n: n.parse().ok()?, status: status.parse().ok()? }),
+            _ => None,
+        },
         _ => None,
+    }
+}
+
+/// The word of a command line that names what runs: the first that is not a `VAR=value` assignment, without its
+/// directory, cut to `LABEL_MAX` characters. A whole line would put arguments (a password given on the command line)
+/// in the window's title, which other programs can read.
+pub fn command_word(line: &str) -> &str {
+    let word = line.split_whitespace().find(|w| !w.contains('=')).unwrap_or("");
+    let name = word.rsplit('/').find(|n| !n.is_empty()).unwrap_or(word);
+    match name.char_indices().nth(LABEL_MAX) {
+        Some((i, _)) => &name[..i],
+        None => name,
     }
 }
 
@@ -59,6 +82,8 @@ pub struct History {
     recs: VecDeque<Record>,
     /// When the command now running started.
     started: Option<Instant>,
+    /// What the command now running is called (`command_word`), empty when the shell has not said.
+    label: String,
     rev: u32,
 }
 
@@ -66,11 +91,26 @@ impl History {
     /// A command is about to run, at `at`.
     pub fn start(&mut self, at: Instant) {
         self.started = Some(at);
+        self.label.clear();
+    }
+
+    /// The command that started is called `word`; said when none runs, it is ignored.
+    pub fn set_label(&mut self, word: &str) {
+        if self.started.is_some() {
+            self.label.clear();
+            self.label.push_str(word);
+        }
+    }
+
+    /// What the command now running is called, while one runs and the shell has said.
+    pub fn command(&self) -> Option<&str> {
+        self.started.filter(|_| !self.label.is_empty()).map(|_| self.label.as_str())
     }
 
     /// A prompt, number `n`, at `at`: the command before it (if one ran) ended with `status`, and `ctx`
     /// is what the new prompt shows for now.
     pub fn prompt(&mut self, n: u32, status: i32, at: Instant, ctx: &Context) {
+        self.label.clear();
         if let (Some(t0), Some(last)) = (self.started.take(), self.recs.back_mut()) {
             last.run = Some(Run { status, ms: at.saturating_duration_since(t0).as_millis() as u64 });
             self.rev += 1;
@@ -153,9 +193,48 @@ mod tests {
         assert_eq!(parse("axon!hook S"), Some(Hook::Start));
         assert_eq!(parse("axon!hook E 12 0"), Some(Hook::Prompt { n: 12, status: 0 }));
         assert_eq!(parse("axon!hook E 3 127"), Some(Hook::Prompt { n: 3, status: 127 }));
-        for t in ["user@host: ~", "axon!hook", "axon!hook E 1", "axon!hook E x 0", "axon!hook S 1", "axon!hook X", "axon!hook E 1 0 9", ""] {
+        for t in ["user@host: ~", "axon!hook", "axon!hook E 1", "axon!hook E x 0", "axon!hook S 1 2", "axon!hook X", "axon!hook E 1 0 9", ""] {
             assert_eq!(parse(t), None, "{t:?}");
         }
+        // Bash's start carries the token that arms its trap.
+        assert_eq!(parse("axon!hook S 1"), Some(Hook::Start));
+    }
+
+    #[test]
+    fn the_label_is_the_commands_first_word_without_its_directory_or_assignments() {
+        for (line, word) in [
+            ("cargo build --release", "cargo"),
+            ("  sleep 90", "sleep"),
+            ("FOO=1 BAR=x npm run dev", "npm"),
+            ("/usr/bin/sleep 5", "sleep"),
+            ("./run.sh --token=abc", "run.sh"),
+            ("\tvim\tfile", "vim"),
+            ("", ""),
+            ("A=1", ""),
+            ("a_command_name_that_is_far_too_long_for_a_tab", "a_command_name_that_is_f"),
+        ] {
+            assert_eq!(command_word(line), word, "{line:?}");
+        }
+        assert_eq!(parse("axon!hook L cargo build"), Some(Hook::Label("cargo".into())));
+        assert_eq!(parse("axon!hook L"), Some(Hook::Label(String::new())));
+    }
+
+    #[test]
+    fn a_running_command_has_its_label_until_the_next_prompt() {
+        let (mut h, t0) = (History::default(), Instant::now());
+        h.prompt(1, 0, t0, &ctx("~/a"));
+        assert_eq!(h.command(), None);
+        h.set_label("sleep");
+        assert_eq!(h.command(), None, "no command runs: a stray label is ignored");
+        h.start(t0);
+        assert_eq!(h.command(), None, "the shell has not said yet");
+        h.set_label("sleep");
+        assert_eq!(h.command(), Some("sleep"));
+        h.prompt(2, 0, t0 + Duration::from_millis(5), &ctx("~/a"));
+        assert_eq!(h.command(), None);
+        // The next command does not inherit it.
+        h.start(t0 + Duration::from_millis(9));
+        assert_eq!(h.command(), None);
     }
 
     #[test]

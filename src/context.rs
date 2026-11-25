@@ -148,7 +148,18 @@ if [ -n "$AXON_CONTEXT" ]; then
   printf 'conda=%s\nvenv=%s\npyenv=%s\nkubeconfig=%s\nchanges=%s\n' "$CONDA_DEFAULT_ENV" "${VIRTUAL_ENV##*/}" "$PYENV_VERSION" "${KUBECONFIG%%:*}" "$__axon_c" > "$AXON_CONTEXT"
 fi
 printf '\e]2;axon!hook E %s %s\a' "$__axon_n" "$__axon_s"
-case $PS0 in *'axon!hook S'*) ;; *) PS0=$PS0$'\e]2;axon!hook S\a' ;; esac
+case $PS0 in
+  *'axon!hook S'*) ;;
+  *)
+    # The start of a command arms the next DEBUG trap, which says what runs (the window's label): `${__axon_arm:=1}` sets
+    # the flag in this shell and goes, harmlessly, in the title. The test is `[[ ]]` and the function gives `$_` back, so
+    # the line sees the last argument of the command before it, as it would with no trap. One of the user's own is left alone.
+    PS0=$PS0$'\e]2;axon!hook S ${__axon_arm:=1}\a'
+    if [ -z "$(trap -p DEBUG)" ]; then
+      __axon_dbg() { __axon_arm=; printf '\e]2;axon!hook L %s\a' "$2"; : "$1"; }
+      trap '[[ -z $__axon_arm ]] || __axon_dbg "$_" "$BASH_COMMAND"' DEBUG
+    fi ;;
+esac
 __axon_pfx=$'\\[\e[8;38;2;'
 __axon_pre=$__axon_pfx$((__axon_n>>16&255))';'$((__axon_n>>8&255))';'$((__axon_n&255))$'m\\] \\[\e[0m\\]\n'
 __axon_post=$'\\[\e[8m\\] \\[\e[0m\\]'
@@ -186,7 +197,7 @@ const ZSH_HOOK: &str = concat!(
   fi
   return $s
 }
-__axon_start() { printf '\e]2;axon!hook S\a' }
+__axon_start() { printf '\e]2;axon!hook S\a\e]2;axon!hook L %s\a' "$1" }
 (( ${precmd_functions[(Ie)__axon_prompt]} )) || precmd_functions+=(__axon_prompt)
 (( ${preexec_functions[(Ie)__axon_start]} )) || preexec_functions+=(__axon_start)
 "##
@@ -207,7 +218,7 @@ const FISH_HOOK: &str = r##"if not functions -q __axon_fish_prompt
     end
 end
 function __axon_start --on-event fish_preexec
-    printf '\e]2;axon!hook S\a'
+    printf '\e]2;axon!hook S\a\e]2;axon!hook L %s\a' "$argv[1]"
 end
 function __axon_report --on-event fish_prompt
     set -l s $status
@@ -658,6 +669,40 @@ mod tests {
         std::fs::create_dir_all(d.join("sub")).unwrap();
         for_each_shell("sub", &d.join("sub"), true, None, &[], |sh, r| assert_eq!(r.changes, "1 1 1", "{sh}"));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn every_hook_says_what_command_runs_for_the_windows_label() {
+        for shell in ["bash", "zsh", "fish"] {
+            let script = shell_init_script(shell).unwrap();
+            assert!(script.contains("axon!hook L"), "{shell} does not say what runs");
+        }
+    }
+
+    #[test]
+    fn bash_labels_the_first_command_of_a_line_once_and_leaves_the_last_argument_alone() {
+        let w = scratch("label-run");
+        let (report, flag) = (w.join("report"), w.join("chips"));
+        std::fs::write(&flag, "").unwrap();
+        let env = shell_env("bash", Some(&report), Some(&flag), None);
+        let pc = &env.iter().find(|(k, _)| k == "PROMPT_COMMAND").unwrap().1;
+        // What an interactive shell does around a line: the hook at the prompt, PS0 as the line is about to run (`@P` expands
+        // it the same way), the line: only its first command is labelled.
+        let script = "eval \"$PROMPT_COMMAND\" >/dev/null; s=${PS0@P}; echo a b; echo last=$_; echo again";
+        let out = Command::new("bash")
+            .args(["--norc", "-c", script])
+            .env("PROMPT_COMMAND", pc)
+            .env("AXON_CONTEXT", &report)
+            .env("AXON_CHIPS", &flag)
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output();
+        let _ = std::fs::remove_dir_all(&w);
+        let Ok(out) = out else { return };
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(text.matches("axon!hook L ").count(), 1, "one label, for the first command: {text:?}");
+        assert!(text.contains("axon!hook L echo a b"), "{text:?}");
+        assert!(text.contains("last=b"), "the trap leaves $_ as it was: {text:?}");
     }
 
     #[test]

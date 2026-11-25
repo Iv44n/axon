@@ -10,7 +10,7 @@
 use crate::cell::{
     Cell, Glyphs, MAX_TILES, T_BAR, T_BEAM, T_BOX, T_FIRST_GLYPH, T_STRIKE, T_UNDER, pack,
 };
-use crate::chrome::{self, REACH, STATUS_H, TITLE_CLEAR, TITLE_H, Ui};
+use crate::chrome::{self, REACH, STATUS_H, TITLE_FROM_RIGHT, TITLE_H, TITLE_X0, Ui};
 use alacritty_terminal::vte::ansi::Rgb;
 use crate::{bar, config::Chip, i18n::{Str, tr}, palette, paint::{Paint, WHITE, seg}, panes::{self, Rect}};
 use crate::config::FontCfg;
@@ -699,8 +699,9 @@ impl Soft {
         chrome::pixel(x, y, self.w, self.h, self.opacity, &self.ui)
     }
 
-    /// The title, centred between the buttons and the right margin, over the title bar background.
-    /// A `user@host:` prefix is dim, the rest the foreground colour.
+    /// The title, centred in the part of the bar between the panel button and the gear (`.win-title`: `flex: 1` between them, so
+    /// its middle is 34 px right of the window's), over the title bar background. A `user@host:` prefix is dim, the rest the
+    /// foreground colour.
     fn paint_title(&mut self, fb: &mut [u32]) {
         let (cw, ch, w) = (self.fonts.cell_w as usize, self.fonts.cell_h as usize, self.w);
         if self.tabs_top {
@@ -708,14 +709,15 @@ impl Soft {
         }
         let (ox, oy) = self.origin();
         let ww = w - 2 * ox;
-        let room = ww.saturating_sub(2 * TITLE_CLEAR) / cw;
+        let span = ww.saturating_sub(TITLE_X0 + TITLE_FROM_RIGHT);
+        let room = span / cw;
         // The name in bold, a gap, the place dim; what does not fit is cut from the end with an ellipsis.
         let (name, place) = (std::mem::take(&mut self.title), std::mem::take(&mut self.place));
         let all: Vec<(char, bool)> = name.chars().map(|c| (c, true)).chain(std::iter::once((' ', false)).filter(|_| !place.is_empty() && !name.is_empty())).chain(place.chars().map(|c| (c, false))).collect();
         let count = all.len().min(room);
         // The title bar is TITLE_H rows, the last of them the hairline.
         let y0 = oy + (TITLE_H - 1 - ch) / 2;
-        let x0 = ox + (ww - count * cw) / 2;
+        let x0 = ox + TITLE_X0 + (span - count * cw) / 2;
         let strength = if self.ui.focused { 255 } else { 140 };
         let len = cw * ch * 3;
         for (n, &(c, bold)) in all.iter().take(count).enumerate() {
@@ -992,6 +994,40 @@ mod tests {
         // Nothing: no box.
         s.set_docks(Dock::default(), Dock::default());
         assert_eq!((s.side_box(win), s.prefs_box(win)), (None, None));
+    }
+
+    #[test]
+    fn the_title_is_centred_between_the_panel_button_and_the_gear() {
+        // The reference's `.win-title` is `flex: 1` from 114 (the panel button ends at 104, 10 px of gap) to 46 px short of
+        // the right edge (the gear, 28 px, 8 of padding and 10 of gap): its middle is 34 px right of the window's.
+        let mut s = Soft::new(&FontCfg::sized(15.0), 0.88);
+        let (w, h) = (1000, 700);
+        let ink = |s: &mut Soft| {
+            let mut fb = vec![0u32; w * h];
+            s.begin_frame(&mut fb, w, h, 10, 40);
+            let (ox, oy) = s.origin();
+            // The bar's text rows, between the buttons' columns and the gear's.
+            let mut xs = (usize::MAX, 0);
+            for y in oy + 4..oy + TITLE_H - 4 {
+                for x in ox + 100..w - ox - 40 {
+                    if fb[y * w + x] & 0xff > 120 {
+                        xs = (xs.0.min(x - ox), xs.1.max(x - ox));
+                    }
+                }
+            }
+            xs
+        };
+        s.set_title("arcton", "~/lab/apps/arcton");
+        let (a, z) = ink(&mut s);
+        let ww = s.window().0;
+        let want = (TITLE_X0 + (ww - TITLE_FROM_RIGHT)) as i32 / 2;
+        let mid = ((a + z) / 2) as i32;
+        assert!((mid - want).abs() <= 8, "the text's middle is {mid}, the part's {want}");
+        assert!(a >= TITLE_X0 && z < ww - TITLE_FROM_RIGHT, "{a}..{z} stays inside the part");
+        // A title too long for it is cut to it, not run under the buttons.
+        s.set_title(&"x".repeat(200), "");
+        let (a, z) = ink(&mut s);
+        assert!(a >= TITLE_X0 && z < ww - TITLE_FROM_RIGHT, "{a}..{z} stays inside the part");
     }
 
     #[test]

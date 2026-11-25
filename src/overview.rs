@@ -9,7 +9,7 @@
 //! (`Stack::with`), so nothing here is kept longer than a frame's worth of truth; what only the terminal has (the
 //! rows of text, the grid's font) comes at draw time through `overlay::Grid`, read under the terminal's lock and
 //! dropped at once. Layout is computed on demand from the width and the counts: no stored rectangles.
-use std::{any::Any, cell::RefCell, fmt::Write, time::Instant};
+use std::{any::Any, borrow::Cow, cell::RefCell, fmt::Write, time::Instant};
 
 use crate::{
     chrome::{self, rounded_rect},
@@ -18,7 +18,7 @@ use crate::{
     icons::{self, Icon},
     input::sym,
     list::clipped,
-    overlay::{self, Cap, Click, Clicks, Cx, Cursor, Fade, Geo, Grid, Ink, Out, Overlay, PX, PX_HINT, PX_KBD, PX_SMALL, PX_TITLE, Rect, Text, accent, dim, fg, fill, inside, kbd, kbd_width},
+    overlay::{self, Cap, Click, Clicks, Cx, Cursor, Fade, Geo, Grid, Ink, Out, Overlay, PX, PX_HINT, PX_KBD, PX_SMALL, PX_TITLE, Rect, Text, accent, dim, faint, fg, fill, inside, kbd, kbd_width},
     paint::{Paint, WHITE},
     palette,
     side::{Status, group_color},
@@ -58,6 +58,9 @@ const FOOT_H: i32 = 32;
 const META_H: i32 = 26;
 /// The dashed tile that makes a group.
 const TILE_H: i32 = 88;
+/// The box that says a section has no window (`.ov-empty`: 6 px of margin, 18 of padding round a line of text, a 1 px border).
+const EMPTY_BOX: i32 = 1 + 18 + 20 + 18 + 1;
+const EMPTY_H: i32 = 6 + EMPTY_BOX + 6;
 /// The preview's text is the grid's font at this fraction of its size (10.5 px of the reference's 14) and its
 /// padding; the lines fade out towards the top (`mask-image`: transparent to opaque over the first 38 %).
 pub const PREV_SCALE: f32 = 0.75;
@@ -107,10 +110,14 @@ pub enum Cmd {
     Close(u32),
     /// A new window that does not take the screen.
     NewWindow,
-    /// A new group around the window (`None`: the one on screen).
+    /// A new group, with this window ticked in its dialog (`None`: none, and the dialog starts with the template "one window").
     NewGroup(Option<u32>),
     /// A new window in the group.
     AddTo(u8),
+    /// The dialog that edits the group (`data-act="edit"` of the section's chip).
+    EditGroup(u8),
+    /// A card was dropped on a section: the window and the group are in `Overview::dropped`.
+    Move,
 }
 
 const MASK: u32 = 0x00ff_ffff;
@@ -123,6 +130,8 @@ impl Cmd {
             Cmd::NewWindow => 3 << 24,
             Cmd::NewGroup(id) => 4 << 24 | id.map_or(MASK, |i| i & MASK),
             Cmd::AddTo(g) => 5 << 24 | g as u32,
+            Cmd::EditGroup(g) => 6 << 24 | g as u32,
+            Cmd::Move => 7 << 24,
         }
     }
 
@@ -134,6 +143,8 @@ impl Cmd {
             3 => Cmd::NewWindow,
             4 => Cmd::NewGroup((arg != MASK).then_some(arg)),
             5 => Cmd::AddTo(arg as u8),
+            6 => Cmd::EditGroup(arg as u8),
+            7 => Cmd::Move,
             _ => return None,
         })
     }
@@ -287,8 +298,9 @@ enum Hit {
     /// A card (by window number), or its cross.
     Card(u32),
     CardClose(u32),
-    /// A group's "new window" button.
+    /// A group's "new window" button, and its chip (the group's dot and name: it edits the group).
     Add(usize),
+    Chip(usize),
     Tile,
 }
 
@@ -297,11 +309,34 @@ enum Item<'a> {
     Sec(&'a Sec, Rect),
     Card(usize, Rect),
     Tile(Rect),
+    /// The dashed box of a section with no window in it.
+    Empty(Rect),
     Nothing(i32),
 }
 
 struct Sec {
     group: Option<usize>,
+}
+
+/// How far the pointer goes with a card pressed before it is a drag and not a click (the reference's `dragstart`).
+const DRAG_PX: f32 = 5.0;
+/// How opaque the card being dragged is (`.card.dragging`).
+const DRAGGED: f32 = 0.4;
+
+/// A card with the button down: which, where the pointer went down, and whether it has gone far enough to be a drag.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Drag {
+    id: u32,
+    from: (f32, f32),
+    moved: bool,
+}
+
+/// Where dropping a card would put it: into a section (a group, or `None` for the windows in none), or on the tile that
+/// makes a group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Drop {
+    Section(Option<usize>),
+    Tile,
 }
 
 pub struct Overview {
@@ -319,6 +354,10 @@ pub struct Overview {
     scroll: i32,
     over: Option<Hit>,
     armed: Option<Hit>,
+    drag: Option<Drag>,
+    drop: Option<Drop>,
+    /// What a `Cmd::Move` asks for: the window (its number) and the group (an index into `groups`, `None` for none).
+    pub dropped: Option<(u32, Option<usize>)>,
     clicks: Clicks,
     scratch: RefCell<String>,
     rows: RefCell<String>,
@@ -338,6 +377,9 @@ impl Overview {
             scroll: 0,
             over: None,
             armed: None,
+            drag: None,
+            drop: None,
+            dropped: None,
             clicks: Clicks::default(),
             scratch: RefCell::default(),
             rows: RefCell::default(),
@@ -379,6 +421,15 @@ impl Overview {
         self
     }
 
+    /// Card `id` being carried over a group's section (`Some(Some(g))`), the windows in none (`Some(None)`) or the tile (`None`) (the
+    /// design board's frames).
+    #[cfg(test)]
+    pub fn carrying(mut self, id: u32, over: Option<Option<usize>>) -> Overview {
+        self.drag = Some(Drag { id, from: (0.0, 0.0), moved: true });
+        self.drop = Some(over.map_or(Drop::Tile, Drop::Section));
+        self
+    }
+
     /// The pointer on one of the header's buttons or the tile (0 new group, 1 new window, 2 the cross, 3 the tile).
     #[cfg(test)]
     pub fn over_button(mut self, n: usize) -> Overview {
@@ -396,7 +447,8 @@ impl Overview {
         self.scroll = self.scroll.clamp(0, max);
     }
 
-    /// The window the selection is on, for a command that needs one (a new group around it).
+    /// The window the selection is on.
+    #[cfg(test)]
     pub fn selected_id(&self) -> Option<u32> {
         self.sel_card().map(|ci| self.cards[ci].id)
     }
@@ -455,13 +507,18 @@ impl Overview {
         let mut y = BODY_TOP;
         for s in 0..=self.groups.len() {
             let n = self.in_section(s).count();
-            if n == 0 {
+            // With groups and nothing in none, "No group" is still there while nothing is filtered (an empty one says so).
+            let empty_loose = n == 0 && s == self.groups.len() && s > 0 && self.lower.is_empty();
+            if n == 0 && !empty_loose {
                 continue;
             }
             let rows = (n as i32 + cols - 1) / cols;
-            let h = SEC_FIXED + rows * CARD_H + (rows - 1) * GAP;
+            let h = SEC_FIXED + if n == 0 { EMPTY_H } else { rows * CARD_H + (rows - 1) * GAP };
             let sec = Sec { group: (s < self.groups.len()).then_some(s) };
             f(Item::Sec(&sec, (x0, y, sw, h)));
+            if empty_loose {
+                f(Item::Empty((x0 + 1 + SEC_PAD, y + 1 + SEC_PAD + SEC_HEAD + SEC_HEAD_GAP + 6, sw - 2 - 2 * SEC_PAD, EMPTY_BOX)));
+            }
             for (j, (ci, _)) in self.in_section(s).enumerate() {
                 let (col, row) = (j as i32 % cols, j as i32 / cols);
                 let r = (x0 + 1 + SEC_PAD + col * (cw + GAP), y + 1 + SEC_PAD + SEC_HEAD + SEC_HEAD_GAP + row * (CARD_H + GAP), cw, CARD_H);
@@ -532,6 +589,16 @@ impl Overview {
         (x + w - 1 - SEC_PAD - bw, y + 1 + SEC_PAD, bw, SEC_HEAD)
     }
 
+    /// A group's chip in the head of its section `r`: 9 px, the dot (8), 6 px, the name (cut to what the add button leaves)
+    /// and 9 px, 24 px tall; and the name as it is drawn.
+    fn chip<'a>(&self, t: &Text, r: Rect, g: &'a Group) -> (Rect, Cow<'a, str>) {
+        let (x, y, w, _) = r;
+        let at = x + 1 + SEC_PAD;
+        let limit = self.add_box(t, r).0 - 10;
+        let name = t.fit(&g.name, PX, (limit - at - 9 - 8 - 6 - 9).clamp(24, w / 2));
+        ((at, y + 1 + SEC_PAD, 9 + 8 + 6 + t.width(&name, PX) + 9, SEC_HEAD), name)
+    }
+
     /// What is under window pixel `(x, y)`.
     fn hit_at(&self, t: &Text, x: f32, y: f32) -> Option<Hit> {
         if !inside(self.area, x, y) {
@@ -562,12 +629,36 @@ impl Overview {
             Item::Sec(s, r) => {
                 if let Some(g) = s.group.filter(|_| inside(self.add_box(t, r), x, yc)) {
                     hit = Some(Hit::Add(g));
+                } else if let Some((g, group)) = s.group.and_then(|g| Some((g, self.groups.get(g)?))) {
+                    if inside(self.chip(t, r, group).0, x, yc) {
+                        hit = Some(Hit::Chip(g));
+                    }
                 }
             }
             Item::Tile(r) if inside(r, x, yc) => hit = Some(Hit::Tile),
             _ => {}
         });
         hit
+    }
+
+    /// Where a drop at window pixel `(x, y)` would go: the section or the tile under it.
+    fn drop_at(&self, x: f32, y: f32) -> Option<Drop> {
+        if !inside(self.area, x, y) || y < (self.area.1 + HEAD_H) as f32 {
+            return None;
+        }
+        let yc = y - (self.area.1 + HEAD_H - self.scroll) as f32;
+        let mut to = None;
+        self.layout(|it| match it {
+            Item::Sec(s, r) if inside(r, x, yc) => to = Some(Drop::Section(s.group)),
+            Item::Tile(r) if inside(r, x, yc) => to = Some(Drop::Tile),
+            _ => {}
+        });
+        to
+    }
+
+    /// Whether card `id` is the one being dragged (`moved` is the drag that is not a click any more).
+    fn dragged(&self, id: u32) -> bool {
+        self.drag.is_some_and(|d| d.moved && d.id == id)
     }
 
     fn lift(&self, id: u32) -> i32 {
@@ -599,6 +690,14 @@ impl Overview {
 
 impl Overlay for Overview {
     fn key(&mut self, k: &Key, _: &Cx) -> Out {
+        // A card being dragged: Esc puts it back, and nothing else is heard until it is dropped.
+        if self.drag.is_some_and(|d| d.moved) {
+            if k.sym == sym::ESCAPE {
+                (self.drag, self.drop, self.armed) = (None, None, None);
+                return Out::Redraw;
+            }
+            return Out::None;
+        }
         let m = k.mods;
         if m.alt && !m.ctrl {
             let letter = char::from_u32(k.sym).map(|c| c.to_ascii_lowercase());
@@ -671,6 +770,15 @@ impl Overlay for Overview {
             let r = self.head(cx.text).search;
             return if self.field.drag_at(x, r, Look::Search, cx.text) { Out::Redraw } else { Out::None };
         }
+        if let Some(d) = self.drag.as_mut() {
+            d.moved |= (x - d.from.0).hypot(y - d.from.1) >= DRAG_PX;
+            if d.moved {
+                // The pointer lights nothing while a card is carried: the sections it could go into say so.
+                let (was, over) = (self.drop, self.over.take());
+                self.drop = self.drop_at(x, y);
+                return if was != self.drop || over.is_some() { Out::Redraw } else { Out::None };
+            }
+        }
         let over = self.hit_at(cx.text, x, y);
         if std::mem::replace(&mut self.over, over) != over { Out::Redraw } else { Out::None }
     }
@@ -688,6 +796,8 @@ impl Overlay for Overview {
                 }
                 Some(Hit::Card(id) | Hit::CardClose(id)) => {
                     self.sel = Some(id);
+                    // A card can be carried to a section (a cross cannot).
+                    self.drag = matches!(hit, Some(Hit::Card(_))).then_some(Drag { id, from: (c.x, c.y), moved: false });
                     Out::Redraw
                 }
                 Some(_) => Out::Redraw,
@@ -696,14 +806,29 @@ impl Overlay for Overview {
         }
         self.field.release();
         let armed = self.armed.take();
+        // A card carried and let go: into the section or onto the tile under the pointer, or nowhere.
+        if let Some(d) = self.drag.take().filter(|d| d.moved) {
+            let to = self.drop.take().or_else(|| self.drop_at(c.x, c.y));
+            return match to {
+                Some(Drop::Section(g)) => {
+                    self.dropped = Some((d.id, g));
+                    Out::Act(Cmd::Move.encode())
+                }
+                Some(Drop::Tile) => Out::Act(Cmd::NewGroup(Some(d.id)).encode()),
+                None => Out::Redraw,
+            };
+        }
+        self.drag = None;
         let Some(hit) = hit.filter(|&h| armed == Some(h)) else { return Out::Redraw };
         match hit {
             Hit::Card(id) => Out::Run(Cmd::Go(id).encode()),
             Hit::CardClose(id) => Out::Act(Cmd::Close(id).encode()),
-            Hit::NewGroup | Hit::Tile => Out::Act(Cmd::NewGroup(self.selected_id()).encode()),
+            // The dialog opens empty (`openGroupDialog({})`): no window ticked, so it starts with the template "one window".
+            Hit::NewGroup | Hit::Tile => Out::Act(Cmd::NewGroup(None).encode()),
             Hit::NewWindow => Out::Act(Cmd::NewWindow.encode()),
             Hit::Close => Out::Close,
             Hit::Add(g) => Out::Act(Cmd::AddTo(g as u8).encode()),
+            Hit::Chip(g) => Out::Act(Cmd::EditGroup(g as u8).encode()),
             Hit::Field => Out::Redraw,
         }
     }
@@ -731,7 +856,7 @@ impl Overlay for Overview {
     }
 
     fn handles_escape(&self) -> bool {
-        !self.field.is_empty()
+        !self.field.is_empty() || self.drag.is_some_and(|d| d.moved)
     }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
@@ -790,11 +915,23 @@ impl Overlay for Overview {
                 let lift = self.lift(c.id);
                 let gc = c.group.and_then(|g| self.groups.get(g as usize)).map(|g| g.color);
                 let state = CardState { over: lift != 0, close_lit: self.over == Some(Hit::CardClose(c.id)), selected: selected == Some(c.id), closable: self.cards.len() > 1, hue: gc };
+                let shown = q.fade;
+                if self.dragged(c.id) {
+                    q.fade = shown * DRAGGED;
+                }
                 paint_card(q, t, (r.0, r.1 + off + lift, r.2, r.3), c, c.current, &state, ci);
+                q.fade = shown;
             }
             Item::Tile((x, y, w, hh)) => {
                 if y + off + hh >= vy0 && y + off <= vy1 {
-                    paint_tile(q, t, (x, y + off, w, hh), self.over == Some(Hit::Tile));
+                    paint_tile(q, t, (x, y + off, w, hh), self.over == Some(Hit::Tile) || self.drop == Some(Drop::Tile));
+                }
+            }
+            Item::Empty((x, y, w, hh)) => {
+                if y + off + hh >= vy0 && y + off <= vy1 {
+                    let msg = tr(Str::OvLooseEmpty);
+                    dashed(q, (x, y + off, w, hh), 10, WHITE, 0.07);
+                    t.draw(q, x + (w - t.width(msg, PX)) / 2, y + off + hh / 2, msg, Ink::new(PX, faint()));
                 }
             }
             Item::Nothing(y) => {
@@ -829,6 +966,7 @@ impl Overlay for Overview {
             if y + PREV_H < vy0 || y > vy1 {
                 return;
             }
+            let fade = if self.dragged(c.id) { fade * DRAGGED } else { fade };
             let (px, inner) = (x + 1 + PREV_PAD_X, r.2 - 2 - 2 * PREV_PAD_X);
             let (top, bottom) = (y + 1, y + 1 + PREV_H);
             let lines = ((PREV_H - PREV_PAD_Y) / pitch + 1).max(1) as usize;
@@ -960,6 +1098,12 @@ impl Overview {
         if let Some(g) = group {
             slab(p, r, 14, group_color(g.color), 0.05);
         }
+        // A card carried over it (`.ov-sec.drop-over`): the colour at 10 % and a dashed border at 70 %; the windows in none take the accent.
+        if self.drop == Some(Drop::Section(s.group)) {
+            let c = group.map_or_else(accent, |g| group_color(g.color));
+            slab(p, r, 14, c, if group.is_some() { 0.05 } else { 0.10 });
+            dashed(p, r, 14, c, 0.7);
+        }
         let cy = y + 1 + SEC_PAD + SEC_HEAD / 2;
         let mut at = x + 1 + SEC_PAD;
         // What the head may use: up to the add button, or the section's edge.
@@ -967,11 +1111,15 @@ impl Overview {
         let limit = add.map_or(x + w - 1 - SEC_PAD, |b| b.0 - 10);
         match group {
             Some(g) => {
-                // The chip: 9 px, the dot, 6 px, the name, 9 px.
+                // The chip: 9 px, the dot, 6 px, the name, 9 px; lit with the group's colour under the pointer.
+                let (chip, name) = self.chip(t, r, g);
+                let lit = s.group.is_some_and(|i| self.over == Some(Hit::Chip(i)));
+                if lit {
+                    slab(p, chip, 8, group_color(g.color), 0.14);
+                }
                 p.disc((at + 9) as f32 + 4.0, cy as f32, 4.0, group_color(g.color), 1.0);
-                let name = t.fit(&g.name, PX, (limit - at - 9 - 8 - 6 - 9).clamp(24, w / 2));
-                t.draw(p, at + 9 + 8 + 6, cy, &name, Ink::new(PX, dim()));
-                at += 9 + 8 + 6 + t.width(&name, PX) + 9;
+                t.draw(p, at + 9 + 8 + 6, cy, &name, Ink::new(PX, if lit { fg() } else { dim() }));
+                at += chip.2;
             }
             None => {
                 let l = tr(Str::OvLoose);
@@ -1158,15 +1306,19 @@ mod tests {
         let mut heights = Vec::new();
         let o = Overview::new(vec![card(1, "a", Some(0)), card(2, "b", Some(0)), card(3, "c", Some(0))], vec![Group { name: "g".into(), color: 1 }], (0, 42, 900, 550));
         o.layout(|it| {
-            if let Item::Sec(_, r) = it {
-                heights.push(r.3);
+            if let Item::Sec(s, r) = it {
+                if s.group.is_some() {
+                    heights.push(r.3);
+                }
             }
         });
         assert_eq!(heights, [236], "three cards in the three columns of a wide body");
         let narrow = Overview { area: (0, 42, 600, 550), ..o };
         narrow.layout(|it| {
-            if let Item::Sec(_, r) = it {
-                heights = vec![r.3];
+            if let Item::Sec(s, r) = it {
+                if s.group.is_some() {
+                    heights = vec![r.3];
+                }
             }
         });
         assert_eq!(heights, [236 + 178 + 12], "the third card goes to a second row");
@@ -1180,6 +1332,7 @@ mod tests {
             Item::Sec(s, r) => secs.push((s.group, r)),
             Item::Card(ci, r) => cards.push((o.cards[ci].id, r)),
             Item::Tile(r) => tile = Some(r),
+            Item::Empty(_) => panic!("a window is in none"),
             Item::Nothing(_) => panic!("there are windows"),
         });
         assert_eq!(secs.iter().map(|s| s.0).collect::<Vec<_>>(), [Some(0), Some(1), None]);
@@ -1225,7 +1378,7 @@ mod tests {
             Item::Tile(_) => seen.0 += 1,
             Item::Nothing(_) => seen.1 += 1,
             Item::Sec(..) => seen.2 += 1,
-            Item::Card(..) => {}
+            Item::Card(..) | Item::Empty(_) => {}
         });
         assert_eq!(seen, (0, 1, 0));
         // The tile is back when the filter is.
@@ -1233,6 +1386,33 @@ mod tests {
         let mut tile = 0;
         o.layout(|it| tile += matches!(it, Item::Tile(_)) as i32);
         assert_eq!(tile, 1);
+    }
+
+    #[test]
+    fn with_groups_and_no_loose_window_the_section_of_none_stays_and_says_it_is_empty() {
+        // Every window is in a group: the reference still lists "No group" (an empty box under its head), after the groups.
+        let groups = vec![Group { name: "a".into(), color: 1 }, Group { name: "b".into(), color: 3 }];
+        let mut o = Overview::new(vec![card(1, "x", Some(0)), card(2, "y", Some(1))], groups, AREA);
+        let (mut secs, mut empty) = (Vec::new(), Vec::new());
+        let total = o.layout(|it| match it {
+            Item::Sec(s, r) => secs.push((s.group, r)),
+            Item::Empty(r) => empty.push(r),
+            _ => {}
+        });
+        assert_eq!(secs.iter().map(|s| s.0).collect::<Vec<_>>(), [Some(0), Some(1), None]);
+        let (none, e) = (secs[2].1, empty[0]);
+        assert_eq!(empty.len(), 1);
+        assert_eq!(none.3, SEC_FIXED + EMPTY_H, "a head, the box with its margins and the padding");
+        // The box is inside the section's padding, under the head, 6 px of margin round it.
+        assert_eq!((e.0, e.1, e.2, e.3), (none.0 + 1 + SEC_PAD, none.1 + 1 + SEC_PAD + SEC_HEAD + SEC_HEAD_GAP + 6, none.2 - 2 - 2 * SEC_PAD, EMPTY_BOX));
+        assert!(total > none.1 + none.3, "the tile follows it");
+        // Nothing is shown for it while a filter is, nor without groups (there is nothing to be apart from).
+        o.lower = "x".into();
+        let mut n = 0;
+        o.layout(|it| n += matches!(it, Item::Empty(_)) as i32);
+        assert_eq!(n, 0);
+        let none_at_all = Overview::new(vec![], vec![], AREA);
+        none_at_all.layout(|it| assert!(!matches!(it, Item::Empty(_))));
     }
 
     #[test]
@@ -1359,7 +1539,7 @@ mod tests {
 
     #[test]
     fn commands_survive_the_trip_through_a_u32() {
-        for c in [Cmd::Go(7), Cmd::Go(MASK - 1), Cmd::Close(0), Cmd::NewWindow, Cmd::NewGroup(None), Cmd::NewGroup(Some(3)), Cmd::AddTo(5)] {
+        for c in [Cmd::Go(7), Cmd::Go(MASK - 1), Cmd::Close(0), Cmd::NewWindow, Cmd::NewGroup(None), Cmd::NewGroup(Some(3)), Cmd::AddTo(5), Cmd::EditGroup(2)] {
             assert_eq!(Cmd::decode(c.encode()), Some(c), "{c:?}");
         }
         assert_eq!(Cmd::decode(0), None);
@@ -1457,7 +1637,7 @@ mod tests {
         assert_eq!(go(&mut o, mid(h.window.unwrap())), Out::Act(Cmd::NewWindow.encode()));
         assert_eq!(go(&mut o, mid(h.close)), Out::Close);
         o.sel = Some(4);
-        assert_eq!(go(&mut o, mid(h.group.unwrap())), Out::Act(Cmd::NewGroup(Some(4)).encode()), "a group around the selected window");
+        assert_eq!(go(&mut o, mid(h.group.unwrap())), Out::Act(Cmd::NewGroup(None).encode()), "the dialog opens empty, not around the selected window");
         assert_eq!(o.cursor(mid(h.search).0, mid(h.search).1, &cx), Cursor::Text);
         // A group's own add button.
         let mut sec0 = None;
@@ -1471,9 +1651,102 @@ mod tests {
         let b = o.add_box(&text, sec0.unwrap());
         let at = (mid(b).0, mid(b).1 + (AREA.1 + HEAD_H - o.scroll) as f32);
         assert_eq!(go(&mut o, at), Out::Act(Cmd::AddTo(0).encode()));
+        // Its chip opens the dialog that edits the group, and is lit under the pointer.
+        let (chip, _) = o.chip(&text, sec0.unwrap(), &o.groups[0]);
+        assert_eq!((chip.2 > 9 + 8 + 6 + 9, chip.3), (true, SEC_HEAD));
+        let at = (mid(chip).0, mid(chip).1 + (AREA.1 + HEAD_H - o.scroll) as f32);
+        o.pointer(at.0, at.1, &cx);
+        assert_eq!((o.over, o.cursor(at.0, at.1, &cx)), (Some(Hit::Chip(0)), Cursor::Pointer));
+        assert_eq!(go(&mut o, at), Out::Act(Cmd::EditGroup(0).encode()));
+        assert!(chip.0 + chip.2 < b.0, "the chip ends before the add button");
         // Outside the workspace is not the overview's.
         assert!(o.contains(500.0, 300.0, &cx) && !o.contains(100.0, 300.0, &cx));
         assert_eq!(o.hit_at(&text, 100.0, 300.0), None);
+    }
+
+    #[test]
+    fn a_card_carried_to_a_section_or_the_tile_goes_there_and_esc_puts_it_back() {
+        let text = Text::load();
+        let cx = Cx { g: G, text: &text };
+        // A body tall enough to show every section, the card and the tile at once (no scrolling in the way).
+        let mut o = Overview { area: (AREA.0, AREA.1, AREA.2, 1400), ..sample().shown() };
+        let click = |x, y, pressed| Click { x, y, pressed, time: 0 };
+        // Card 5 (the window in none), the section of "docs" (group 1) and the tile, as window pixels at the scroll `o` has.
+        let find = |o: &Overview| {
+            let (mut card, mut docs, mut tile, mut none) = ((0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0));
+            o.layout(|it| match it {
+                Item::Card(ci, r) if o.cards[ci].id == 5 => card = r,
+                Item::Sec(s, r) if s.group == Some(1) => docs = r,
+                Item::Sec(s, r) if s.group.is_none() => none = r,
+                Item::Tile(r) => tile = r,
+                _ => {}
+            });
+            let at = |r: Rect| ((r.0 + 40) as f32, (r.1 + 6 + AREA.1 + HEAD_H - o.scroll) as f32);
+            (at(card), at(docs), at(tile), at(none))
+        };
+        // A press and a release in the same place is a click, as it was.
+        let (card, ..) = find(&o);
+        o.button(click(card.0, card.1, true), &cx);
+        assert_eq!(o.drag.map(|d| (d.id, d.moved)), Some((5, false)));
+        assert_eq!(o.pointer(card.0 + 2.0, card.1 + 1.0, &cx), Out::Redraw, "the lift only");
+        assert_eq!(o.drag.map(|d| d.moved), Some(false), "under 5 px it is not a drag");
+        assert_eq!(o.button(click(card.0, card.1, false), &cx), Out::Run(Cmd::Go(5).encode()));
+        assert!(o.drag.is_none());
+        // Carried over the "docs" section and let go there: the window and the group are left for the app.
+        let (card, docs, ..) = find(&o);
+        o.button(click(card.0, card.1, true), &cx);
+        o.pointer(docs.0, docs.1, &cx);
+        assert_eq!((o.drag.map(|d| d.moved), o.drop, o.over), (Some(true), Some(Drop::Section(Some(1))), None), "the pointer lights nothing while it carries");
+        assert!(o.dragged(5) && !o.dragged(4));
+        assert_eq!(o.button(click(docs.0, docs.1, false), &cx), Out::Act(Cmd::Move.encode()));
+        assert_eq!((o.dropped.take(), o.drag, o.drop), (Some((5, Some(1))), None, None));
+        // Onto the section of none (its own): a move to none; the cursor of a card is still a hand.
+        let (card, _, _, none) = find(&o);
+        o.button(click(card.0, card.1, true), &cx);
+        o.pointer(none.0, none.1, &cx);
+        assert_eq!(o.drop, Some(Drop::Section(None)));
+        assert_eq!(o.button(click(none.0, none.1, false), &cx), Out::Act(Cmd::Move.encode()));
+        assert_eq!(o.dropped.take(), Some((5, None)));
+        // Onto the tile: the dialog, with this window ticked.
+        let (card, _, tile, _) = find(&o);
+        o.button(click(card.0, card.1, true), &cx);
+        o.pointer(tile.0, tile.1, &cx);
+        assert_eq!(o.drop, Some(Drop::Tile));
+        assert_eq!(o.button(click(tile.0, tile.1, false), &cx), Out::Act(Cmd::NewGroup(Some(5)).encode()));
+        // Esc puts it back: nothing is dropped, the overview stays, and keys are not heard while it is carried.
+        let (card, docs, ..) = find(&o);
+        o.button(click(card.0, card.1, true), &cx);
+        o.pointer(docs.0, docs.1, &cx);
+        assert!(o.handles_escape());
+        assert_eq!(o.key(&typed("x"), &cx), Out::None);
+        assert_eq!(o.key(&key(sym::ESCAPE), &cx), Out::Redraw);
+        assert_eq!((o.drag, o.drop, o.handles_escape()), (None, None, false));
+        assert_eq!(o.button(click(docs.0, docs.1, false), &cx), Out::Redraw);
+        assert_eq!(o.dropped, None);
+        // Let go over the header, or off the sections: nowhere.
+        o.button(click(card.0, card.1, true), &cx);
+        o.pointer(card.0, AREA.1 as f32 + 10.0, &cx);
+        assert_eq!(o.drop, None);
+        assert_eq!(o.button(click(card.0, AREA.1 as f32 + 10.0, false), &cx), Out::Redraw);
+        assert_eq!(o.dropped, None);
+        // A cross is not carried.
+        let r = Overview::close_box(find_card(&o, 2));
+        let (cx_, cy_) = ((r.0 + 9) as f32, (r.1 + 9 + AREA.1 + HEAD_H - o.scroll) as f32);
+        o.pointer(cx_, cy_, &cx);
+        o.button(click(cx_, cy_, true), &cx);
+        assert_eq!(o.drag, None);
+    }
+
+    fn find_card(o: &Overview, id: u32) -> Rect {
+        let mut r = (0, 0, 0, 0);
+        o.layout(|it| {
+            if let Item::Card(ci, b) = it {
+                if o.cards[ci].id == id {
+                    r = b;
+                }
+            }
+        });
+        r
     }
 
     #[test]

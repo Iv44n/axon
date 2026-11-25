@@ -52,7 +52,7 @@ Always use `--release`: debug mode is much slower.
 | `Ctrl+,` | Open or close the settings panel docked beside the terminal (also the sliders icon in the title bar); `Esc` closes it when it has the keyboard |
 | `Alt+N` / `Alt+W` | New window (a shell of its own) / close the window: the toast says so with an *Undo* button, and the shell stays alive until it is gone |
 | `Alt+1…9`, `Alt+[` / `Alt+]` | Go to window *n* / the previous / the next one |
-| `Alt+G` / `Alt+Shift+G` | Open the new-group dialog (name, colour, the windows to group, templates that open new windows; the window on screen is ticked when it is in no group; the panel's second header button does the same) / take the window on screen out of its group |
+| `Alt+G` / `Alt+Shift+G` | Open the new-group dialog (name, colour, the windows to group, templates that open new windows; the window on screen is ticked when it is in no group; the panel's second header button, or the new-group button left of the gear when the windows are tabs, does the same) / take the window on screen out of its group |
 | Right click on the panel or tabs | Menu of what is under the pointer: a window (rename, duplicate, split, groups, close, close the others), a group's header (edit, fold, new window, dissolve, close), a pane's row, or the empty part (new window, new group) |
 | Double click on a window's row or tab / `F2` over it | Rename it in place: `Enter` keeps the name, `Esc` cancels, an empty name goes back to the automatic one. A double click on a group's header edits the group |
 | `Ctrl+Space` | One more pane in the window (to the right first, then an automatic grid); a split that would leave a pane under 20 columns x 5 rows is refused |
@@ -60,6 +60,7 @@ Always use `--release`: debug mode is much slower.
 | `Alt+,` / `Alt+.` | Focus the previous / the next pane (a click on a pane focuses it too) |
 | `Alt+Shift+W` | Close the focused pane (a shell that exits closes its pane; the window closes with its last one); the cross at a pane's corner and the cross of its row in the panel do the same |
 | `Alt+O` | The overview of windows: every window as a card (the last rows of its terminal, status, name, panes, directory) in a section per group; type to filter (name, directory, group or terminal text), arrows or `Tab` to move, `Enter` or a click to go to a window, `Alt+N` for a new one, `Esc` clears the filter and then closes it |
+| Drag a card in the overview | Drop it on a group's section to put the window into the group (on the *No group* one to take it out), or on the dashed tile to make a group with it; `Esc` puts it back |
 | Drag a row or a tab | Reorder windows: drop it before or after another (it takes that window's group), on a group's header or chip to put it into the group, on the empty part of the list to take it out of its group. Drag a group's header or chip to move the group. `Esc` cancels. A status icon says what the shell is doing: the prompt, a turning ring while a command runs, a red dot when the last one failed (both need the shell's hook: `axon shell-init`; bash gets it from axon) |
 | `Alt+B` | Show or hide the panel of windows (`[windows] tabs = "left" \| "right" \| "top"`, `side`, `side_width`); the button right of the window buttons does the same |
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copy / paste |
@@ -67,7 +68,8 @@ Always use `--release`: debug mode is much slower.
 | `Ctrl` + `+` / `-` / `0` | Increase / decrease / reset font size |
 | `Shift+PageUp/PageDown/Home/End` | Navigate the scrollback |
 | `Ctrl+Shift+R` | Reload `config.toml` (fonts, spacing, opacity, blur, prompt chips) |
-| Mouse wheel | Scroll (sends arrow keys on the alternate screen; wheel reports when the program asks for the mouse) |
+| Mouse wheel | Scroll (sends arrow keys on the alternate screen; wheel reports when the program asks for the mouse); over the tabs at the top it scrolls them, a group or a window at a time |
+| Middle click on a window's row or tab | Close the window (with the *Undo* toast) |
 | Mouse in vim, tmux, htop, less | Clicks, drags, motion and wheel go to the program; hold `Shift` to select text anyway (`wl` backend) |
 | Click, double click, triple click | Selection: simple, word, line |
 | Drag the title bar, double click it | Move the window, maximize / restore |

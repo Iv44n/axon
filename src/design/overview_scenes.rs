@@ -172,6 +172,13 @@ fn defs() -> Vec<Def> {
         }),
         d("overview-none", "Overview: nothing matches the filter", Around::Panel, |a| open(a).state("hmrzz", None, None, 0)),
         d("overview-end", "Overview: scrolled to the end, the dashed tile that makes a group (pointer over it)", Around::Panel, |a| open(a).state("", None, None, i32::MAX).over_button(3)),
+        d("overview-no-loose", "Overview with every window in a group: \"No group\" stays, its box says it is empty", Around::Panel, |a| {
+            let (mut cards, groups) = windows();
+            cards.iter_mut().filter(|c| c.id == 5).for_each(|c| c.group = Some(1));
+            Overview::new(cards, groups, a).shown().state("", None, None, i32::MAX)
+        }),
+        d("overview-drag", "Overview: a card carried over a group's section (the card at 40 %, the section's colour at 10 % and a dashed border)", Around::Panel, |a| open(a).state("", None, None, i32::MAX).carrying(5, Some(Some(1)))),
+        d("overview-drag-tile", "Overview: a card carried onto the dashed tile (amber, tinted)", Around::Panel, |a| open(a).state("", None, None, i32::MAX).carrying(5, None)),
         d("overview-header", "Overview: the pointer over the header's new window button", Around::Panel, |a| open(a).over_button(1)),
         d("overview-wide", "Overview without the panel (Alt+B): ten windows in three groups, three columns", Around::Plain, |a| {
             let (cards, groups) = many();

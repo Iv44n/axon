@@ -17,7 +17,6 @@
 use std::{path::PathBuf, rc::Rc};
 
 use crate::{
-    bar,
     chrome,
     config::{self, Chip, CursorKind, FontCfg, InputCfg, TabsPos, WindowsCfg},
     font::{self, Fonts, UiFont},
@@ -1850,8 +1849,10 @@ impl Settings {
         let live = if inert { 0.38 } else { 1.0 };
         let slots = self.slots();
         let held = self.chip_drag.filter(|d| d.moved);
+        // Every enabled chip is green here (`.chip { --c: var(--green) }` comes after the per-chip hues, which are the
+        // prompt's own); a disabled one is grey.
+        let color = palette::unit(palette::GREEN);
         let chip_at = |p: &mut Paint, chip: Chip, (x, y, cw, ch): Rect, on: bool, a: f32, lit: f32, focus: bool| {
-            let color = bar::color(chip);
             let r = 9.0;
             if on {
                 p.rrect(x, y, cw, ch, r, color, a * mix(0.12, 0.20, lit));
@@ -2499,21 +2500,23 @@ mod tests {
     }
 
     #[test]
-    fn the_input_page_draws_and_the_chips_show_their_colours() {
+    fn the_input_page_draws_and_the_enabled_chips_are_green() {
         let mut s = on_chips_page();
         s.toggle_chip(Chip::Kube);
         let (w, h) = (400usize, 600usize);
         let mut fb = vec![0u32; w * h];
         s.draw(&mut fb, w, h, (0, 0));
-        // An enabled chip's cell carries its colour: the time chip's red outweighs its green and blue.
+        // An enabled chip's cell is green whatever its hue in the prompt is (the time chip's is red).
         let slot = |chip: Chip| s.slot_rect(s.slots().iter().position(|&c| c == chip).unwrap());
         let probe = |fb: &[u32], chip: Chip| {
             let (x, y, cw, ch) = slot(chip);
             let px = fb[(s.body_y(y + ch / 2)) as usize * w + (x + cw - 8) as usize];
             ((px >> 16 & 255) as i32, (px >> 8 & 255) as i32, (px & 255) as i32)
         };
-        let (r, g, b) = probe(&fb, Chip::Time);
-        assert!(r > g + 8 && r > b + 8, "{r} {g} {b}");
+        for chip in [Chip::Time, Chip::Dir, Chip::Branch] {
+            let (r, g, b) = probe(&fb, chip);
+            assert!(g > r + 8 && g > b + 8, "{chip:?}: {r} {g} {b}");
+        }
         // The disabled one is grey.
         let (r, g, b) = probe(&fb, Chip::Kube);
         assert!((r - g).abs() < 6 && (g - b).abs() < 6, "{r} {g} {b}");

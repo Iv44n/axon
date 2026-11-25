@@ -17,7 +17,7 @@ renderer (no WebView, no CSS engine, no new dependency); the mock-up is a design
 `#ff5d5d`, magenta `#d86bdc`, yellow `#f6b73c`, blue `#6aa9ff`, cyan `#4fd6d0`. They are also the ANSI 1-6 slots, so
 programs' colours match the chrome. ANSI 8 (grey) is one step lighter than the secondary text to keep the 4.5:1 rule.
 
-**Window (`chrome.rs`):** title bar 42 px with a top light that fades out and a hairline at its foot; the buttons are
+**Window (`chrome.rs`):** title bar 42 px (40 since 0031) with a top light that fades out and a hairline at its foot; the buttons are
 12 px grey discs that turn red, yellow and green (with dark glyphs) when the pointer is over the group; the settings
 button is a sliders icon in a 28 px square that highlights on hover; the title is `user@host:` in the secondary colour and
 the rest in the text colour; a 1 px light inside the top edge. A 28 px **status bar** at the bottom (hairline, faint
@@ -47,7 +47,7 @@ the shell's own prompt.
 command has run, a check or a cross with the exit status and the duration at the right end, as in the mock-up. The
 channel is the one thing a terminal emulator gets from a shell for free: window titles. The hook prints
 `ESC ] 2 ; axon!hook S BEL` when a command starts (bash `PS0`, zsh `preexec`, fish `fish_preexec`) and
-`axon!hook E <n> <status>` at each prompt; the listener on the PTY thread swallows them and stamps `Instant::now()`, so
+`axon!hook E <n> <status>` at each prompt (and `axon!hook L <command line>` after the start, 0031: the window's label); the listener on the PTY thread swallows them and stamps `Instant::now()`, so
 the time is taken where the bytes are parsed, not when the UI wakes. The prompt number `n` rides on the reserved line in
 the *colour* of its concealed cell (`ESC[8;38;2;R;G;Bm`, 24 bits): invisible, no extra characters to copy, and it
 scrolls with the row, so any row on screen or in the scrollback finds its `Record` again. `History` is a ring of 256

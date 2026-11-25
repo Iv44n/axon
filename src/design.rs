@@ -180,9 +180,11 @@ struct ListScene {
     drag: Option<DragScene>,
     /// After painting the list at `phase`, turn the spinners to this phase the way the app does between full paints.
     respin: Option<f32>,
+    /// The tabs at the top scrolled to start at this entry.
+    first: usize,
 }
 
-const NO_LIST: ListScene = ListScene { grouped_tabs: false, fold0: false, status: [Status::Idle; 5], phase: 0.125, drag: None, respin: None };
+const NO_LIST: ListScene = ListScene { grouped_tabs: false, fold0: false, status: [Status::Idle; 5], phase: 0.125, drag: None, respin: None, first: 0 };
 
 /// The reference's session: servidor runs a command, pruebas failed one.
 const BUSY: [Status; 5] = [Status::Idle, Status::Running, Status::Failed, Status::Idle, Status::Idle];
@@ -367,6 +369,7 @@ fn scenes() -> Vec<Scene> {
         Scene { side: Some((TabsPos::Left, None)), list: ListScene { status: BUSY, phase: 0.6, ..NO_LIST }, ..base("status-side-turned", "The same a little later: the ring's bright quarter has gone round", "status", side_ui) },
         Scene { side: Some((TabsPos::Left, Some(side::Part::Head(0)))), folded: true, list: ListScene { fold0: true, status: BUSY, ..NO_LIST }, ..base("status-folded", "A folded group shows the window on screen, and its dot turns while a window in it runs a command (the other group is folded too, idle)", "status", side_ui) },
         Scene { side: Some((TabsPos::Top, None)), list: ListScene { grouped_tabs: true, status: BUSY, ..NO_LIST }, ..base("tabs-top-groups", "Groups in the tabs: a container tinted with the group's colour, its chip (dot, name, count), the tab on screen at 16 % of the colour; status icons in the tabs", "tabs", Ui { side: 0, ..Ui::IDLE }) },
+        Scene { side: Some((TabsPos::Top, None)), list: ListScene { grouped_tabs: true, status: BUSY, first: 4, ..NO_LIST }, ..base("tabs-top-scrolled", "The tabs scrolled a group on (the wheel moves them a group or a window at a time): the first group is out of sight and the rest start at the left of the strip", "tabs", Ui { side: 0, ..Ui::IDLE }) },
         Scene { side: Some((TabsPos::Top, Some(side::Part::Head(0)))), list: ListScene { grouped_tabs: true, fold0: true, status: BUSY, ..NO_LIST }, ..base("tabs-top-folded", "A folded group at the top keeps only the window on screen; the pointer is over its chip; the ring turns because a hidden window runs a command", "tabs", Ui { side: 0, ..Ui::IDLE }) },
         Scene { panes: split(2, panes::Kind::Cols, 1, None), side: Some((TabsPos::Top, Some(side::Part::Row(1)))), list: ListScene { grouped_tabs: true, status: BUSY, ..NO_LIST }, ..base("tabs-top-badge", "A window of two panes says so in its tab at the top (the panel lists them as rows instead)", "tabs", Ui { side: 0, ..Ui::IDLE }) },
         Scene { side: Some((TabsPos::Left, None)), list: ListScene { drag: Some(DragScene { grab: crate::dnd::Grab::Win(3), over: Over::Win(1, 0.2) }), ..NO_LIST }, ..base("dnd-side-before", "Dragging a window in the panel: it stays at 40 %, its ghost follows the pointer, a 2 px accent line says it would go before servidor, in its group", "drag", side_ui) },
@@ -467,12 +470,12 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
         } else {
             crate::side::entries(&win_group, &folds, &[pane_n, 1, 1, 1, 1], Some(0))
         };
-        let (x0, x1) = (chrome::TITLE_CLEAR as i32 - 8, W as i32 - 50);
+        let (x0, x1) = (chrome::TABS_X0 as i32, W as i32 - chrome::TABS_FROM_RIGHT as i32);
         let panel = soft.side_rect().map(|rect| (rect, ((rect.0 - ox) as i32, (rect.1 - oy) as i32, (rect.2 - rect.0) as i32, (rect.3 - rect.1) as i32)));
         // The drag, if any: the pointer at its place in the list, and what the real layout makes of it.
         let layout = match panel {
             Some((_, b)) if !top => crate::side::Layout::Side { x0: b.0, y0: b.1, w: b.2, entries: &entries },
-            _ => crate::side::Layout::Top { x0, x1, entries: &entries, groups: &groups, cw: crate::side::chip_cw(&soft) },
+            _ => crate::side::Layout::Top { x0, x1, entries: &entries, groups: &groups, cw: crate::side::chip_cw(&soft), first: s.list.first },
         };
         let drag = s.list.drag.and_then(|d| {
             let r = layout.grab_box(d.grab)?;
@@ -496,7 +499,7 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
         let look = side::Look { hover, drag, phase: s.list.phase };
         if top {
             soft.clear_rect(&mut fb, (ox + x0 as usize, oy, ox + x1 as usize, oy + chrome::TITLE_H));
-            crate::side::paint_top(&soft, &mut fb, (x0, x1), &entries, &groups, &items, look, &mut Vec::new());
+            crate::side::paint_top(&soft, &mut fb, (x0, x1), s.list.first, &entries, &groups, &items, look, &mut Vec::new());
             if let Some((wi, text, caret, sel)) = edit {
                 crate::side::paint_rename(&soft, &mut fb, layout, wi, &crate::side::Edit { text, caret, sel }, hover, &mut Vec::new());
             }

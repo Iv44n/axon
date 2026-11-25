@@ -36,23 +36,33 @@ const TITLE_LIGHT: f32 = 0.035;
 const TOP_LIGHT: f32 = 0.05;
 const STATUS_LIGHT: f32 = 0.02;
 /// Height of the title bar (its last row is the hairline): where the buttons and the title sit and
-/// the window can be dragged. The terminal grid starts below it.
-pub const TITLE_H: usize = 42;
+/// the window can be dragged. The terminal grid starts below it (`.topbar`: 40 px with the hairline).
+pub const TITLE_H: usize = 40;
 /// Height of the status bar at the bottom of the window (its first row is the hairline).
 pub const STATUS_H: usize = 28;
 /// Pixels from an edge beyond which the background no longer varies along a row.
 pub const REACH: usize = 32;
-/// Left edge of the area the title text must stay clear of; the right side mirrors it.
-pub const TITLE_CLEAR: usize = 118;
+/// Where the title bar's middle part runs (`.win-title`, `.top-slot`): the title between the panel button (which ends at 104)
+/// and the actions, the tabs between the lights (which end at 66) and the actions. Each is 10 px (the bar's gap) from what it
+/// follows. `*_FROM_RIGHT` is how far the part's far end is from the window's right edge: the gear alone is 36 px wide (8 of
+/// padding), and the new-group button of the tabs' mode and the 2 px between them add 30.
+pub const TITLE_X0: usize = 114;
+pub const TITLE_FROM_RIGHT: usize = 46;
+pub const TABS_X0: usize = 76;
+pub const TABS_FROM_RIGHT: usize = 76;
 
 // Pixels are sampled at their centre (`x + 0.5`), so the button centres sit on `n + 0.5`: a 13 px
 // disc then ends exactly on pixel borders and a 1 px stroke through the centre fills one row.
 const BTN_R: f32 = 6.0;
 const BTN_X0: f32 = 20.0;
 const BTN_DX: f32 = 20.0;
-const BTN_CY: f32 = 21.0;
-/// The settings button is a 28 px square whose centre is this far from the right edge of the window.
-const GEAR_FROM_RIGHT: f32 = 28.0;
+// The reference centres its 28 px buttons at y = 19.5 (a 39 px bar and its hairline); 19 keeps the discs and strokes on whole pixels
+// and lines the buttons up with the tabs (`side::TAB_H`, a tab at y = 5).
+const BTN_CY: f32 = 19.0;
+/// The settings button is a 28 px square whose centre is this far from the right edge of the window (`.topbar`: 8 px of
+/// padding on the right); the new-group button of the tabs' mode is the next one, 2 px to its left.
+const GEAR_FROM_RIGHT: f32 = 22.0;
+const GROUP_FROM_RIGHT: f32 = 52.0;
 const GEAR_HALF: f32 = 14.0;
 /// The button that shows and hides the panel of windows: a 28 px square right of the window buttons.
 const SIDE_CX: f32 = 90.0;
@@ -87,6 +97,8 @@ pub enum Hit {
     Settings,
     /// The button right of the window buttons: shows or hides the panel of windows.
     SideBtn,
+    /// The button left of the gear when the windows are tabs at the top (`#btn-newgroup`): the dialog for a new group.
+    NewGroup,
     Title,
     /// The panel of windows (the app finds out what in it; `side.rs`).
     Side,
@@ -97,7 +109,7 @@ pub enum Hit {
 }
 
 impl Hit {
-    /// 1..=3 for the window buttons, 4 for the gear, 5 for the panel button, 0 for everything else.
+    /// 1..=3 for the window buttons, 4 for the gear, 5 for the panel button, 6 for the new-group button, 0 for everything else.
     pub fn button(self) -> u8 {
         match self {
             Hit::Close => 1,
@@ -105,6 +117,7 @@ impl Hit {
             Hit::Maximize => 3,
             Hit::Settings => 4,
             Hit::SideBtn => 5,
+            Hit::NewGroup => 6,
             _ => 0,
         }
     }
@@ -142,7 +155,8 @@ pub fn margins(maximized: bool) -> (usize, usize, usize) {
 }
 
 /// What is at `(x, y)` in a `w` x `h` window, in window pixels (negative over the shadow margin).
-/// The panel button counts when it is there (`Ui::side != 0`: `side_btn`).
+/// The panel button counts when it is there (`Ui::side != 0`: `side_btn`); when it is not (the windows are tabs at the top)
+/// the new-group button is there instead.
 pub fn hit(x: f32, y: f32, w: u32, h: u32, maximized: bool, side_btn: bool) -> Hit {
     let (w, h) = (w as f32, h as f32);
     if !maximized {
@@ -190,6 +204,9 @@ pub fn hit(x: f32, y: f32, w: u32, h: u32, maximized: bool, side_btn: bool) -> H
     }
     if (x - (w - GEAR_FROM_RIGHT)).abs() <= GEAR_HALF && (y - BTN_CY).abs() <= GEAR_HALF {
         return Hit::Settings;
+    }
+    if !side_btn && (x - (w - GROUP_FROM_RIGHT)).abs() <= GEAR_HALF && (y - BTN_CY).abs() <= GEAR_HALF {
+        return Hit::NewGroup;
     }
     if y < TITLE_H as f32 { Hit::Title } else { Hit::Client }
 }
@@ -347,6 +364,34 @@ fn side_button(base: P, px: f32, py: f32, ui: &Ui) -> P {
     tint(colour, a * sidebar(dx, dy)).over(p)
 }
 
+/// Coverage of the new-group icon (a rounded frame with a plus in it, on a 16 px grid) at offset `(dx, dy)` from its centre.
+fn group_icon(dx: f32, dy: f32) -> f32 {
+    let (x, y) = (dx + 8.0, dy + 8.0);
+    let l = |a: (f32, f32), b: (f32, f32)| (0.75 + 0.5 - seg(x, y, a, b)).clamp(0.0, 1.0);
+    let frame = (0.75 + 0.5 - rounded_rect(x - 2.5, y - 3.5, 11.0, 9.0, 2.0).abs()).clamp(0.0, 1.0);
+    frame.max(l((8.0, 6.2), (8.0, 9.8))).max(l((6.2, 8.0), (9.8, 8.0)))
+}
+
+/// The new-group button of the tabs' mode over `base`: dim, lit on a rounded highlight under the pointer.
+fn group_button(base: P, px: f32, py: f32, wf: f32, ui: &Ui) -> P {
+    let (dx, dy) = (px - (wf - GROUP_FROM_RIGHT), py - BTN_CY);
+    if ui.side != 0 || dx.abs() > GEAR_HALF + 1.0 || dy.abs() > GEAR_HALF + 1.0 {
+        return base;
+    }
+    let hovered = ui.hover == 6;
+    let mut p = base;
+    if hovered {
+        let d = rounded_rect(dx + GEAR_HALF, dy + GEAR_HALF, 2.0 * GEAR_HALF, 2.0 * GEAR_HALF, 8.0);
+        p = P::white(if ui.down { 0.12 } else { 0.07 } * (0.5 - d).clamp(0.0, 1.0)).over(p);
+    }
+    let (colour, a) = match (hovered, ui.focused) {
+        (true, _) => (ICON_FG, 1.0),
+        (false, true) => (ICON_DIM, 1.0),
+        (false, false) => (ICON_DIM, 0.55),
+    };
+    tint(colour, a * group_icon(dx, dy)).over(p)
+}
+
 /// Signed distance from `(px, py)` to a `w` x `h` rectangle at the origin with corner radius `r`:
 /// negative inside.
 pub fn rounded_rect(px: f32, py: f32, w: f32, h: f32, r: f32) -> f32 {
@@ -430,6 +475,7 @@ pub fn pixel(x: usize, y: usize, w: usize, h: usize, opacity: f32, ui: &Ui) -> u
     p = buttons(p, px, py, ui);
     p = gear_button(p, px, py, wf, ui);
     p = side_button(p, px, py, ui);
+    p = group_button(p, px, py, wf, ui);
 
     // The window over its own shadow (only its anti-aliased edge lets any through).
     let p = p.scale(cov);
@@ -559,14 +605,19 @@ mod tests {
 
     #[test]
     fn hit_testing_finds_buttons_title_edges_and_client() {
-        let h = |x, y| hit(x, y, 800, 600, false, false);
-        assert_eq!(h(20.0, 21.0), Hit::Close);
-        assert_eq!(h(40.0, 21.0), Hit::Minimize);
-        assert_eq!(h(60.0, 21.0), Hit::Maximize);
-        assert_eq!(h(400.0, 21.0), Hit::Title);
-        assert_eq!(h(800.0 - 28.0, 21.0), Hit::Settings);
-        assert_eq!(h(800.0 - 50.0, 21.0), Hit::Title);
+        let h = |x, y| hit(x, y, 800, 600, false, true);
+        assert_eq!(h(20.0, 19.0), Hit::Close);
+        assert_eq!(h(40.0, 19.0), Hit::Minimize);
+        assert_eq!(h(60.0, 19.0), Hit::Maximize);
+        assert_eq!(h(400.0, 19.0), Hit::Title);
+        assert_eq!(h(800.0 - 22.0, 19.0), Hit::Settings);
+        assert_eq!(h(800.0 - 50.0, 19.0), Hit::Title, "the new-group button is the tabs' mode's");
         assert_eq!(Hit::Settings.button(), 4);
+        // The bar is 40 px with its hairline: its buttons are 28 px boxes from y = 5.
+        assert_eq!(h(800.0 - 22.0, 5.0), Hit::Settings);
+        assert_eq!(h(800.0 - 22.0, 34.0), Hit::Title);
+        assert_eq!(h(400.0, 39.0), Hit::Title);
+        assert_eq!(h(400.0, 40.0), Hit::Client);
         assert_eq!(h(400.0, 300.0), Hit::Client);
         assert_eq!(h(2.0, 300.0), Hit::Edge(EDGE_LEFT));
         assert_eq!(h(400.0, 598.0), Hit::Edge(EDGE_BOTTOM));
@@ -575,14 +626,40 @@ mod tests {
         assert_eq!(h(797.0, 590.0), Hit::Edge(EDGE_RIGHT | EDGE_BOTTOM));
         assert_eq!(hit(2.0, 300.0, 800, 600, true, false), Hit::Client);
         // The panel button is there only when asked for; without it that spot is the title bar.
-        assert_eq!(hit(SIDE_CX, 21.0, 800, 600, false, true), Hit::SideBtn);
-        assert_eq!(hit(SIDE_CX, 21.0, 800, 600, false, false), Hit::Title);
+        assert_eq!(hit(SIDE_CX, 19.0, 800, 600, false, true), Hit::SideBtn);
+        assert_eq!(hit(SIDE_CX, 19.0, 800, 600, false, false), Hit::Title);
         assert_eq!(Hit::SideBtn.button(), 5);
+        // ...and the new-group button is there only without it, 2 px left of the gear (`.topbar-actions`).
+        assert_eq!(hit(800.0 - 52.0, 19.0, 800, 600, false, false), Hit::NewGroup);
+        assert_eq!(hit(800.0 - 52.0, 19.0, 800, 600, false, true), Hit::Title);
+        assert_eq!(hit(800.0 - 22.0, 19.0, 800, 600, false, false), Hit::Settings);
+        assert_eq!(Hit::NewGroup.button(), 6);
         // Over the shadow: a grab zone just outside the edge, nothing beyond it.
         assert_eq!(h(-5.0, 300.0), Hit::Edge(EDGE_LEFT));
         assert_eq!(h(400.0, 605.0), Hit::Edge(EDGE_BOTTOM));
         assert_eq!(h(-5.0, -5.0), Hit::Edge(EDGE_TOP | EDGE_LEFT));
         assert_eq!(h(-20.0, 300.0), Hit::Client);
+    }
+
+    #[test]
+    fn the_new_group_button_belongs_to_the_tabs_mode_and_lights_up_on_hover() {
+        let lum = |ui: &Ui, x: usize, y: usize| {
+            let (ml, mt, mb) = margins(ui.maximized);
+            let (bw, bh) = (WIN.0 + 2 * ml, WIN.1 + mt + mb);
+            pixel(ml + x, mt + y, bw, bh, 0.88, ui) >> 8 & 255
+        };
+        let (cx, cy) = (WIN.0 - 52, 19usize);
+        let ink = |ui: &Ui| (cx - 8..cx + 8).flat_map(|x| (cy - 8..cy + 8).map(move |y| (x, y))).map(|(x, y)| lum(ui, x, y)).max().unwrap();
+        let tabs = Ui { side: 0, ..UI };
+        let off = lum(&tabs, 700, 19);
+        assert!(ink(&tabs) > off + 40, "the icon is lighter than the glass");
+        let hover = Ui { hover: 6, ..tabs };
+        assert!(ink(&hover) > ink(&tabs), "hover brightens it");
+        assert!(lum(&hover, cx + 12, cy) > lum(&tabs, cx + 12, cy), "and lights a rounded highlight around it");
+        // With the panel button (the windows in a panel) the button is not drawn: only the glass is there.
+        assert!(ink(&UI) < off + 20, "not drawn beside the panel");
+        // The settings button next to it is not touched by its hover.
+        assert_eq!(lum(&hover, WIN.0 - 22, 19), lum(&tabs, WIN.0 - 22, 19));
     }
 
     #[test]
@@ -593,16 +670,16 @@ mod tests {
             pixel(ml + x, mt + y, bw, bh, 0.88, ui) >> 8 & 255
         };
         // The icon's first slider line runs along y = 16.5 + 4.5 - 8 + ... : find its ink by scanning the button.
-        let (cx, cy) = (WIN.0 - 28, 21usize);
+        let (cx, cy) = (WIN.0 - 22, 19usize);
         let ink = |ui: &Ui| (cx - 8..cx + 8).flat_map(|x| (cy - 8..cy + 8).map(move |y| (x, y))).map(|(x, y)| lum(ui, x, y)).max().unwrap();
-        let off = lum(&UI, 700, 21);
+        let off = lum(&UI, 700, 19);
         assert!(ink(&UI) > off + 40, "the icon is lighter than the glass");
         let hover = Ui { hover: 4, ..UI };
         assert!(ink(&hover) > ink(&UI), "hover brightens it");
         assert!(lum(&hover, cx + 12, cy) > lum(&UI, cx + 12, cy), "and lights a rounded highlight around it");
         // Hovering it does not colour the three discs.
         for x in 14..70 {
-            assert_eq!(lum(&hover, x, 21), lum(&UI, x, 21), "x = {x}");
+            assert_eq!(lum(&hover, x, 19), lum(&UI, x, 19), "x = {x}");
         }
         // While the settings panel is open it stays lit, without the pointer: the reference's `aria-expanded`.
         let open = Ui { prefs: true, ..UI };

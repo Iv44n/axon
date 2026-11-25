@@ -48,15 +48,14 @@ skipped; the previews rasterize glyphs per call (no cache), a screenful is ~4 ca
 (the fade lasts 0.14 s); a shell that prints wakes the loop and repaints it, so previews are live.
 
 **Deviations from the reference:** no backdrop blur (the backdrop is `--bg` at 98.5 % instead of 94 % + blur so the grid
-under it does not read through); weight 500 labels are regular; the running status is a still ring; no drag of a card
-into a group or onto the tile (the tile's hint says "around the selected window", not "drag a window here"); the group
-chip does not open the edit dialog and *New group* makes the group at once (the dialog is a later screen: it replaces
-`Cmd::NewGroup`); no empty "Drag a window here" in an empty *No group*; the reference re-renders every 300 ms, here a
+under it does not read through); weight 500 labels are regular; the running status is a still ring; a card dragged
+into a group or onto the tile (0032) has no ghost under the pointer, and *New group* and the tile open the dialog empty, as the
+reference's `openGroupDialog({})`, and the chip opens the edit dialog; the reference re-renders every 300 ms, here a
 frame is drawn when anything wakes the loop; the preview shows the pane's screen rows, not a log of commands (so a
 running job has no `▸ job…` line: the last row is amber instead); a narrow workspace drops the count, then the buttons'
 words, then the buttons, where the reference wraps and clips its header; closing a window shows no *Undo* toast.
 
-**Not done:** window drag and drop between groups, the group dialog and the context menus from the overview, an
+**Not done:** (drag and drop between groups and the group dialog from the overview came with 0029 and 0032) the context menus from the overview, an
 *Undo* for a closed window, keyboard `Delete` to close the selected card, a draggable scrollbar.
 
 **Revisit if:** a blur exists (`ext-background-effect` on GNOME or an own box blur) and the backdrop can go back to 94 %;

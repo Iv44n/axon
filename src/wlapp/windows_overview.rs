@@ -190,8 +190,26 @@ impl App {
                 self.spawn_win(Spawn::default());
                 self.overlays.toast(tr(Str::OvToastNewWindow), None, 0, Instant::now());
             }
-            // The group dialog, over the overview, with the selected card ticked.
+            // The group dialog, over the overview: empty for the button and the tile, with a card's window ticked for a drop on the tile.
             Cmd::NewGroup(id) => self.open_group_dialog(None, id.into_iter().map(u64::from).collect()),
+            // A card dropped on a section: its window goes into the group (or out of every group), with the toast.
+            Cmd::Move => {
+                let dropped = self.overlays.with::<Overview>(overview::TAG).and_then(|ov| ov.dropped.take());
+                if let Some((id, g)) = dropped
+                    && let Some(wi) = self.win_index(id as u64)
+                {
+                    let gid = g.and_then(|g| self.groups.get(g)).map(|g| g.id);
+                    if g.is_none() || gid.is_some() {
+                        self.move_to_group(wi, gid);
+                    }
+                }
+            }
+            // The chip of a group's section: the dialog in edit mode (the overview's groups are the app's, in order).
+            Cmd::EditGroup(g) => {
+                if let Some(id) = self.groups.get(g as usize).map(|g| g.id) {
+                    self.open_group_dialog(Some(id), Vec::new());
+                }
+            }
             Cmd::AddTo(g) => {
                 if (g as usize) < self.groups.len() {
                     self.spawn_win(Spawn { group: Some(g as usize), ..Spawn::default() });

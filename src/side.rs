@@ -16,8 +16,11 @@ use crate::{
     soft::Soft,
 };
 
-/// The header's height, a row's height, the gap between rows and the padding around the list.
-pub const HEAD_H: i32 = 34;
+/// The header's height (`.side-head`: 10 px of padding above its 24 px buttons and 4 below), the padding above the list
+/// (`.side-slot`), a row's height, the gap between rows and the padding around the list.
+pub const HEAD_H: i32 = 38;
+const SLOT_PAD: i32 = 4;
+const HEAD_TOP: i32 = 10;
 pub const ROW_H: i32 = 30;
 pub const GAP: i32 = 1;
 pub const PAD: i32 = 8;
@@ -308,11 +311,32 @@ pub enum Mark {
 }
 
 /// Where the list is: a panel at `(x0, y0)`, `w` wide, listing `entries`, or the tabs between `x0` and `x1`
-/// in the title bar (`entries` as `top_entries` makes them; `cw` is how wide a character of a chip is).
+/// in the title bar (`entries` as `top_entries` makes them; `cw` is how wide a character of a chip is). The tabs
+/// scroll a group or a loose window at a time: `first` is the entry the strip starts at (what is before it is out of
+/// sight, and `scroll` and `reveal` say where it goes).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Layout<'a> {
     Side { x0: i32, y0: i32, w: i32, entries: &'a [Entry] },
-    Top { x0: i32, x1: i32, entries: &'a [Entry], groups: &'a [GroupItem], cw: i32 },
+    Top { x0: i32, x1: i32, entries: &'a [Entry], groups: &'a [GroupItem], cw: i32, first: usize },
+}
+
+/// Where the unit of the tabs that holds entry `i` starts: the group's header for a window in a group, else the
+/// entry itself (the tabs scroll by units: a group with its windows, or a window in none).
+fn unit_start(entries: &[Entry], i: usize) -> usize {
+    let mut i = i.min(entries.len());
+    while i > 0 && i < entries.len() && matches!(entries[i], Entry::Row { grouped: true, .. } | Entry::Pane { .. }) {
+        i -= 1;
+    }
+    i
+}
+
+/// Where the unit after the one that holds entry `i` starts (the length of `entries` when it is the last).
+fn unit_next(entries: &[Entry], i: usize) -> usize {
+    let mut j = unit_start(entries, i) + 1;
+    while j < entries.len() && matches!(entries[j], Entry::Row { grouped: true, .. } | Entry::Pane { .. }) {
+        j += 1;
+    }
+    j.min(entries.len())
 }
 
 impl<'a> Layout<'a> {
@@ -320,16 +344,13 @@ impl<'a> Layout<'a> {
     fn each(self, f: &mut dyn FnMut(usize, Rect) -> bool) {
         match self {
             Layout::Side { x0, y0, w, entries } => {
-                let mut y = y0 + HEAD_H;
-                let mut prev: Option<Entry> = None;
+                let mut y = y0 + HEAD_H + SLOT_PAD;
                 for (i, e) in entries.iter().enumerate() {
-                    // The space above a group, and above the windows that are in none (after groups).
-                    let gap = match (e, prev) {
-                        (Entry::Head(_), _) => GROUP_GAP,
-                        (Entry::Row { grouped: false, .. }, Some(Entry::Head(_) | Entry::Row { grouped: true, .. } | Entry::Pane { grouped: true, .. })) => GROUP_GAP,
-                        _ => 0,
-                    };
-                    y += gap;
+                    // The space above a group (`.side .tgroup { margin-top: 10px }`); a window in none follows what is above it
+                    // with the gap between rows.
+                    if matches!(e, Entry::Head(_)) {
+                        y += GROUP_GAP;
+                    }
                     let (h, ind) = match e {
                         Entry::Head(_) => (GROUP_H, 0),
                         Entry::Row { grouped, .. } => (ROW_H, if *grouped { INDENT } else { 0 }),
@@ -339,7 +360,6 @@ impl<'a> Layout<'a> {
                         return;
                     }
                     y += h + GAP;
-                    prev = Some(*e);
                 }
             }
             Layout::Top { .. } => {
@@ -355,7 +375,7 @@ impl<'a> Layout<'a> {
     /// until it says to stop. Returns where the next thing would start. Every tab is as wide as the bar allows
     /// once the chips, the containers' padding, the gaps and the `+` have their room: `TAB_W` down to `TAB_MIN`.
     fn top_walk(self, f: &mut dyn FnMut(Placed) -> bool) -> i32 {
-        let Layout::Top { x0, x1, entries, groups, cw } = self else { return 0 };
+        let Layout::Top { x0, x1, entries, groups, cw, first } = self else { return 0 };
         let (mut tabs, mut fixed, mut units) = (0, TAB_NEW + TAB_GAP, 0);
         for e in entries {
             match e {
@@ -376,7 +396,8 @@ impl<'a> Layout<'a> {
         }
         let w = ((x1 - x0 - fixed - units * TAB_GAP) / tabs.max(1)).clamp(TAB_MIN, TAB_W);
         let y = (TITLE_H as i32 - 1 - TAB_H) / 2;
-        let (mut x, mut i) = (x0, 0);
+        // The widths follow every tab, so they stay as the strip scrolls; what is before `first` is not laid out.
+        let (mut x, mut i) = (x0, unit_start(entries, first));
         while i < entries.len() {
             match entries[i] {
                 Entry::Head(g) => {
@@ -418,18 +439,14 @@ impl<'a> Layout<'a> {
     /// The box of entry `k` (a tab, at the top).
     fn rect(self, k: usize) -> Rect {
         let mut found = (0, 0, 0, 0);
+        // An entry the tabs scrolled out of sight is not laid out: it has no box.
         self.each(&mut |i, r| {
-            found = r;
+            if i == k {
+                found = r;
+            }
             i == k
         });
-        if k < self.count() { found } else { (0, 0, 0, 0) }
-    }
-
-    /// How many entries there are.
-    fn count(self) -> usize {
-        match self {
-            Layout::Side { entries, .. } | Layout::Top { entries, .. } => entries.len(),
-        }
+        found
     }
 
     /// What is listed, in order.
@@ -449,7 +466,7 @@ impl<'a> Layout<'a> {
     /// The box of the group button in the panel's header: the right-most, 6 px from the edge. The tabs at the top have none.
     fn group_box(self) -> Option<Rect> {
         match self {
-            Layout::Side { x0, y0, w, .. } => Some((x0 + w - 6 - BTN, y0 + (HEAD_H - BTN) / 2 + 2, BTN, BTN)),
+            Layout::Side { x0, y0, w, .. } => Some((x0 + w - 6 - BTN, y0 + HEAD_TOP, BTN, BTN)),
             Layout::Top { .. } => None,
         }
     }
@@ -458,7 +475,7 @@ impl<'a> Layout<'a> {
     /// or, when the tabs do not all fit, at the end of the bar.
     fn new_box(self) -> Rect {
         match self {
-            Layout::Side { x0, y0, w, .. } => (x0 + w - 6 - 2 * BTN - 2, y0 + (HEAD_H - BTN) / 2 + 2, BTN, BTN),
+            Layout::Side { x0, y0, w, .. } => (x0 + w - 6 - 2 * BTN - 2, y0 + HEAD_TOP, BTN, BTN),
             Layout::Top { x0, x1, .. } => {
                 let end = self.top_walk(&mut |_| false);
                 let at = if end + TAB_NEW <= x1 { end } else { (x1 - TAB_NEW).max(x0) };
@@ -467,12 +484,63 @@ impl<'a> Layout<'a> {
         }
     }
 
-    /// Whether the tab or chip in `r` is seen: the tabs that do not fit before the `+` are left out.
+    /// Whether the tab or chip in `r` is seen: the tabs that do not fit before the `+` are left out, and so are those
+    /// scrolled out of sight (they have no box).
     fn shown(self, r: Rect) -> bool {
         match self {
             Layout::Side { .. } => true,
-            Layout::Top { .. } => r.0 + r.2 + TAB_GAP <= self.new_box().0,
+            Layout::Top { .. } => r.2 > 0 && r.0 + r.2 + TAB_GAP <= self.new_box().0,
         }
+    }
+
+    /// The same tabs starting at entry `first`.
+    fn from(self, first: usize) -> Layout<'a> {
+        match self {
+            Layout::Top { x0, x1, entries, groups, cw, .. } => Layout::Top { x0, x1, entries, groups, cw, first },
+            side => side,
+        }
+    }
+
+    /// Where `first` goes when the strip scrolls `by` units (a wheel notch is one): positive brings the tabs to the right
+    /// into view, negative those to the left. It stops at the first unit and when the last tab is in view.
+    pub fn scroll(self, by: i32) -> usize {
+        let Layout::Top { entries, first, .. } = self else { return 0 };
+        let mut f = unit_start(entries, first);
+        for _ in 0..by.unsigned_abs() {
+            if by > 0 {
+                let last = entries.len().saturating_sub(1);
+                let next = unit_next(entries, f);
+                if next >= entries.len() || self.from(f).shown(self.from(f).rect(last)) {
+                    break;
+                }
+                f = next;
+            } else if f > 0 {
+                f = unit_start(entries, f - 1);
+            }
+        }
+        f
+    }
+
+    /// Where `first` has to be for entry `k` to be in view: where it is if `k` is already, else the least scroll that
+    /// brings it in (or its unit to the start, when it is to the left of it).
+    pub fn reveal(self, k: usize) -> usize {
+        let Layout::Top { entries, first, .. } = self else { return 0 };
+        let mut f = unit_start(entries, first);
+        if k >= entries.len() {
+            return f;
+        }
+        let ku = unit_start(entries, k);
+        if ku < f {
+            return ku;
+        }
+        while !self.from(f).shown(self.from(f).rect(k)) {
+            let next = unit_next(entries, f);
+            if next > ku {
+                break;
+            }
+            f = next;
+        }
+        f
     }
 
     /// What is at window pixel `(px, py)`.
@@ -679,7 +747,7 @@ impl<'a> Layout<'a> {
                 });
                 match self {
                     Layout::Side { x0, y0, w, .. } => {
-                        let y = last.map_or(y0 + HEAD_H, |r| r.1 + r.3 + GAP);
+                        let y = last.map_or(y0 + HEAD_H + SLOT_PAD, |r| r.1 + r.3 + GAP);
                         Some(Mark::Line((x0 + PAD, y + 3, w - 2 * PAD, MARK)))
                     }
                     Layout::Top { .. } => {
@@ -875,13 +943,8 @@ fn row_shapes(p: &mut Paint, b: Rect, it: &Item, k: Ink) {
     }
     // The dot of a window that printed while it was hidden.
     if it.unread && !it.selected {
-        let tail = if bw > 0 {
-            (badge_box(b, bw).0 - 7) as f32 - 3.0
-        } else if over {
-            close_box(b).0 as f32 - 6.0
-        } else {
-            (x + rw) as f32 - 12.0
-        };
+        // A flex item before the pane count (or the cross): 6 px wide, 7 from what follows, whether or not the pointer is on the row.
+        let tail = (if bw > 0 { badge_box(b, bw).0 } else { close_box(b).0 } - 7) as f32 - 3.0;
         p.disc(tail, y as f32 + rh as f32 / 2.0, 3.0, palette::unit(palette::CYAN), 1.0);
     }
     // The cross, on hover.
@@ -987,7 +1050,8 @@ fn row_text(soft: &Soft, fb: &mut [u32], b: Rect, it: &Item, over: bool, fade: f
     let (x, y, rw, rh) = b;
     let bm = soft.small(0.72);
     let bw = badge_w(it.badge, bm.cell_w as i32);
-    let room = (rw - 9 - 13 - 7 - 5 - if over { CLOSE + 6 } else { 18 } - if bw > 0 { bw + 7 } else { 0 }).max(0);
+    let dot = if it.unread && !it.selected { 6 + 7 } else { 0 };
+    let room = (rw - 9 - 13 - 7 - 5 - if over { CLOSE + 6 } else { 18 } - if bw > 0 { bw + 7 } else { 0 } - dot).max(0);
     let label = fit(it.title, (room / m.cell_w as i32).max(1) as usize);
     let c: Rgb = faded(if it.selected || over { palette::FG } else { palette::DIM }, fade);
     soft.paint_text(fb, ox + (x + 9 + 13 + 7) as usize, oy + (y + rh / 2) as usize, label, pack(c.r, c.g, c.b, 255), false, &m, scratch);
@@ -1009,8 +1073,8 @@ fn pane_text(soft: &Soft, fb: &mut [u32], b: Rect, it: &PaneItem, over: bool, sc
     soft.paint_text(fb, ox + (x + 8 + 13 + 7) as usize, oy + (y + rh / 2) as usize, label, pack(c.r, c.g, c.b, 255), false, &m, scratch);
 }
 
-/// A group's name and, at the right end, how many windows it has.
-fn head_text(soft: &Soft, fb: &mut [u32], b: Rect, g: &GroupItem, fade: f32, scratch: &mut Vec<u8>) {
+/// A group's name (medium weight, dim, bright under the pointer: `.gchip`) and, at the right end, how many windows it has.
+fn head_text(soft: &Soft, fb: &mut [u32], b: Rect, g: &GroupItem, over: bool, fade: f32, scratch: &mut Vec<u8>) {
     let (ox, oy) = soft.origin();
     let m = soft.small(0.85);
     let (x, y, w, h) = b;
@@ -1018,7 +1082,7 @@ fn head_text(soft: &Soft, fb: &mut [u32], b: Rect, g: &GroupItem, fade: f32, scr
     let count_w = digits(g.count) * cw;
     let room = (w - 6 - 7 - 6 - 8 - count_w - 22).max(0);
     let name = fit(&g.name, (room / cw).max(1) as usize);
-    let (fg, faint) = (faded(palette::FG, fade), faded(palette::FAINT, fade));
+    let (fg, faint) = (faded(if over { palette::FG } else { palette::DIM }, fade), faded(palette::FAINT, fade));
     let cy = oy + (y + h / 2) as usize;
     soft.paint_text(fb, ox + (x + 6 + 7 + 6) as usize, cy, name, pack(fg.r, fg.g, fg.b, 255), true, &m, scratch);
     soft.paint_text(fb, ox + (x + w - 22 - count_w) as usize, cy, dec(g.count), pack(faint.r, faint.g, faint.b, 255), false, &m, scratch);
@@ -1187,7 +1251,7 @@ fn paint_drag(soft: &Soft, fb: &mut [u32], lay: Layout, entries: &[Entry], group
         }
         match d.grab {
             Grab::Win(win) => row_text(soft, fb, gb, &items.win(win), false, DRAGGED, scratch),
-            Grab::Group(g) if panel => head_text(soft, fb, gb, &groups[g], DRAGGED, scratch),
+            Grab::Group(g) if panel => head_text(soft, fb, gb, &groups[g], false, DRAGGED, scratch),
             Grab::Group(g) => chip_text(soft, fb, gb, &groups[g], false, DRAGGED, scratch),
         }
     }
@@ -1245,14 +1309,14 @@ pub fn paint(soft: &Soft, fb: &mut [u32], (x0, y0, w, h): Rect, grid_on_right: b
     let m = soft.small(0.85);
     let head = fit(title, ((w - 24) / m.cell_w as i32).max(1) as usize);
     let f = palette::FAINT;
-    soft.paint_text(fb, ox + (x0 + 16) as usize, oy + (y0 + HEAD_H / 2 + 2) as usize, head, pack(f.r, f.g, f.b, 255), false, &m, scratch);
+    soft.paint_text(fb, ox + (x0 + 16) as usize, oy + (y0 + HEAD_TOP + BTN / 2) as usize, head, pack(f.r, f.g, f.b, 255), false, &m, scratch);
     for (k, e) in entries.iter().enumerate() {
         let b = lay.rect(k);
         if b.1 + b.3 > bottom {
             break;
         }
         match *e {
-            Entry::Head(g) => head_text(soft, fb, b, &groups[g], fade_of(*e), scratch),
+            Entry::Head(g) => head_text(soft, fb, b, &groups[g], hover == Some(Part::Head(g)), fade_of(*e), scratch),
             Entry::Row { win, .. } => row_text(soft, fb, b, &items.win(win), over_row(hover, win), fade_of(*e), scratch),
             Entry::Pane { win, idx, .. } => pane_text(soft, fb, b, &items.pane(win, idx), over_pane(hover, win, idx), scratch),
         }
@@ -1273,13 +1337,13 @@ pub fn chip_cw(soft: &Soft) -> i32 {
 /// Paints the tabs in the title bar between window pixels `x0` and `x1`, over a cleared bar: each group in a
 /// container tinted with its colour, with its chip and tabs, the loose windows' tabs, the `+`.
 #[allow(clippy::too_many_arguments)]
-pub fn paint_top(soft: &Soft, fb: &mut [u32], (x0, x1): (i32, i32), entries: &[Entry], groups: &[GroupItem], items: &Items, look: Look, scratch: &mut Vec<u8>) {
+pub fn paint_top(soft: &Soft, fb: &mut [u32], (x0, x1): (i32, i32), first: usize, entries: &[Entry], groups: &[GroupItem], items: &Items, look: Look, scratch: &mut Vec<u8>) {
     let (fw, fh) = soft.fb_size();
     let (ox, oy) = soft.origin();
     if fb.len() < fw * fh {
         return;
     }
-    let lay = Layout::Top { x0, x1, entries, groups, cw: chip_cw(soft) };
+    let lay = Layout::Top { x0, x1, entries, groups, cw: chip_cw(soft), first };
     let bcw = soft.small(0.72).cell_w as i32;
     let hover = if look.drag.is_some() { None } else { look.hover };
     let ink = |over, cross_hot, group, fade| Ink { over, cross_hot, group, bcw, phase: look.phase, fade };
@@ -1423,7 +1487,7 @@ mod tests {
         assert_eq!(lay.hit((g.0 + 3) as f32, (g.1 + 3) as f32), Some(Part::NewGroup));
         assert_eq!((g.0 - (b.0 + b.2), g.1, g.2, g.3), (2, b.1, b.2, b.3));
         assert_eq!(g.0 + g.2, 220 - 6, "6 px from the panel's edge");
-        assert!(Layout::Top { x0: 118, x1: 900, entries: &e, groups: &[], cw: 8 }.group_box().is_none());
+        assert!(Layout::Top { x0: 118, x1: 900, entries: &e, groups: &[], cw: 8, first: 0 }.group_box().is_none());
         // The margin, and rows that are not there.
         assert_eq!(lay.hit(2.0, (n.1 + 5) as f32), None);
         let few = rows(1);
@@ -1485,8 +1549,8 @@ mod tests {
         assert_eq!(p0.0, PAD + PANE_IND_GROUPED);
         assert_eq!(p0.0 - win.0, 16);
         assert_eq!(q0.0, PAD + PANE_IND);
-        // The window that is in no group is set apart from the group's last pane by the group gap.
-        assert_eq!(free.1, p1.1 + PANE_H + GAP + GROUP_GAP);
+        // The window that is in no group follows the group's last pane like any row (only a group has a margin above it).
+        assert_eq!(free.1, p1.1 + PANE_H + GAP);
         // Rows, crosses and windows are told apart.
         assert_eq!(lay.hit((p0.0 + 30) as f32, (p0.1 + 5) as f32), Some(Part::Pane(0, 0)));
         assert_eq!(lay.hit((p1.0 + 30) as f32, (p1.1 + 5) as f32), Some(Part::Pane(0, 1)));
@@ -1501,11 +1565,19 @@ mod tests {
         let e = entries(&wg, &[false], &[1, 1, 1], None);
         let lay = Layout::Side { x0: 0, y0: 42, w: 220, entries: &e };
         let (head, a, b, free) = (lay.rect(0), lay.rect(1), lay.rect(2), lay.rect(3));
-        assert_eq!(head.1, 42 + HEAD_H + GROUP_GAP);
+        assert_eq!(head.1, 42 + HEAD_H + SLOT_PAD + GROUP_GAP);
+        // The reference (01-default, a panel at y = 40): the group's header at 92, its first window at 119.
+        assert_eq!((head.1 - 42, a.1 - 42), (92 - 40, 119 - 40));
         assert_eq!((head.3, a.3), (GROUP_H, ROW_H));
         assert_eq!(a.1, head.1 + GROUP_H + GAP);
         assert_eq!(b.1, a.1 + ROW_H + GAP);
-        assert_eq!(free.1, b.1 + ROW_H + GAP + GROUP_GAP);
+        assert_eq!(free.1, b.1 + ROW_H + GAP, "a window in none follows the group with the gap between rows");
+        // And with no group at all the first window is at the slot's padding under the header; the buttons are 10 px under the top.
+        let none = rows(1);
+        let bare = Layout::Side { x0: 0, y0: 42, w: 220, entries: &none };
+        assert_eq!(bare.rect(0).1, 42 + 38 + 4);
+        assert_eq!(bare.new_box().1, 42 + 10);
+        assert_eq!(bare.group_box().map(|g| (g.1, g.3)), Some((42 + 10, 24)));
         // The group's windows are indented, the others are not.
         assert_eq!((a.0 - head.0, a.2 - head.2), (INDENT, -INDENT));
         assert_eq!(free.0, head.0);
@@ -1521,7 +1593,7 @@ mod tests {
     #[test]
     fn tabs_share_the_bar_and_shrink_down_to_a_least_width() {
         let e = rows(3);
-        let wide = Layout::Top { x0: 118, x1: 900, entries: &e, groups: &[], cw: 8 };
+        let wide = Layout::Top { x0: 118, x1: 900, entries: &e, groups: &[], cw: 8, first: 0 };
         assert_eq!(wide.rect(0).2, TAB_W);
         let (a, b) = (wide.rect(0), wide.rect(1));
         assert_eq!(b.0, a.0 + a.2 + TAB_GAP);
@@ -1531,12 +1603,79 @@ mod tests {
         assert!(plus.0 + plus.2 <= 900);
         // Eight tabs in a narrow bar: narrower, not narrower than the least.
         let e8 = rows(8);
-        let tight = Layout::Top { x0: 118, x1: 700, entries: &e8, groups: &[], cw: 8 };
+        let tight = Layout::Top { x0: 118, x1: 700, entries: &e8, groups: &[], cw: 8, first: 0 };
         assert!(tight.rect(0).2 < TAB_W && tight.rect(0).2 >= TAB_MIN);
         // Tabs sit inside the title bar, above its hairline.
         assert!(a.1 >= 0 && a.1 + a.3 <= TITLE_H as i32 - 1);
         assert_eq!(wide.hit((a.0 + 20) as f32, (a.1 + 10) as f32), Some(Part::Row(0)));
         assert_eq!(wide.hit((a.0 + 20) as f32, 1.0), None);
+    }
+
+    #[test]
+    fn tabs_past_the_bar_scroll_into_reach_a_tab_at_a_time() {
+        // Nine tabs in the bar of a 900 px window (76 to 824): at their least width seven fit before the `+`.
+        let e = rows(9);
+        let at = |first| Layout::Top { x0: 76, x1: 824, entries: &e, groups: &[], cw: 8, first };
+        let click = |lay: Layout, k: usize| {
+            let r = lay.rect(k);
+            lay.hit((r.0 + 10) as f32, (r.1 + 10) as f32)
+        };
+        let lay = at(0);
+        assert_eq!(lay.rect(0).0, 76);
+        assert_eq!((click(lay, 6), click(lay, 7), lay.shown(lay.rect(8))), (Some(Part::Row(6)), None, false), "the last two are out of reach");
+        // A notch of the wheel brings one more in: the first goes out of sight (it has no box), the others come left.
+        let first = lay.scroll(1);
+        assert_eq!(first, 1);
+        let lay = at(first);
+        assert_eq!(lay.rect(0), (0, 0, 0, 0));
+        assert_eq!((lay.rect(1).0, lay.rect(1).2), (76, lay.rect(2).2), "the widths do not change with the scroll");
+        assert_eq!((click(lay, 7), click(lay, 8)), (Some(Part::Row(7)), None));
+        assert_eq!(lay.hit((lay.rect(0).0 + 10) as f32, 10.0), None, "nothing is left where it was");
+        // At the end the last tab is in view and the wheel goes no further; at the start it does not go back.
+        let end = lay.scroll(50);
+        assert_eq!(end, 2);
+        assert_eq!(click(at(end), 8), Some(Part::Row(8)));
+        assert_eq!((at(end).scroll(1), at(end).scroll(-1), at(0).scroll(-3)), (2, 1, 0));
+        // The `+` is at the end of the bar when they do not all fit, and after the last tab when they do.
+        assert_eq!(lay.new_box().0, 824 - TAB_NEW);
+        let few = rows(2);
+        let one = Layout::Top { x0: 76, x1: 824, entries: &few, groups: &[], cw: 8, first: 1 };
+        assert_eq!(one.new_box().0, one.rect(1).0 + one.rect(1).2 + TAB_GAP);
+        // A tab beyond the bar is brought in by the least scroll, one to the left by taking it to the start.
+        assert_eq!((at(0).reveal(3), at(0).reveal(8), at(2).reveal(8), at(2).reveal(0), at(2).reveal(5)), (0, 2, 2, 0, 2));
+        // A scroll left over from fewer tabs is brought back in range.
+        assert_eq!(at(99).reveal(4), 4);
+    }
+
+    #[test]
+    fn the_tabs_scroll_a_group_with_its_windows_at_a_time() {
+        // [Head 0, a, b, c, loose d, loose e, ...]: a group is one unit.
+        let wg = [Some(0), Some(0), Some(0), None, None, None, None, None, None];
+        let e = entries(&wg, &[false], &[1; 9], None);
+        let g = [group("docs", 3)];
+        let at = |first| Layout::Top { x0: 76, x1: 700, entries: &e, groups: &g, cw: 8, first };
+        assert_eq!(e[0], Entry::Head(0));
+        // One notch passes the whole group; a start in the middle of one is the group's start.
+        assert_eq!(at(0).scroll(1), 4);
+        assert_eq!(unit_start(&e, 2), 0);
+        assert_eq!(unit_next(&e, 2), 4);
+        assert_eq!(at(2).scroll(-1), 0, "back from inside the group is its start");
+        assert_eq!(at(5).scroll(-1), 4);
+        assert_eq!(at(4).scroll(-1), 0);
+        // With the group gone the header and its windows are not laid out, and the rest starts at the bar's left.
+        let lay = at(4);
+        assert_eq!((lay.rect(0), lay.rect(1), lay.rect(3)), ((0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0)));
+        assert_eq!(lay.rect(4).0, 76);
+        assert!(lay.hit(80.0, 10.0).is_some());
+        // And the group's container is not drawn: it is not placed.
+        let mut containers = 0;
+        lay.containers(&mut |_, _| containers += 1);
+        assert_eq!(containers, 0);
+        let mut containers = 0;
+        at(0).containers(&mut |_, _| containers += 1);
+        assert_eq!(containers, 1);
+        // Showing a window of the group takes the group's start.
+        assert_eq!(at(5).reveal(2), 0);
     }
 
     #[test]
@@ -1553,7 +1692,7 @@ mod tests {
         let folded = entries(&[Some(0), None], &[true], &[1, 1], None);
         assert!(Layout::Side { x0: 0, y0: 42, w: 220, entries: &folded }.edit_rect(0).is_none());
         let tabs = rows(2);
-        let top = Layout::Top { x0: 118, x1: 900, entries: &tabs, groups: &[], cw: 8 };
+        let top = Layout::Top { x0: 118, x1: 900, entries: &tabs, groups: &[], cw: 8, first: 0 };
         assert!(top.edit_rect(1).is_some() && top.edit_rect(2).is_none());
         let t = top.rect(1);
         assert_eq!(top.edit_rect(1).unwrap().0, t.0 + 29);
@@ -1597,7 +1736,7 @@ mod tests {
         let wg = [Some(0), Some(0), None];
         let e = top_entries(&wg, &[false], 0);
         let groups = [group("arcton", 3)];
-        let lay = Layout::Top { x0: 118, x1: 900, entries: &e, groups: &groups, cw: 8 };
+        let lay = Layout::Top { x0: 118, x1: 900, entries: &e, groups: &groups, cw: 8, first: 0 };
         let (chip, a, b, loose) = (lay.rect(0), lay.rect(1), lay.rect(2), lay.rect(3));
         // 9 px of padding, an 8 px dot, 6 px gaps, the name and the count: 9 + 8 + 6 + 6 * 8 + 6 + 8 + 9.
         assert_eq!((chip.2, chip.3), (CHIP_FIXED + 7 * 8, CHIP_H));
@@ -1630,7 +1769,7 @@ mod tests {
         let groups = [group("arcton", 3), group("docs", 1)];
         // [Head 0, Row 0, Row 1, Head 1, Row 2, Row 3]
         for x1 in [500, 700, 900, 1400] {
-            let lay = Layout::Top { x0: 118, x1, entries: &e, groups: &groups, cw: 8 };
+            let lay = Layout::Top { x0: 118, x1, entries: &e, groups: &groups, cw: 8, first: 0 };
             let plus = lay.new_box();
             let last = lay.rect(e.len() - 1);
             assert!(plus.0 + plus.2 <= x1, "{x1}: the + fits");
@@ -1643,8 +1782,8 @@ mod tests {
             assert_eq!([lay.rect(2).2, lay.rect(4).2, lay.rect(5).2], [w; 3], "{x1}");
         }
         // As the bar narrows the tabs do: with room for them all they are the natural width.
-        let narrow = Layout::Top { x0: 118, x1: 500, entries: &e, groups: &groups, cw: 8 };
-        let roomy = Layout::Top { x0: 118, x1: 1400, entries: &e, groups: &groups, cw: 8 };
+        let narrow = Layout::Top { x0: 118, x1: 500, entries: &e, groups: &groups, cw: 8, first: 0 };
+        let roomy = Layout::Top { x0: 118, x1: 1400, entries: &e, groups: &groups, cw: 8, first: 0 };
         assert!(narrow.rect(1).2 < roomy.rect(1).2);
         assert_eq!(roomy.rect(1).2, TAB_W);
     }
@@ -1652,7 +1791,7 @@ mod tests {
     #[test]
     fn what_does_not_fit_the_bar_is_left_out_and_the_plus_stays_in_reach() {
         let e = rows(20);
-        let lay = Layout::Top { x0: 118, x1: 600, entries: &e, groups: &[], cw: 8 };
+        let lay = Layout::Top { x0: 118, x1: 600, entries: &e, groups: &[], cw: 8, first: 0 };
         let plus = lay.new_box();
         assert_eq!(plus.0 + plus.2, 600, "the + is pinned to the end of the bar");
         // The tabs after the last one that fits are not found, nor drawn.
@@ -1763,7 +1902,7 @@ mod tests {
         let wg = [Some(0), Some(0), None, None];
         let e = top_entries(&wg, &[false], 0);
         let groups = [group("arcton", 2)];
-        let lay = Layout::Top { x0: 118, x1: 900, entries: &e, groups: &groups, cw: 8 };
+        let lay = Layout::Top { x0: 118, x1: 900, entries: &e, groups: &groups, cw: 8, first: 0 };
         // [Head 0, Row 0, Row 1, Row 2, Row 3]
         let (chip, a, loose) = (lay.rect(0), lay.rect(1), lay.rect(4));
         let y = (a.1 + 10) as f32;
@@ -1807,7 +1946,7 @@ mod tests {
         let wg = [Some(0), None];
         let te = top_entries(&wg, &[false], 0);
         let groups = [group("g", 1)];
-        let top = Layout::Top { x0: 118, x1: 900, entries: &te, groups: &groups, cw: 8 };
+        let top = Layout::Top { x0: 118, x1: 900, entries: &te, groups: &groups, cw: 8, first: 0 };
         let (chip, tab, free) = (top.rect(0), top.rect(1), top.rect(2));
         assert_eq!(top.mark(Target::Near { win: 1, after: false }), Some(Mark::Line((free.0 - MARK, free.1, MARK, free.3))));
         assert_eq!(top.mark(Target::Near { win: 0, after: true }), Some(Mark::Line((tab.0 + tab.2, tab.1, MARK, tab.3))));
@@ -1840,7 +1979,7 @@ mod tests {
         // takes its group.
         let te = top_entries(&wg, &[false], 0);
         let groups = [group("g", 2)];
-        let top = Layout::Top { x0: 118, x1: 900, entries: &te, groups: &groups, cw: 8 };
+        let top = Layout::Top { x0: 118, x1: 900, entries: &te, groups: &groups, cw: 8, first: 0 };
         let tab = top.rect(2);
         let to = top.target(Grab::Win(3), (tab.0 + 5) as f32, (tab.1 + 5) as f32).unwrap();
         assert_eq!(to, Target::Near { win: 1, after: false });

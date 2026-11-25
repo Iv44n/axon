@@ -83,7 +83,7 @@ const KS_KP_0: u32 = 0xffb0;
 
 fn cursor_for(hit: Hit) -> u32 {
     match hit {
-        Hit::Close | Hit::Minimize | Hit::Maximize | Hit::Settings | Hit::SideBtn => cursor::POINTER,
+        Hit::Close | Hit::Minimize | Hit::Maximize | Hit::Settings | Hit::SideBtn | Hit::NewGroup => cursor::POINTER,
         Hit::Edge(e) => match e {
             EDGE_TOP => cursor::N_RESIZE,
             EDGE_BOTTOM => cursor::S_RESIZE,
@@ -281,6 +281,10 @@ struct App {
     /// nothing is scheduled and idle stays at 0 % CPU), and the moment they count their turns from.
     dnd: Option<Dnd>,
     spin_at: Option<Instant>,
+    /// The tabs at the top scroll a group or a window at a time: the entry they start at (`side::Layout::scroll`), and the
+    /// pixels of a touchpad's swipe not yet worth a tab.
+    strip_first: usize,
+    strip_acc: f32,
     spin_due: bool,
     spin_t0: Instant,
     xkb: Option<Xkb>,
@@ -377,9 +381,9 @@ impl Pane {
     }
 }
 
-/// The name of a pane: what its program set, else the name of its directory.
+/// The name of a pane: what its program set, else the command it runs (the shell's hook says it), else the name of its directory.
 fn pane_name(p: &Pane) -> &str {
-    if own_title(&p.title) { &p.title } else { dir_name(&p.dir) }
+    if own_title(&p.title) { &p.title } else { p.history.command().unwrap_or_else(|| dir_name(&p.dir)) }
 }
 
 /// The directory of a window's shell, in short form: the one in the pane with the focus.
@@ -387,9 +391,14 @@ fn win_place(w: &Win) -> &str {
     &w.pane().dir
 }
 
-/// The name a window has without one of its own: that of the pane with the focus.
+/// The name a window has without one of its own (`autoLabel`): that of the pane with the focus, or, when that one has
+/// nothing to say but another pane of the window runs a command, the command's.
 fn auto_title(w: &Win) -> &str {
-    pane_name(w.pane())
+    let p = w.pane();
+    if own_title(&p.title) || p.history.command().is_some() {
+        return pane_name(p);
+    }
+    w.panes.iter().find_map(|q| q.history.command()).unwrap_or_else(|| pane_name(p))
 }
 
 /// The name of a window: the one the user gave it, else the automatic one.
@@ -433,9 +442,10 @@ fn report_focus(p: &Pane, on: bool) {
     }
 }
 
-/// The title bar between the window buttons and the settings button, where the tabs go (window pixels).
+/// The title bar between the window buttons and the new-group button, where the tabs go (window pixels): `.top-slot`, 10 px
+/// from each.
 fn tabs_span(w: u32) -> (i32, i32) {
-    (chrome::TITLE_CLEAR as i32 - 8, w as i32 - 50)
+    (chrome::TABS_X0 as i32, w as i32 - chrome::TABS_FROM_RIGHT as i32)
 }
 
 /// The two panels beside the grid: the windows' (as wide as the settings say, none when it is hidden or the windows
@@ -448,6 +458,9 @@ fn docks(w: &config::WindowsCfg, prefs_w: u32, ww: u32) -> (Dock, Dock) {
     let side = if w.side && w.tabs != config::TabsPos::Top { fit_side(ww, w.side_w, prefs_w) } else { 0 };
     (Dock { w: side, left: !right }, Dock { w: prefs_w, left: right })
 }
+
+/// How many pixels of a touchpad's swipe scroll the tabs at the top by one.
+const TAB_SCROLL_PX: f32 = 40.0;
 
 /// The least width the grid keeps beside the panels, in pixels (the settings panel takes at most 62 % of the
 /// window, so it alone never leaves less in a window of the least size).
@@ -518,13 +531,13 @@ fn paint_side(soft: &Soft, fb: &mut [u32], items: &side::Items, groups: &[side::
 
 /// Paints the tabs in the title bar, over the bar cleared between the buttons.
 #[allow(clippy::too_many_arguments)]
-fn paint_tabs(soft: &Soft, fb: &mut [u32], items: &side::Items, groups: &[side::GroupItem], entries: &[side::Entry], w: u32, look: side::Look, edit: Editing, scratch: &mut Vec<u8>) {
+fn paint_tabs(soft: &Soft, fb: &mut [u32], items: &side::Items, groups: &[side::GroupItem], entries: &[side::Entry], (w, first): (u32, usize), look: side::Look, edit: Editing, scratch: &mut Vec<u8>) {
     let (ox, oy) = soft.origin();
     let (x0, x1) = tabs_span(w);
     soft.clear_rect(fb, (ox + x0 as usize, oy, ox + x1 as usize, oy + chrome::TITLE_H));
-    side::paint_top(soft, fb, (x0, x1), entries, groups, items, look, scratch);
+    side::paint_top(soft, fb, (x0, x1), first, entries, groups, items, look, scratch);
     if let Some((wi, f)) = edit {
-        side::paint_rename(soft, fb, side::Layout::Top { x0, x1, entries, groups, cw: side::chip_cw(soft) }, wi, &edit_of(f), look.hover, scratch);
+        side::paint_rename(soft, fb, side::Layout::Top { x0, x1, entries, groups, cw: side::chip_cw(soft), first }, wi, &edit_of(f), look.hover, scratch);
     }
 }
 
@@ -535,9 +548,9 @@ fn spin_side(soft: &Soft, fb: &mut [u32], items: &side::Items, groups: &[side::G
 }
 
 /// The same for the tabs in the title bar.
-fn spin_tabs(soft: &Soft, fb: &mut [u32], items: &side::Items, groups: &[side::GroupItem], entries: &[side::Entry], w: u32, look: side::Look) {
+fn spin_tabs(soft: &Soft, fb: &mut [u32], items: &side::Items, groups: &[side::GroupItem], entries: &[side::Entry], (w, first): (u32, usize), look: side::Look) {
     let (x0, x1) = tabs_span(w);
-    let lay = side::Layout::Top { x0, x1, entries, groups, cw: side::chip_cw(soft) };
+    let lay = side::Layout::Top { x0, x1, entries, groups, cw: side::chip_cw(soft), first };
     side::paint_spin(soft, fb, lay, 0, entries, groups, items, look);
 }
 
@@ -705,6 +718,8 @@ impl App {
             gitems: Vec::new(),
             dnd: None,
             spin_at: None,
+            strip_first: 0,
+            strip_acc: 0.0,
             spin_due: false,
             spin_t0: Instant::now(),
             xkb,
@@ -936,12 +951,12 @@ impl App {
             if !full {
                 // Only the spinners are due: the rings are painted again, not the list.
                 if top {
-                    spin_tabs(&self.soft, fb, &self.items, &self.gitems, &self.entries, self.w, look);
+                    spin_tabs(&self.soft, fb, &self.items, &self.gitems, &self.entries, (self.w, self.strip_first), look);
                 } else {
                     spin_side(&self.soft, fb, &self.items, &self.gitems, &self.entries, look);
                 }
             } else if top {
-                paint_tabs(&self.soft, fb, &self.items, &self.gitems, &self.entries, self.w, look, edit, &mut self.side_scratch);
+                paint_tabs(&self.soft, fb, &self.items, &self.gitems, &self.entries, (self.w, self.strip_first), look, edit, &mut self.side_scratch);
             } else {
                 let right = self.cfg.windows.tabs == config::TabsPos::Right;
                 paint_side(&self.soft, fb, &self.items, &self.gitems, &self.entries, right, look, edit, &mut self.side_scratch);
@@ -989,9 +1004,16 @@ impl App {
                 loop {
                     let Some((at, hook)) = self.wins[i].panes[j].proxy.hooks.lock().unwrap().pop_front() else { break };
                     let p = &mut self.wins[i].panes[j];
+                    let named = p.history.command().is_some();
+                    let said = matches!(hook, Hook::Label(_));
                     let moved = match hook {
                         Hook::Start => {
                             p.history.start(at);
+                            false
+                        }
+                        // What runs: the window's label while it does.
+                        Hook::Label(word) => {
+                            p.history.set_label(&word);
                             false
                         }
                         // A prompt is where the shell has moved to, if it did.
@@ -1002,7 +1024,7 @@ impl App {
                     };
                     // The panel and the tabs say whether a command runs or failed (a folded group, that one does).
                     self.refresh_groups();
-                    if moved {
+                    if moved || said || named != self.wins[i].panes[j].history.command().is_some() {
                         self.titled(i);
                     }
                     self.side_dirty = true;
@@ -1096,7 +1118,7 @@ impl App {
     fn list_layout(&self) -> Option<(side::Layout<'_>, (i32, i32, i32, i32))> {
         if self.tabs_on_top() {
             let (x0, x1) = tabs_span(self.w);
-            let lay = side::Layout::Top { x0, x1, entries: &self.entries, groups: &self.gitems, cw: side::chip_cw(&self.soft) };
+            let lay = side::Layout::Top { x0, x1, entries: &self.entries, groups: &self.gitems, cw: side::chip_cw(&self.soft), first: self.strip_first };
             return Some((lay, (x0, 0, x1 - x0, chrome::TITLE_H as i32 - 1)));
         }
         let (bx, by, bw, bh) = self.side_box()?;
@@ -1326,9 +1348,50 @@ impl App {
         let panes: Vec<usize> = self.wins.iter().map(|w| w.panes.len()).collect();
         self.entries = if self.tabs_on_top() { side::top_entries(&of, &folded, self.cur) } else { side::entries(&of, &folded, &panes, Some(self.cur)) };
         self.refresh_groups();
+        self.reveal_active();
         self.side_hover = None;
         self.side_dirty = true;
         self.dirty = true;
+    }
+
+    /// Scrolls the tabs at the top, if they need it, so that the window on screen is in view (the reference's
+    /// `scrollIntoView` of the active tab); the panel does not scroll.
+    fn reveal_active(&mut self) {
+        let cur = self.cur;
+        let Some(k) = self.entries.iter().position(|e| matches!(e, side::Entry::Row { win, .. } if *win == cur)) else { return };
+        let first = match self.list_layout() {
+            Some((lay @ side::Layout::Top { .. }, _)) => lay.reveal(k),
+            _ => return,
+        };
+        if first != self.strip_first {
+            self.strip_first = first;
+            self.side_dirty = true;
+            self.dirty = true;
+        }
+    }
+
+    /// The wheel over the tabs at the top scrolls them, a group or a window a notch (a touchpad's pixels add up to one).
+    /// Returns whether the pointer was over them.
+    fn scroll_tabs(&mut self, pixels: f32, clicks: i32) -> bool {
+        let (x, y) = self.mouse;
+        let over = match self.list_layout() {
+            Some((side::Layout::Top { .. }, (bx, by, bw, bh))) => x >= bx as f32 && x < (bx + bw) as f32 && y >= by as f32 && y < (by + bh) as f32,
+            _ => false,
+        };
+        if !over {
+            return false;
+        }
+        self.strip_acc += pixels;
+        let by = if clicks != 0 { clicks } else { (self.strip_acc / TAB_SCROLL_PX).trunc() as i32 };
+        self.strip_acc -= by as f32 * TAB_SCROLL_PX;
+        let first = self.list_layout().map_or(self.strip_first, |(lay, _)| lay.scroll(by));
+        if first != self.strip_first {
+            self.strip_first = first;
+            self.side_hover = None;
+            self.side_dirty = true;
+            self.dirty = true;
+        }
+        true
     }
 
     /// The groups as the list shows them, from the windows and groups as they are now.
@@ -1385,6 +1448,7 @@ impl App {
             }
         }
         self.pane_hover = None;
+        self.reveal_active();
         let w = &mut self.wins[i];
         w.unread = false;
         for p in &mut w.panes {
@@ -1483,6 +1547,9 @@ impl App {
                 if b == 2 && pressed && self.open_context_menu(self.mouse.0, self.mouse.1) {
                     return;
                 }
+                if b == 1 && pressed && self.middle_click_close() {
+                    return;
+                }
                 if self.panel.is_some() && b == 0 && self.panel_button(pressed) {
                     return;
                 }
@@ -1540,6 +1607,7 @@ impl App {
                 p.ctx_dirty = true;
             }
         }
+        self.reveal_active();
         self.side_dirty = true;
         self.dirty = true;
     }
@@ -2257,7 +2325,7 @@ impl App {
             return overlay::inside(self.overview_area(), x, y);
         }
         match chrome::hit(x, y, self.w, self.h, self.ui.maximized, self.ui.side != 0) {
-            Hit::Client | Hit::Side | Hit::Prefs | Hit::Settings | Hit::SideBtn => true,
+            Hit::Client | Hit::Side | Hit::Prefs | Hit::Settings | Hit::SideBtn | Hit::NewGroup => true,
             // The tabs in the title bar are part of what is dimmed; the bar itself still moves the window.
             Hit::Title => self.side_part_at(x, y).is_some(),
             Hit::Close | Hit::Minimize | Hit::Maximize | Hit::Edge(_) => false,
@@ -2493,13 +2561,14 @@ impl App {
                     Hit::Maximize => self.wl.toggle_maximized(),
                     Hit::Settings => self.toggle_settings(),
                     Hit::SideBtn => self.toggle_side(),
+                    Hit::NewGroup => self.group_dialog_here(),
                     _ => {}
                 }
             }
             return;
         }
         match self.hover {
-            Hit::Close | Hit::Minimize | Hit::Maximize | Hit::Settings | Hit::SideBtn => {
+            Hit::Close | Hit::Minimize | Hit::Maximize | Hit::Settings | Hit::SideBtn | Hit::NewGroup => {
                 self.ui.down = true;
                 self.dirty = true;
             }
@@ -2568,6 +2637,9 @@ impl App {
             let (g, (x, y)) = (self.geo(), self.mouse);
             let r = self.overlays.scroll(dy, x, y, g);
             self.overlay_reply(r);
+            return;
+        }
+        if self.scroll_tabs(pixels, clicks) {
             return;
         }
         // Wayland counts down as positive; the terminal's `Scroll::Delta` counts up into history.

@@ -931,22 +931,22 @@ mod tests {
     #[test]
     fn a_window_a_little_too_short_makes_the_windows_list_shorter_before_the_body_has_to_scroll() {
         let (d, _) = dialog(9, &[10], &[]);
-        // The design board's window: 620 high, 554 for the card under the title bar and above the margin.
+        // The design board's window: 620 high, 556 for the card under the title bar and above the margin.
         let card = d.frame().rect(Geo { w: 900, h: 620, square: false });
-        assert_eq!(card.3, 620 - 16 - 50);
-        assert_eq!(d.bh(card.3), 150 - (571 - 554), "the list gives the missing 17 px");
+        assert_eq!(card.3, 620 - 16 - 48);
+        assert_eq!(d.bh(card.3), 150 - (571 - 556), "the list gives the missing 15 px");
         assert_eq!(d.max_scroll(card.3), 0, "and the body has nothing to scroll");
         assert_eq!(d.bh(d.natural_h()), 150, "with room it is the reference's 150");
         // The edit dialog has no list.
         let (e, _) = edit_dialog();
         assert_eq!(e.bh(100), 150);
-        // With the error line (21 more) it gives 38; the rows are found where they are drawn.
+        // With the error line (21 more) it gives 36; the rows are found where they are drawn.
         let d = d.with_error(FormError::NameEmpty);
-        assert_eq!(d.bh(554), 150 - (592 - 554));
+        assert_eq!(d.bh(card.3), 150 - (592 - 556));
         let t = Text::load();
         let l = d.lay(card, &t);
         let m = l.members.unwrap();
-        assert_eq!(m.3, d.bh(554));
+        assert_eq!(m.3, d.bh(card.3));
         assert!(inside(l.body, (m.0 + 20) as f32, (m.1 + 10) as f32));
         assert!(m.1 + m.3 <= l.body.1 + l.body.3, "the whole box is in the body's viewport");
     }

@@ -129,6 +129,14 @@ impl App {
         }
     }
 
+    /// A middle click on a window's row or tab closes it, with the Undo toast (the reference's `auxclick` on the strip).
+    /// Returns whether it was on one.
+    pub(super) fn middle_click_close(&mut self) -> bool {
+        let Some(side::Part::Row(i) | side::Part::Close(i)) = self.side_part_at(self.mouse.0, self.mouse.1) else { return false };
+        self.close_wins(&[self.wins[i].id], None);
+        true
+    }
+
     /// Closes the windows with `ids` and offers to undo it: they leave the list, the toast says so with an Undo button,
     /// and they stay alive, out of sight, until it is gone. Closing every window leaves a fresh one (the reference's
     /// placeholder); closing the only window quits, as before.

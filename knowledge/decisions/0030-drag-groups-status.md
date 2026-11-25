@@ -65,7 +65,7 @@ moment after it starts, so a real command is awkward to hold for a screenshot or
 (`Layout::each`, no stored rectangles). A press and the drag's position are one small struct; the ghost's place is a
 pure function of the pointer (`ghost_at`).
 
-**Not done:** the tab strip does not scroll (tabs past the bar are left out; the reference scrolls); group tabs are as
+**Not done:** (the strip now scrolls a unit at a time, see 0031) group tabs are as
 wide as loose ones (the reference's are narrower, by content); no keyboard way to move a window or a group; no animation
 for the drop (the reference has none either); panes cannot be dragged (the reference's pane rows are not draggable
 either); the drag cannot start from the overview (not built yet).

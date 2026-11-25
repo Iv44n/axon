@@ -66,7 +66,7 @@ line editor of task 6a phase 2 will).
 
 **Not done:** the reference fades and slides the panel in (opacity and `translateX(10px)`): only the fade is done. The
 reference's chips all come out green (a CSS accident: `.chip { --c: green }` is declared after the per-chip colours);
-axon keeps each chip's own hue, as in the prompt. No toast when the values are reset. The switch knob does not animate.
+axon first kept each chip's own hue, and follows the reference since 0031 (the prompt keeps the hues). No toast when the values are reset. The switch knob does not animate.
 
 **Revisit if:** a setting needs a text field (a general one, not the number box), or a fourth page makes the tab bar too
 wide for the narrowest panel.
