@@ -36,7 +36,7 @@ use crate::{
     chrome::{self, EDGE_BOTTOM, EDGE_LEFT, EDGE_RIGHT, EDGE_TOP, Hit, Ui},
     config::{self, Chip, Config, FontCfg},
     context::{self, Context, Probe},
-    input, mouse,
+    dnd, input, mouse,
     overlay::{self, Click, Geo, Overlay, Ran, Reply, Stack},
     overlay_demo, palette, panes, session,
     settings::{self, Effect, Settings},
@@ -63,6 +63,7 @@ const MULTI_CLICK_MS: u32 = 350;
 const WHEEL_LINES: f32 = 3.0;
 
 /// Keysyms the app's own shortcuts look at.
+const KS_ESCAPE: u32 = 0xff1b;
 const KS_PAGE_UP: u32 = 0xff55;
 const KS_PAGE_DOWN: u32 = 0xff56;
 const KS_HOME: u32 = 0xff50;
@@ -211,6 +212,20 @@ struct Group {
     collapsed: bool,
 }
 
+/// A press on a window's row or tab, or on a group's header or chip, which becomes a drag when the pointer moves
+/// far enough before the button comes up (`dnd.rs`), and a click when it does not.
+struct Dnd {
+    grab: dnd::Grab,
+    /// Where the button went down, how far inside the row's box, and the size of that box.
+    press: (f32, f32),
+    off: (f32, f32),
+    size: (i32, i32),
+    /// Whether it is a drag now, where a drop would put it, and where the pointer is.
+    live: bool,
+    target: Option<dnd::Target>,
+    at: (f32, f32),
+}
+
 impl Drop for Pane {
     /// The files the shell and this pane talk through belong to this pane; the shell is told to end.
     fn drop(&mut self) {
@@ -240,6 +255,14 @@ struct App {
     groups: Vec<Group>,
     groups_made: usize,
     entries: Vec<side::Entry>,
+    /// The groups as the list shows them (names, counts, which are folded and busy), rebuilt with `entries`.
+    gitems: Vec<side::GroupItem>,
+    /// A press on the list that may be a drag, when the spinners are painted next (none: no command runs, so
+    /// nothing is scheduled and idle stays at 0 % CPU), and the moment they count their turns from.
+    dnd: Option<Dnd>,
+    spin_at: Option<Instant>,
+    spin_due: bool,
+    spin_t0: Instant,
     xkb: Option<Xkb>,
     ui: Ui,
     hover: Hit,
@@ -339,9 +362,18 @@ fn win_title(w: &Win) -> String {
     pane_title(w.pane())
 }
 
+/// A debugging aid (`AXON_RUNNING`): every pane counts as running a command, whatever its shell says (a shell with
+/// the hook says it is at a prompt a moment after it starts).
+static ALL_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// Whether a command runs in pane `p`, from its shell's hook.
+fn running(p: &Pane) -> bool {
+    ALL_RUNNING.load(Ordering::Relaxed) || p.history.running()
+}
+
 /// What a pane's shell is doing, from its hook.
 fn pane_status(p: &Pane) -> side::Status {
-    if p.history.running() {
+    if running(p) {
         side::Status::Running
     } else if p.history.failed() {
         side::Status::Failed
@@ -381,15 +413,22 @@ fn docks(w: &config::WindowsCfg, prefs_w: u32) -> (Dock, Dock) {
 /// The list of windows as the panel and the tabs show it. A tab at the top says how many panes its window has
 /// (`top`); the panel lists them under the window instead.
 fn items(wins: &[Win], cur: usize, top: bool) -> Vec<side::Item> {
+    items_with(wins, cur, top, true)
+}
+
+/// `items`, with the titles (which cost a look at each shell's directory) or without: the spinners need only the
+/// status.
+fn items_with(wins: &[Win], cur: usize, top: bool, titles: bool) -> Vec<side::Item> {
     wins.iter()
         .enumerate()
         .map(|(i, w)| side::Item {
-            title: win_title(w),
+            title: if titles { win_title(w) } else { String::new() },
             selected: i == cur,
             unread: w.unread,
             badge: if top && w.panes.len() > 1 { w.panes.len() } else { 0 },
+            status: side::Status::of(w.panes.iter().map(pane_status)),
             panes: if w.panes.len() > 1 {
-                w.panes.iter().enumerate().map(|(j, p)| side::PaneItem { title: pane_label(j, p), active: i == cur && j == w.focus, status: pane_status(p) }).collect()
+                w.panes.iter().enumerate().map(|(j, p)| side::PaneItem { title: if titles { pane_label(j, p) } else { String::new() }, active: i == cur && j == w.focus, status: pane_status(p) }).collect()
             } else {
                 Vec::new()
             },
@@ -402,24 +441,50 @@ fn group_items(groups: &[Group], wins: &[Win]) -> Vec<side::GroupItem> {
     groups
         .iter()
         .enumerate()
-        .map(|(g, x)| side::GroupItem { name: x.name.clone(), color: x.color, collapsed: x.collapsed, count: wins.iter().filter(|w| w.group == Some(g)).map(|w| w.panes.len()).sum() })
+        .map(|(g, x)| {
+            let members = || wins.iter().filter(move |w| w.group == Some(g));
+            side::GroupItem {
+                name: x.name.clone(),
+                color: x.color,
+                collapsed: x.collapsed,
+                count: members().map(|w| w.panes.len()).sum(),
+                // A folded group says that a window in it runs a command, which its own rows no longer show.
+                busy: x.collapsed && members().any(|w| w.panes.iter().any(running)),
+            }
+        })
         .collect()
 }
 
 /// Paints the panel of windows over its cleared box.
 #[allow(clippy::too_many_arguments)]
-fn paint_side(soft: &Soft, fb: &mut [u32], wins: &[Win], groups: &[Group], entries: &[side::Entry], cur: usize, right: bool, hover: Option<side::Part>, scratch: &mut Vec<u8>) {
+fn paint_side(soft: &Soft, fb: &mut [u32], wins: &[Win], groups: &[side::GroupItem], entries: &[side::Entry], cur: usize, right: bool, look: side::Look, scratch: &mut Vec<u8>) {
     let (Some(rect), Some(b)) = (soft.side_rect(), side_box(soft)) else { return };
     soft.clear_rect(fb, rect);
-    side::paint(soft, fb, b, !right, &tr(Str::Windows), entries, &group_items(groups, wins), &items(wins, cur, false), hover, scratch);
+    side::paint(soft, fb, b, !right, &tr(Str::Windows), entries, groups, &items(wins, cur, false), look, scratch);
 }
 
 /// Paints the tabs in the title bar, over the bar cleared between the buttons.
-fn paint_tabs(soft: &Soft, fb: &mut [u32], wins: &[Win], cur: usize, w: u32, hover: Option<side::Part>, scratch: &mut Vec<u8>) {
+#[allow(clippy::too_many_arguments)]
+fn paint_tabs(soft: &Soft, fb: &mut [u32], wins: &[Win], groups: &[side::GroupItem], entries: &[side::Entry], cur: usize, w: u32, look: side::Look, scratch: &mut Vec<u8>) {
     let (ox, oy) = soft.origin();
     let (x0, x1) = tabs_span(w);
     soft.clear_rect(fb, (ox + x0 as usize, oy, ox + x1 as usize, oy + chrome::TITLE_H));
-    side::paint_top(soft, fb, (x0, x1), &items(wins, cur, true), hover, scratch);
+    side::paint_top(soft, fb, (x0, x1), entries, groups, &items(wins, cur, true), look, scratch);
+}
+
+/// Turns the spinners of the panel a step (`side::paint_spin`): only the rings are painted again.
+#[allow(clippy::too_many_arguments)]
+fn spin_side(soft: &Soft, fb: &mut [u32], wins: &[Win], groups: &[side::GroupItem], entries: &[side::Entry], cur: usize, look: side::Look) {
+    let Some(b) = side_box(soft) else { return };
+    side::paint_spin(soft, fb, side::Layout::Side { x0: b.0, y0: b.1, w: b.2, entries }, b.1 + b.3, entries, groups, &items_with(wins, cur, false, false), look);
+}
+
+/// The same for the tabs in the title bar.
+#[allow(clippy::too_many_arguments)]
+fn spin_tabs(soft: &Soft, fb: &mut [u32], wins: &[Win], groups: &[side::GroupItem], entries: &[side::Entry], cur: usize, w: u32, look: side::Look) {
+    let (x0, x1) = tabs_span(w);
+    let lay = side::Layout::Top { x0, x1, entries, groups, cw: side::chip_cw(soft) };
+    side::paint_spin(soft, fb, lay, 0, entries, groups, &items_with(wins, cur, true, false), look);
 }
 
 /// Runs the app. Returns false, with nothing shown, if this backend cannot start here (no Wayland
@@ -549,6 +614,11 @@ impl App {
             groups: Vec::new(),
             groups_made: 0,
             entries: Vec::new(),
+            gitems: Vec::new(),
+            dnd: None,
+            spin_at: None,
+            spin_due: false,
+            spin_t0: Instant::now(),
             xkb,
             ui,
             hover: Hit::Client,
@@ -606,6 +676,12 @@ impl App {
         for _ in 1..std::env::var("AXON_PANES").ok().and_then(|n| n.parse::<usize>().ok()).unwrap_or(1).min(12) {
             app.split(panes::Dir::Auto);
         }
+        // A debugging aid: every pane runs a command, as far as the panel and the tabs can tell (the spinners, and what
+        // they cost while they turn).
+        if std::env::var_os("AXON_RUNNING").is_some() {
+            ALL_RUNNING.store(true, Ordering::Relaxed);
+            app.refresh_groups();
+        }
         // A debugging aid: start with the settings panel open (screenshots, memory measurements).
         if std::env::var_os("AXON_SETTINGS").is_some() {
             app.toggle_settings();
@@ -627,7 +703,7 @@ impl App {
             // Block until the compositor, the PTY thread or a held key needs us; and, when a redraw is
             // stuck waiting for the compositor, only until it is clear that it will not answer.
             let now = Instant::now();
-            let timeout = [self.repeat.as_ref().map(|r| r.at), self.waiting.map(|t| t + STALL), self.save_at, self.overlays.deadline(now)]
+            let timeout = [self.repeat.as_ref().map(|r| r.at), self.waiting.map(|t| t + STALL), self.save_at, self.overlays.deadline(now), self.spin_at]
                 .into_iter()
                 .chain(self.wins[self.cur].panes.iter().flat_map(|p| [p.refresh.due, p.refresh.clock_at]))
                 .flatten()
@@ -674,6 +750,7 @@ impl App {
                 overlay::Tick::Rest => {}
             }
             self.tick_save();
+            self.tick_spin();
             if self.waiting.is_some_and(|t| t.elapsed() >= STALL) {
                 self.wl.give_up_waiting();
                 self.waiting = None;
@@ -699,6 +776,8 @@ impl App {
         let (w, h) = (self.w as usize + 2 * ml, self.h as usize + mt + mb);
         let geo = self.geo();
         let chips_on = self.chips_on();
+        // What the list of windows needs from the app, before the framebuffer is borrowed.
+        let (drag, spinning) = (self.dnd_view(), self.spinning());
         // Where the panes of the window on screen are: when that is not what the framebuffer shows, the frame
         // is repainted whole. The cross at a pane's corner is drawn over rows that are repainted every frame.
         let cur = self.cur;
@@ -747,14 +826,26 @@ impl App {
         }
         self.close_shown = cross;
         let top = self.cfg.windows.tabs == config::TabsPos::Top;
-        if self.soft.last_full || self.side_dirty || (self.soft.title_painted && top) {
-            if top {
-                paint_tabs(&self.soft, fb, &self.wins, self.cur, self.w, self.side_hover, &mut self.side_scratch);
+        let full = self.soft.last_full || self.side_dirty || (self.soft.title_painted && top) || drag.is_some();
+        if full || self.spin_due {
+            let look = side::Look { hover: self.side_hover, drag, phase: side::spin_phase(self.spin_t0.elapsed().as_millis()) };
+            if !full {
+                // Only the spinners are due: the rings are painted again, not the list.
+                if top {
+                    spin_tabs(&self.soft, fb, &self.wins, &self.gitems, &self.entries, self.cur, self.w, look);
+                } else {
+                    spin_side(&self.soft, fb, &self.wins, &self.gitems, &self.entries, self.cur, look);
+                }
+            } else if top {
+                paint_tabs(&self.soft, fb, &self.wins, &self.gitems, &self.entries, self.cur, self.w, look, &mut self.side_scratch);
             } else {
                 let right = self.cfg.windows.tabs == config::TabsPos::Right;
-                paint_side(&self.soft, fb, &self.wins, &self.groups, &self.entries, self.cur, right, self.side_hover, &mut self.side_scratch);
+                paint_side(&self.soft, fb, &self.wins, &self.gitems, &self.entries, self.cur, right, look, &mut self.side_scratch);
             }
             self.side_dirty = false;
+            self.spin_due = false;
+            // The spinners are painted again in a moment, for as long as a command runs where they can be seen.
+            self.spin_at = spinning.then(|| Instant::now() + Duration::from_millis(side::SPIN_EVERY_MS));
         }
         // The settings panel is painted in its own box (cleared first) when the frame is whole again or something
         // in it changed, a fade included: the grid beside it is repainted row by row as usual.
@@ -793,13 +884,12 @@ impl App {
                     let p = &mut self.wins[i].panes[j];
                     match hook {
                         Hook::Start => p.history.start(at),
-                        Hook::Prompt { n, status } => {
-                            p.history.prompt(n, status, at, &p.ctx);
-                            self.dirty = true;
-                        }
+                        Hook::Prompt { n, status } => p.history.prompt(n, status, at, &p.ctx),
                     }
-                    // The panel says whether a command runs or failed.
+                    // The panel and the tabs say whether a command runs or failed (a folded group, that one does).
+                    self.refresh_groups();
                     self.side_dirty = true;
+                    self.dirty = true;
                 }
                 loop {
                     let Some(e) = self.wins[i].panes[j].proxy.queue.lock().unwrap().pop_front() else { break };
@@ -881,19 +971,24 @@ impl App {
         self.cfg.windows.tabs == config::TabsPos::Top
     }
 
-    fn side_part_at(&self, x: f32, y: f32) -> Option<side::Part> {
+    /// Where the list of windows is, as its layout and the box it fills (window pixels): the panel, or the strip
+    /// of the title bar between the window buttons and the settings button. `None` when the panel is hidden.
+    fn list_layout(&self) -> Option<(side::Layout<'_>, (i32, i32, i32, i32))> {
         if self.tabs_on_top() {
             let (x0, x1) = tabs_span(self.w);
-            if y < 0.0 || y >= chrome::TITLE_H as f32 - 1.0 {
-                return None;
-            }
-            return side::Layout::Top { x0, x1, n: self.wins.len() }.hit(x, y);
+            let lay = side::Layout::Top { x0, x1, entries: &self.entries, groups: &self.gitems, cw: side::chip_cw(&self.soft) };
+            return Some((lay, (x0, 0, x1 - x0, chrome::TITLE_H as i32 - 1)));
         }
         let (bx, by, bw, bh) = self.side_box()?;
+        Some((side::Layout::Side { x0: bx, y0: by, w: bw, entries: &self.entries }, (bx, by, bw, bh)))
+    }
+
+    fn side_part_at(&self, x: f32, y: f32) -> Option<side::Part> {
+        let (lay, (bx, by, bw, bh)) = self.list_layout()?;
         if x < bx as f32 || x >= (bx + bw) as f32 || y < by as f32 || y >= (by + bh) as f32 {
             return None;
         }
-        side::Layout::Side { x0: bx, y0: by, w: bw, entries: &self.entries }.hit(x, y)
+        lay.hit(x, y)
     }
 
     fn toggle_side(&mut self) {
@@ -1055,13 +1150,27 @@ impl App {
         let id = self.wins[self.cur].id;
         self.wins.sort_by_key(|w| w.group.unwrap_or(usize::MAX));
         self.cur = self.wins.iter().position(|w| w.id == id).unwrap_or(0);
+        // Windows or groups came or went, so what a drag in progress points at is not what it was.
+        self.dnd_cancel();
+        self.relist();
+    }
+
+    /// Lists what the panel or the tabs show for the windows and groups as they are: a folded group still shows
+    /// the window on screen if it is one of its own, the tabs list no panes.
+    fn relist(&mut self) {
         let of: Vec<Option<usize>> = self.wins.iter().map(|w| w.group).collect();
         let folded: Vec<bool> = self.groups.iter().map(|g| g.collapsed).collect();
         let panes: Vec<usize> = self.wins.iter().map(|w| w.panes.len()).collect();
-        self.entries = side::entries(&of, &folded, &panes);
+        self.entries = if self.tabs_on_top() { side::top_entries(&of, &folded, self.cur) } else { side::entries(&of, &folded, &panes, Some(self.cur)) };
+        self.refresh_groups();
         self.side_hover = None;
         self.side_dirty = true;
         self.dirty = true;
+    }
+
+    /// The groups as the list shows them, from the windows and groups as they are now.
+    fn refresh_groups(&mut self) {
+        self.gitems = group_items(&self.groups, &self.wins);
     }
 
     /// Drops the groups that no window is in, and renumbers the others in the windows.
@@ -1110,7 +1219,16 @@ impl App {
     fn switch_to(&mut self, i: usize) {
         let i = i.min(self.wins.len() - 1);
         (self.selecting, self.held, self.repeat, self.cross_down) = (false, None, None, None);
+        // Going to a window of a folded group opens the group (the reference's `activate`); the folded groups
+        // that remain show the window on screen, which changes.
+        let was = self.cur;
         self.cur = i;
+        if i != was {
+            let unfolded = self.wins[i].group.is_some_and(|g| std::mem::take(&mut self.groups[g].collapsed));
+            if unfolded || self.groups.iter().any(|g| g.collapsed) {
+                self.relist();
+            }
+        }
         self.pane_hover = None;
         let w = &mut self.wins[i];
         w.unread = false;
@@ -1401,7 +1519,7 @@ impl App {
         }
         if self.cfg.windows != d.windows {
             self.cfg.windows = d.windows.clone();
-            self.side_hover = None;
+            self.relist();
         }
         if d.font != self.shown_font {
             self.base_px = d.font.size;
@@ -1559,6 +1677,7 @@ impl App {
             session::set_cursor(&p.term, cfg.input.cursor);
         }
         self.cfg = cfg.clone();
+        self.relist();
         self.ui.status = cfg.status_bar;
         self.soft.set_ui(self.ui);
         self.set_blur();
@@ -1627,6 +1746,11 @@ impl App {
     /// Runs a shortcut or sends the key to the focused pane's shell. Returns whether anything was done and the
     /// key may repeat while held: splitting and closing a pane do once per press.
     fn handle_key(&mut self, k: &Key) -> bool {
+        // A window or group being dragged: Esc drops the drag, nothing moves.
+        if k.sym == KS_ESCAPE && self.dnd.as_ref().is_some_and(|d| d.live) {
+            self.dnd_cancel();
+            return true;
+        }
         // An overlay open has the keyboard before everything: the shell hears nothing, Esc closes the top one.
         if self.overlays.is_open() {
             let g = self.geo();
@@ -1741,6 +1865,7 @@ impl App {
     /// Whatever the pointer or a held key was doing stops when an overlay takes the window.
     fn grab_input(&mut self) {
         (self.selecting, self.held, self.repeat) = (false, None, None);
+        self.dnd_cancel();
         self.wins[self.cur].pane().term.lock().selection = None;
         // A slider being dragged in the settings panel lets go: the overlay has the pointer now.
         if let Some(p) = self.panel.as_mut() {
@@ -1969,6 +2094,9 @@ impl App {
             self.overlay_cursor = None;
             self.overlay_reply(Reply { cursor: None, ..r });
         }
+        if self.dnd_move(x, y) {
+            return;
+        }
         if let Some(p) = self.panel.as_mut() {
             let e = p.pointer(x, y);
             self.panel_effect(e);
@@ -2044,6 +2172,10 @@ impl App {
 
     fn on_button(&mut self, pressed: bool, time: u32) {
         if !pressed {
+            // The button came up on a row of the list or on a drag: a click, or a drop.
+            if self.dnd_release() {
+                return;
+            }
             self.selecting = false;
             // The cross of a pane closes it when the button comes up over it too.
             if let Some(pi) = self.cross_down.take() {
@@ -2081,10 +2213,10 @@ impl App {
             Hit::Edge(edges) => self.wl.begin_resize(edges),
             Hit::Prefs => {}
             Hit::Side => match self.side_hover {
-                Some(side::Part::Row(i)) => self.switch_to(i),
+                // A row or a header is a click when the button comes up where it went down, a drag when it moves.
+                Some(part @ (side::Part::Row(_) | side::Part::Head(_))) => self.dnd_press(part),
                 Some(side::Part::Close(i)) => self.close_win(i),
                 Some(side::Part::New) => self.new_win(),
-                Some(side::Part::Head(g)) => self.fold(g),
                 Some(side::Part::Pane(wi, pi)) => {
                     self.switch_to(wi);
                     self.set_focus(pi);
@@ -2163,6 +2295,139 @@ impl App {
             }
         } else {
             pane.term.lock().scroll_display(Scroll::Delta(lines));
+            self.dirty = true;
+        }
+    }
+}
+
+// ---------------------------------------------------------- list: drag and drop, spinners --
+
+impl App {
+    /// The button went down on a window's row or tab, or a group's header or chip (`part`): it is a click when it
+    /// comes up without the pointer having moved far, and a drag when it has (`dnd.rs`).
+    fn dnd_press(&mut self, part: side::Part) {
+        let grab = match part {
+            side::Part::Row(w) => dnd::Grab::Win(w),
+            side::Part::Head(g) => dnd::Grab::Group(g),
+            _ => return,
+        };
+        let Some(r) = self.list_layout().and_then(|(lay, _)| lay.grab_box(grab)) else { return };
+        let (x, y) = self.mouse;
+        self.dnd = Some(Dnd { grab, press: (x, y), off: (x - r.0 as f32, y - r.1 as f32), size: (r.2, r.3), live: false, target: None, at: (x, y) });
+    }
+
+    /// The pointer moved to window pixel `(x, y)` with a press on the list. True when that made it a drag (or it
+    /// already was): the move is the drag's, nothing else hears of it. The mark follows what is under the pointer,
+    /// and the panel or the tabs are painted again with the ghost where the pointer is.
+    fn dnd_move(&mut self, x: f32, y: f32) -> bool {
+        let Some(d) = self.dnd.as_ref() else { return false };
+        if !d.live && !dnd::started(d.press, (x, y)) {
+            return false;
+        }
+        let grab = d.grab;
+        let target = self.list_layout().filter(|(_, (bx, by, bw, bh))| x >= *bx as f32 && x < (bx + bw) as f32 && y >= *by as f32 && y < (by + bh) as f32).and_then(|(lay, _)| lay.target(grab, x, y));
+        let Some(d) = self.dnd.as_mut() else { return false };
+        let changed = !d.live || d.target != target || d.at != (x, y);
+        (d.live, d.at, d.target) = (true, (x, y), target);
+        self.wl.set_cursor(cursor::GRABBING);
+        if changed {
+            self.side_hover = None;
+            self.side_dirty = true;
+            self.dirty = true;
+        }
+        true
+    }
+
+    /// The button came up. True when the press was on the list: a click that goes to the window or folds the
+    /// group, or a drop that moves what was dragged to where its mark was (nowhere, if it was off the list).
+    fn dnd_release(&mut self) -> bool {
+        let Some(d) = self.dnd.take() else { return false };
+        self.side_dirty = true;
+        self.dirty = true;
+        if !d.live {
+            match d.grab {
+                dnd::Grab::Win(w) => self.switch_to(w),
+                dnd::Grab::Group(g) => self.fold(g),
+            }
+            return true;
+        }
+        self.wl.set_cursor(cursor::POINTER);
+        if let Some(to) = d.target {
+            self.drop_on(d.grab, to);
+        }
+        true
+    }
+
+    /// Drops what is being dragged (Esc, an overlay opening, windows or groups coming or going): nothing moves.
+    fn dnd_cancel(&mut self) {
+        if let Some(d) = self.dnd.take()
+            && d.live
+        {
+            self.wl.set_cursor(cursor::DEFAULT);
+            self.side_dirty = true;
+            self.dirty = true;
+        }
+    }
+
+    /// The drag as the painter needs it: what is dragged, where a drop would put it, and where the ghost is. The ghost
+    /// stays in the panel, or in the strip of tabs at the height of the tab it was grabbed by.
+    fn dnd_view(&self) -> Option<side::Dragging> {
+        let d = self.dnd.as_ref().filter(|d| d.live)?;
+        let (lay, region) = self.list_layout()?;
+        let region = if self.tabs_on_top() {
+            let r = lay.grab_box(d.grab)?;
+            (region.0, r.1, region.2, r.3)
+        } else {
+            region
+        };
+        Some(side::Dragging { grab: d.grab, target: d.target, at: side::ghost_at(region, d.size, d.at, d.off) })
+    }
+
+    /// Moves what was dragged where it was dropped: the windows and groups are put in their new order (`dnd::arrange`),
+    /// a group a window went into is unfolded, and a toast says where a window went when its group changed.
+    fn drop_on(&mut self, grab: dnd::Grab, to: dnd::Target) {
+        let before: Vec<Option<usize>> = self.wins.iter().map(|w| w.group).collect();
+        let Some(a) = dnd::arrange(&before, self.groups.len(), grab, to) else { return };
+        let id = self.wins[self.cur].id;
+        // What the toast says, from the window as it was: its name, and the group it was in.
+        let moved = if let dnd::Grab::Win(w) = grab { Some((win_title(&self.wins[w]), before[w].map(|g| self.groups[g].name.clone()))) } else { None };
+        let mut wins: Vec<Option<Win>> = self.wins.drain(..).map(Some).collect();
+        self.wins = a.order.iter().filter_map(|&i| wins.get_mut(i)?.take()).collect();
+        let mut groups: Vec<Option<Group>> = self.groups.drain(..).map(Some).collect();
+        self.groups = a.groups.iter().filter_map(|&g| groups.get_mut(g)?.take()).collect();
+        for (w, g) in self.wins.iter_mut().zip(&a.group) {
+            w.group = *g;
+        }
+        if let Some(g) = a.unfold {
+            self.groups[g].collapsed = false;
+        }
+        self.cur = self.wins.iter().position(|w| w.id == id).unwrap_or(0);
+        self.rebuild_side();
+        if let (Some((title, was)), dnd::Grab::Win(w)) = (moved, grab) {
+            let now = a.order.iter().position(|&i| i == w).and_then(|at| a.group[at]).map(|g| self.groups[g].name.clone());
+            if was != now {
+                let msg = match now {
+                    Some(g) => format!("\u{ab}{title}\u{bb} {} \u{ab}{g}\u{bb}", tr(Str::DndMoved)),
+                    None => format!("\u{ab}{title}\u{bb} {}", tr(Str::DndOut)),
+                };
+                self.overlays.toast(&msg, None, 0, Instant::now());
+            }
+        }
+    }
+
+    /// Whether a spinner is on screen: a command runs in some window and the list that shows it (the panel, or the
+    /// tabs) is visible. While it is, the list is painted again every `side::SPIN_EVERY_MS`; otherwise nothing is
+    /// scheduled.
+    fn spinning(&self) -> bool {
+        (self.tabs_on_top() || self.soft.side_rect().is_some()) && self.wins.iter().any(|w| w.panes.iter().any(running))
+    }
+
+    /// Time to turn the spinners a little: the rings are painted again, not the list (and the paint schedules the
+    /// next turn itself).
+    fn tick_spin(&mut self) {
+        if self.spin_at.is_some_and(|t| Instant::now() >= t) {
+            self.spin_at = None;
+            self.spin_due = true;
             self.dirty = true;
         }
     }

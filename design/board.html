@@ -155,6 +155,15 @@
   <section><h2>Font</h2>
     <p>What <code>[font]</code> in <code>~/.config/axon/config.toml</code> changes: <code>weight</code>, <code>letter_spacing</code> and <code>line_height</code>. The default is weight 400, spacing 0 and height 1.0 (the first frame above). Weight is synthesized until the own font reader can read the variable axis.</p>
     <div class="grid" data-group="font"></div></section>
+  <section><h2>Groups in the tabs</h2>
+    <p>With <code>[windows] tabs = "top"</code> a group is a container tinted with its colour (6 %) that holds its chip (dot, name, count) and its tabs; the window on screen is the group's colour at 16 %. A folded group keeps only the window on screen, and its dot turns while a window in it runs a command. A window of several panes says how many in its tab.</p>
+    <div class="grid" data-group="tabs"></div></section>
+  <section><h2>Status icons</h2>
+    <p>What the shell is doing, from its hook (<code>axon shell-init</code>): the prompt when idle, a ring whose bright quarter turns once in 0.8 s while a command runs (the only animation of the list: a timer exists only while something runs), a red dot when the last command failed (Ctrl+C is not a failure). A window shows the busiest of its panes. The cyan dot is output that came while the window was hidden.</p>
+    <div class="grid" data-group="status"></div></section>
+  <section><h2>Drag and drop</h2>
+    <p>Press on a row, a tab or a group's header and move 5 px: the row stays at 40 %, its ghost follows the pointer, and a mark says where the drop would go: a 2 px accent line before or after (a window takes the group of the one it is next to), a 2 px ring in the group's colour round a header or chip (into the group), a line at the end of the list (out of its group). <kbd>Esc</kbd> cancels.</p>
+    <div class="grid" data-group="drag"></div></section>
   <section><h2>Colour</h2>
     <p>Black and white chrome; colour comes only from programs. The ANSI hues are muted so a coloured prompt does not shout. Contrast is measured against the glass body over a black and over a white desktop (rule: 4.5:1 for text and for ANSI 8).</p>
     <div class="grid wide" data-group="colour"></div>
