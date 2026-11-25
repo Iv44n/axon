@@ -29,9 +29,9 @@ pub const CHECKED: u8 = 4;
 /// the row's own padding, the column of the checkmark, the gap between parts, the colour dot.
 const PAD: i32 = 5;
 const MIN_W: i32 = 230;
-const ITEM_H: i32 = 28;
+const ITEM_H: i32 = 29;
 const SEP_H: i32 = 11;
-const HEAD_H: i32 = 22;
+const HEAD_H: i32 = 23;
 const ROW_PAD: i32 = 9;
 const MARK_W: i32 = 14;
 const GAP: i32 = 9;
@@ -309,7 +309,7 @@ impl Overlay for Menu {
                 Kind::Sep => {
                     p.shape(x + 1 + PAD + 4, top + 5, x + w - 1 - PAD - 4, top + 6, WHITE, 0.07, &|_, _| 1.0);
                 }
-                Kind::Head => t.draw(p, x + 1 + PAD + ROW_PAD, top + 6 + 6, self.text(it.label), Ink::new(PX_HEAD, faint())),
+                Kind::Head => t.draw(p, x + 1 + PAD + ROW_PAD, top + 6 + 7, self.text(it.label), Ink::new(PX_HEAD, faint())),
                 Kind::Item => paint_item(p, t, self, i, (x + 1 + PAD, top, w - 2 - 2 * PAD, rh)),
             }
         }
@@ -378,11 +378,11 @@ mod tests {
     fn the_menu_is_as_wide_as_its_widest_item_and_never_under_230() {
         let m = tab_menu(0, 0);
         let (w, h) = m.size(&w7);
-        // Rows: 8 items of 28, two separators of 11, one heading of 22, plus the padding and the border.
-        assert_eq!(h, 8 * 28 + 2 * 11 + 22 + 2 * 5 + 2);
+        // Rows: 8 items of 29, two separators of 11, one heading of 23, plus the padding and the border.
+        assert_eq!(h, 8 * 29 + 2 * 11 + 23 + 2 * 5 + 2, "289, as the reference's menu of a window");
         // The widest is «New group with this window…» with its cap: 27 characters, 5 in the cap.
         assert_eq!(w, 9 + 14 + 9 + 27 * 7 + 9 + (5 * 7 + 12) + 9 + 2 * 5 + 2);
-        assert_eq!(Menu::at(0, 0).item("Go", "", 1, 0).size(&w7), (MIN_W, 28 + 12), "short labels: the least width");
+        assert_eq!(Menu::at(0, 0).item("Go", "", 1, 0).size(&w7), (MIN_W, 29 + 12), "short labels: the least width");
         let wide = Menu::at(0, 0).item("A rather long label for an item", "Ctrl+Shift+K", 1, 0);
         let (w, _) = wide.size(&w7);
         let label = 31 * 7;
@@ -408,7 +408,7 @@ mod tests {
         let r = (100, 100, 230, m.size(&w7).1);
         // The first row starts after the border and the padding.
         assert_eq!(m.item_at(r, 150.0, 106.0), Some(0));
-        assert_eq!(m.item_at(r, 150.0, 106.0 + 28.0), Some(1));
+        assert_eq!(m.item_at(r, 150.0, 106.0 + 29.0), Some(1));
         // The separator (row 3) and the heading (row 4) are not items.
         let (sep_top, _) = m.row(r, 3);
         assert_eq!(m.item_at(r, 150.0, (sep_top + 5) as f32), None);

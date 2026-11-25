@@ -546,7 +546,7 @@ pub fn clipped<'a>(p: &'a mut Paint, y0: i32, y1: i32) -> Paint<'a> {
 }
 
 /// The palette's footer: a hairline, then `hints` as key caps and a label, 36 px high.
-pub const FOOT_H: i32 = 36;
+pub const FOOT_H: i32 = 35;
 
 /// What a footer hint shows: the caps and the label after them.
 pub type Hint<'a> = (&'a [Cap<'a>], &'a str);
@@ -601,11 +601,11 @@ pub fn paint(p: &mut Paint, t: &Text, l: &List, r: Rect, empty: &str) {
         let msg = format!("{empty} «{}».", l.query());
         let msg = t.fit(&msg, PX, w - 32);
         let mw = t.width(&msg, PX);
-        t.draw(p, x + (w - mw) / 2, y + 28 + 8, &msg, Ink::new(PX, dim()));
+        t.draw(p, x + (w - mw) / 2, y + 6 + 28 + 9, &msg, Ink::new(PX, dim()));
         return;
     }
     let overflow = l.content_h() > h;
-    let bar = if overflow { 8 } else { 0 };
+    let bar = if overflow { 10 } else { 0 };
     // The viewport is the rectangle given; the scroll is kept inside it even if the window just changed size.
     let scroll = l.scroll().min((l.content_h() - h).max(0));
     let mut p = clipped(p, y, y + h);

@@ -279,8 +279,8 @@ pub struct Picker {
 const PICKER_W: i32 = 580;
 const PICKER_MAX_H: i32 = 470;
 const PICKER_TOP: i32 = 60;
-/// The room the message of an empty result takes.
-const EMPTY_H: i32 = 74;
+/// The room the message of an empty result takes: the list's padding and the message's own (28 around a line).
+const EMPTY_H: i32 = 86;
 
 impl Picker {
     pub fn new() -> Picker {

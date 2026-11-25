@@ -22,7 +22,9 @@ pub const FADE_IN: Duration = Duration::from_millis(180);
 pub const FADE_OUT: Duration = Duration::from_millis(250);
 const RISE: f32 = 6.0;
 
-const H: i32 = 36;
+/// The card's height: 37 px of text and padding, 39 with the action's button (its own 1 px of padding).
+const H: i32 = 37;
+const H_ACTION: i32 = 39;
 const PAD_L: i32 = 14;
 const PAD_R: i32 = 12;
 const GAP: i32 = 14;
@@ -92,13 +94,15 @@ impl Toast {
 
     fn place(&self, cx: &Cx) -> Place {
         let t = cx.text;
-        let act = self.action.as_deref().map(|a| t.width(a, PX_MENU) + 2);
+        // The button is its text and 6 px of padding each side: the gap and the right padding count from its box.
+        let act = self.action.as_deref().map(|a| t.width(a, PX_MENU) + 2 * HIT);
+        let h = if act.is_some() { H_ACTION } else { H };
         let fixed = 2 + PAD_L + PAD_R + act.map_or(0, |a| GAP + a);
         let want = fixed + t.width(&self.msg, PX_MENU);
         let w = want.min(cx.g.w - 2 * SIDE).max(fixed.min(cx.g.w));
-        let (x, y) = ((cx.g.w - w) / 2, cx.g.h - BOTTOM - H);
-        let action = act.map(|a| (x + w - 1 - PAD_R - a - HIT, y + 4, a + 2 * HIT, H - 8));
-        Place { card: (x, y, w, H), action, msg_room: w - fixed }
+        let (x, y) = ((cx.g.w - w) / 2, cx.g.h - BOTTOM - h);
+        let action = act.map(|a| (x + w - 1 - PAD_R - a, y + 10, a, h - 20));
+        Place { card: (x, y, w, h), action, msg_room: w - fixed }
     }
 
     /// Whether window pixel `(x, y)` is on the toast.
@@ -144,9 +148,9 @@ impl Toast {
         let t = cx.text;
         let msg = t.fit(&self.msg, PX_MENU, pl.msg_room);
         t.draw(p, x + 1 + PAD_L, cy, &msg, Ink::new(PX_MENU, fg()));
-        if let (Some(act), Some((ax, _, aw, _))) = (&self.action, pl.action) {
+        if let (Some(act), Some((ax, ay, aw, ah))) = (&self.action, pl.action) {
             if self.over {
-                p.rrect(ax, y + 4, aw, h - 8, 6.0, accent(), 0.12);
+                p.rrect(ax, ay + rise, aw, ah, 6.0, accent(), 0.12);
             }
             t.draw(p, ax + HIT, cy, act, Ink::new(PX_MENU, accent()).bold());
         }
