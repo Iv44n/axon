@@ -27,6 +27,8 @@ pub struct View {
     dirty: Vec<bool>,
     last_cursor: (Point, CursorShape, bool),
     last_sel: Option<SelectionRange>,
+    /// The columns of the last build: a different width (a pane resized) rebuilds every row.
+    cols: usize,
     /// Scratch for the rows being built; dead once they are handed to the backend.
     stage: Vec<Cell>,
     /// Rows the caller wants repainted at the next frame (something is drawn over them).
@@ -39,6 +41,7 @@ impl View {
             dirty: Vec::new(),
             last_cursor: (Point::default(), CursorShape::Block, true),
             last_sel: None,
+            cols: 0,
             stage: Vec::new(),
             wanted: Vec::new(),
         }
@@ -53,6 +56,9 @@ impl View {
     pub fn build<L: EventListener>(&mut self, term: &mut Term<L>, focused: bool, out: &mut impl Backend) {
         let (rows, cols) = (term.screen_lines(), term.columns());
         let mut full = out.begin_frame(rows, cols);
+        // The terminal was resized (a pane got another size): what is on screen is of the old grid.
+        full |= self.cols != cols || self.dirty.len() != rows;
+        self.cols = cols;
         self.dirty.clear();
         self.dirty.resize(rows, false);
 

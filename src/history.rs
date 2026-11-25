@@ -111,6 +111,16 @@ impl History {
         self.recs.back()
     }
 
+    /// A command is running: it started and no prompt has come since.
+    pub fn running(&self) -> bool {
+        self.started.is_some()
+    }
+
+    /// The last command that ran failed (interrupting one with Ctrl+C, status 130, is not a failure).
+    pub fn failed(&self) -> bool {
+        self.recs.iter().rev().find_map(|r| r.run).is_some_and(|r| r.status != 0 && r.status != 130)
+    }
+
     #[cfg(test)]
     pub fn len(&self) -> usize {
         self.recs.len()
@@ -161,6 +171,27 @@ mod tests {
         h.prompt(3, 0, t0 + Duration::from_secs(5), &ctx("~/b"));
         assert_eq!(h.get(2).unwrap().run, None);
         assert_eq!(h.len(), 3);
+    }
+
+    #[test]
+    fn a_running_and_a_failed_command_are_told_apart_for_the_panels_status() {
+        let (mut h, t0) = (History::default(), Instant::now());
+        assert!(!h.running() && !h.failed());
+        h.prompt(1, 0, t0, &ctx("~/a"));
+        h.start(t0);
+        assert!(h.running() && !h.failed(), "it runs, and nothing has failed yet");
+        h.prompt(2, 127, t0 + Duration::from_millis(50), &ctx("~/a"));
+        assert!(!h.running() && h.failed());
+        // The status is of the last command that ran: a bare Enter does not clear it, a success does.
+        h.prompt(3, 0, t0 + Duration::from_millis(60), &ctx("~/a"));
+        assert!(h.failed());
+        h.start(t0 + Duration::from_millis(70));
+        h.prompt(4, 0, t0 + Duration::from_millis(80), &ctx("~/a"));
+        assert!(!h.failed());
+        // Ctrl+C is not a failure.
+        h.start(t0 + Duration::from_millis(90));
+        h.prompt(5, 130, t0 + Duration::from_millis(95), &ctx("~/a"));
+        assert!(!h.failed());
     }
 
     #[test]
