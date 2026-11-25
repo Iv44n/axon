@@ -48,6 +48,7 @@ Always use `--release`: debug mode is much slower.
 
 | Shortcut | Action |
 |---|---|
+| `Ctrl+K` | The command palette: type to filter windows, groups and actions (each with its shortcut), `Up` / `Down` move, `Enter` runs, `Esc` or `Ctrl+K` closes; it changes the windows' panel position too (`[windows] tabs`) |
 | `Ctrl+,` | Open or close the settings panel docked beside the terminal (also the sliders icon in the title bar); `Esc` closes it when it has the keyboard |
 | `Alt+N` / `Alt+W` | New window (a shell of its own) / close the window |
 | `Alt+1…9`, `Alt+[` / `Alt+]` | Go to window *n* / the previous / the next one |
@@ -206,7 +207,7 @@ axis of a font like `JetBrainsMono[wght].ttf`; the own font reader (task 12) wil
 | `AXON_OPACITY` | `0.93` (`winit`), `0.88` (`wl`) | Opacity of the glass body (if the compositor supports transparency) |
 | `AXON_DECORATIONS` | off | `1` to use the system title bar (`winit` fallback only) |
 | `AXON_BACKEND` | `wl` on Wayland, else `winit` | `wl`: own Wayland client + CPU renderer (~14 MB idle). `winit`: `winit` + `wgpu` (~150 MB idle), also the automatic fallback if `wl` cannot start |
-| `AXON_DEMO_OVERLAY` | — | A debugging aid: start with one of the overlay kit's screens open (`field`, `list`, `menu`, `toast`, `modal`) |
+| `AXON_DEMO_OVERLAY` | — | A debugging aid: start with one of the overlay kit's screens open (`field`, `list`, `menu`, `toast`, `modal`), or `palette` for the real command palette |
 
 ## Design
 
@@ -316,6 +317,8 @@ src/
 ├─ overlay.rs   the overlay kit: the `Overlay` trait, the stack that takes keys and pointer, the modal frame, text
 ├─ field.rs     a line of text being edited (caret, selection, paste) and its painting
 ├─ list.rs      filtered, scrolling list model and its painting (the palette's)
+├─ commands.rs  what the command palette lists (actions, windows, groups) and what each entry means; pure
+├─ picker.rs    the command palette's overlay: input row, list, footer (`Ctrl+K`)
 ├─ menu.rs      the context menu
 ├─ toast.rs     the toast
 ├─ icons.rs     the overlays' outline icons

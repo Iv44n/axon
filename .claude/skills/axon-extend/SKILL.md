@@ -12,6 +12,7 @@ Before any change: read `axon-architecture` (dependency rules) and, if it touche
 2. Implement the action as an `App` method (`copy`, `paste`, `zoom`, …), not inline.
 3. If a redraw is needed: `self.dirty = true` (the loop draws on the next frame callback).
 4. Document the shortcut in `CLAUDE.md` or the README.
+5. A shortcut that does something the command palette could list also gets an entry in `commands.rs` (`build`, with the shortcut text, a `Cmd` variant and its arm in `App::run_cmd` that calls the same method as step 2; [0027](../../../knowledge/decisions/0027-command-palette.md)).
 
 ## New key/sequence sent to the PTY
 Add it in `input.rs` (`encode_key`, a pure function of a resolved xkb key). Cover modifiers with the parameter `mods = 1+shift+2·alt+4·ctrl`. Add a unit test with the expected sequence.

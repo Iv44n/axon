@@ -6,11 +6,12 @@ use std::time::{Duration, Instant};
 
 use super::{H, W, Scene, render, scenes};
 use crate::{
-    chrome,
+    chrome, commands,
     i18n::{self, Lang, Str, tr},
     input::sym,
     overlay::{Geo, Overlay, Stack},
-    overlay_demo::{self, Dialog, Picker, Shape, window_menu},
+    overlay_demo::{self, Dialog, Shape, picker, window_menu},
+    picker::Picker,
     xkb::{Key, Mods},
 };
 
@@ -47,6 +48,14 @@ fn typed(d: &mut Dialog) {
     d.field_mut(2).set("split columns");
 }
 
+/// The command palette over a window of three in a group and one apart, `query` typed and row `sel` selected. The
+/// overview is listed as it will be with the overview screen (ADR 0027: the app lists it once it has one).
+fn palette(query: &str, sel: usize) -> Box<dyn Overlay> {
+    let (wins, groups) = commands::sample();
+    let state = commands::State { wins: &wins, groups: &groups, cur: 0, panes: 1, overview: true };
+    Box::new(Picker::new(commands::build(&state)).state(query, sel))
+}
+
 fn defs() -> Vec<Def> {
     let en = Lang::En;
     let d = |name, label, show| Def { name, label, lang: en, show };
@@ -75,10 +84,10 @@ fn defs() -> Vec<Def> {
             d.field_mut(2).set("a command that is far too long to fit the row of the palette's input, typed to the end");
             Box::new(d)
         })),
-        d("list", "List: no query, under their headings, the first selected", Show::Overlay(|| Box::new(Picker::new().state("", 0)))),
-        d("list-filtered", "List: a query, ranked, the characters that matched lit, the group beside the shortcut", Show::Overlay(|| Box::new(Picker::new().state("group", 0)))),
-        d("list-scrolled", "List: more than fits, the last row selected, the scrollbar at the end", Show::Overlay(|| Box::new(Picker::new().state("", 9)))),
-        d("list-none", "List: nothing matches", Show::Overlay(|| Box::new(Picker::new().state("zzzz", 0)))),
+        d("list", "List: no query, under their headings, the first selected", Show::Overlay(|| Box::new(picker().state("", 0)))),
+        d("list-filtered", "List: a query, ranked, the characters that matched lit, the group beside the shortcut", Show::Overlay(|| Box::new(picker().state("group", 0)))),
+        d("list-scrolled", "List: more than fits, the last row selected, the scrollbar at the end", Show::Overlay(|| Box::new(picker().state("", 9)))),
+        d("list-none", "List: nothing matches", Show::Overlay(|| Box::new(picker().state("zzzz", 0)))),
         d("menu", "Menu: shortcuts, a heading, groups with a check, a danger item, a disabled one, pointer over the second", Show::Overlay(|| Box::new(window_menu(300, 170).shown(Some(1))))),
         d("menu-danger", "Menu: the keyboard on the danger item", Show::Overlay(|| Box::new(window_menu(300, 170).shown(Some(9))))),
         d("toast", "Toast: a message and an action, at the bottom centre", Show::Toast),
@@ -88,7 +97,17 @@ fn defs() -> Vec<Def> {
             Box::new(d)
         })),
         d("modal-empty", "Modal frame: the field empty, the pointer over the primary button", Show::Overlay(|| Box::new(Dialog::new(Shape::Group).shown().lit(1)))),
-        Def { name: "list-es", label: "List in Spanish: filtered", lang: Lang::Es, show: Show::Overlay(|| Box::new(Picker::new().state("grupo", 0))) },
+        d("palette-empty", "Command palette (Ctrl+K): no query, the actions under their heading, the first selected", Show::Overlay(|| palette("", 0))),
+        d("palette-moved", "Command palette: two Down presses, the third row selected", Show::Overlay(|| palette("", 2))),
+        d("palette-scrolled", "Command palette: the last row selected, the windows and groups reached by scrolling", Show::Overlay(|| palette("", usize::MAX))),
+        d("palette-typed", "Command palette: \u{ab}group\u{bb} typed, ranked, the group of each row at the right, the matches lit", Show::Overlay(|| palette("group", 0))),
+        d("palette-windows", "Command palette: a window's name typed, two-line rows with the directory and the group", Show::Overlay(|| palette("arcton", 1))),
+        d("palette-none", "Command palette: nothing matches", Show::Overlay(|| palette("zzzz", 0))),
+        Def { name: "palette-empty-es", label: "Command palette in Spanish: no query", lang: Lang::Es, show: Show::Overlay(|| palette("", 0)) },
+        Def { name: "palette-moved-es", label: "Command palette in Spanish: the third row selected", lang: Lang::Es, show: Show::Overlay(|| palette("", 2)) },
+        Def { name: "palette-typed-es", label: "Command palette in Spanish: \u{ab}grupo\u{bb} typed", lang: Lang::Es, show: Show::Overlay(|| palette("grupo", 0)) },
+        Def { name: "palette-none-es", label: "Command palette in Spanish: nothing matches", lang: Lang::Es, show: Show::Overlay(|| palette("zzzz", 0)) },
+        Def { name: "list-es", label: "List in Spanish: filtered", lang: Lang::Es, show: Show::Overlay(|| Box::new(picker().state("grupo", 0))) },
         Def { name: "menu-es", label: "Menu in Spanish", lang: Lang::Es, show: Show::Overlay(|| Box::new(window_menu(300, 170).shown(Some(0)))) },
         Def { name: "toast-es", label: "Toast in Spanish", lang: Lang::Es, show: Show::Toast },
         Def { name: "modal-es", label: "Modal frame in Spanish", lang: Lang::Es, show: Show::Overlay(|| Box::new(Dialog::new(Shape::Group).shown().lit(0))) },
