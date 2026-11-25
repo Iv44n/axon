@@ -2,12 +2,9 @@
 //! beside the grid (a header with a `+`, one 28 px row per window) or tabs in the title bar. A row or
 //! tab has an icon, the title, a dot when it printed while hidden and a cross on hover; the selected
 //! one is lit. Pure layout and hit testing in window pixels, and the painting of a box the caller has
-//! cleared (`Soft::clear_rect`). The text is the grid's own font, small: a proportional UI font would
-//! cost 5 MB of RSS for something that is always on screen.
-use alacritty_terminal::vte::ansi::Rgb;
-
+//! cleared (`Soft::clear_rect`). The text is the interface's proportional font (`Soft::ui_text`), at the
+//! reference's sizes: 12.5 px for a window, 12 for a group in the panel, 11.5 for the header.
 use crate::{
-    cell::pack,
     chrome::TITLE_H,
     icons::{self, Icon},
     dnd::{Grab, Target},
@@ -116,6 +113,33 @@ pub struct GroupItem {
     pub collapsed: bool,
     pub count: usize,
     pub busy: bool,
+    /// How wide its chip's texts are at the top (the name, cut to what a chip has room for, and the count), in
+    /// pixels: what the tabs are laid out with. `measure` sets it.
+    pub label_w: i32,
+}
+
+/// The sizes of the list's text (the reference's `font-size`s): a window's title and a chip's name, a group's name
+/// in the panel, a pane's title, the header, a group's count and a tab's pane count.
+pub const TITLE_PX: f32 = 12.5;
+const GROUP_PX: f32 = 12.0;
+const PANE_PX: f32 = 12.0;
+const HEAD_PX: f32 = 11.5;
+const COUNT_PX: f32 = 11.0;
+const BADGE_PX: f32 = 10.5;
+
+/// Sets each group's `label_w` for the tabs, as `soft` draws text.
+pub fn measure(groups: &mut [GroupItem], soft: &Soft) {
+    let mut buf = [0u8; 20];
+    for g in groups {
+        let count = soft.ui_width(crate::overlay::dec(g.count, &mut buf), COUNT_PX);
+        g.label_w = label_w(soft.ui_width(&g.name, TITLE_PX), count);
+    }
+}
+
+/// How wide a chip's texts are when its name is `name_w` pixels and its count `count_w`: the name is cut to what a
+/// chip of at most `CHIP_MAX` has room for.
+fn label_w(name_w: i32, count_w: i32) -> i32 {
+    name_w.min((CHIP_MAX - CHIP_FIXED - count_w).max(0)) + count_w
 }
 
 /// The entries for windows whose groups are `win_group` and that have `panes` panes each, and groups whose
@@ -284,15 +308,9 @@ fn digits(n: usize) -> i32 {
     n.checked_ilog10().map_or(1, |l| l as i32 + 1)
 }
 
-/// How many characters of group `g`'s name its chip shows: all, or what a 180 px chip has room for.
-fn chip_chars(g: &GroupItem, cw: i32) -> i32 {
-    let room = (CHIP_MAX - CHIP_FIXED) / cw.max(1) - digits(g.count);
-    (g.name.chars().count() as i32).min(room.max(1))
-}
-
-/// The width of group `g`'s chip when a character is `cw` px wide: the dot, the name and the count.
-fn chip_w(g: &GroupItem, cw: i32) -> i32 {
-    CHIP_FIXED + (chip_chars(g, cw) + digits(g.count)) * cw.max(1)
+/// The width of group `g`'s chip: the dot, the name and the count (`label_w`), and the padding and gaps.
+fn chip_w(g: &GroupItem) -> i32 {
+    CHIP_FIXED + g.label_w
 }
 
 /// What `Layout::Top` has put somewhere: an entry's box, or the container round a group's chip and tabs.
@@ -311,13 +329,13 @@ pub enum Mark {
 }
 
 /// Where the list is: a panel at `(x0, y0)`, `w` wide, listing `entries`, or the tabs between `x0` and `x1`
-/// in the title bar (`entries` as `top_entries` makes them; `cw` is how wide a character of a chip is). The tabs
+/// in the title bar (`entries` as `top_entries` makes them, `groups` measured by `measure`). The tabs
 /// scroll a group or a loose window at a time: `first` is the entry the strip starts at (what is before it is out of
 /// sight, and `scroll` and `reveal` say where it goes).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Layout<'a> {
     Side { x0: i32, y0: i32, w: i32, entries: &'a [Entry] },
-    Top { x0: i32, x1: i32, entries: &'a [Entry], groups: &'a [GroupItem], cw: i32, first: usize },
+    Top { x0: i32, x1: i32, entries: &'a [Entry], groups: &'a [GroupItem], first: usize },
 }
 
 /// Where the unit of the tabs that holds entry `i` starts: the group's header for a window in a group, else the
@@ -375,13 +393,13 @@ impl<'a> Layout<'a> {
     /// until it says to stop. Returns where the next thing would start. Every tab is as wide as the bar allows
     /// once the chips, the containers' padding, the gaps and the `+` have their room: `TAB_W` down to `TAB_MIN`.
     fn top_walk(self, f: &mut dyn FnMut(Placed) -> bool) -> i32 {
-        let Layout::Top { x0, x1, entries, groups, cw, first } = self else { return 0 };
+        let Layout::Top { x0, x1, entries, groups, first } = self else { return 0 };
         let (mut tabs, mut fixed, mut units) = (0, TAB_NEW + TAB_GAP, 0);
         for e in entries {
             match e {
                 Entry::Head(g) => {
                     units += 1;
-                    fixed += 2 * GROUP_PAD + chip_w(&groups[*g], cw);
+                    fixed += 2 * GROUP_PAD + chip_w(&groups[*g]);
                 }
                 Entry::Row { grouped, .. } => {
                     tabs += 1;
@@ -401,7 +419,7 @@ impl<'a> Layout<'a> {
         while i < entries.len() {
             match entries[i] {
                 Entry::Head(g) => {
-                    let cwid = chip_w(&groups[g], cw);
+                    let cwid = chip_w(&groups[g]);
                     let mut gx = x + GROUP_PAD;
                     if f(Placed::Entry(i, (gx, y + (TAB_H - CHIP_H) / 2, cwid, CHIP_H))) {
                         return x;
@@ -496,7 +514,7 @@ impl<'a> Layout<'a> {
     /// The same tabs starting at entry `first`.
     fn from(self, first: usize) -> Layout<'a> {
         match self {
-            Layout::Top { x0, x1, entries, groups, cw, .. } => Layout::Top { x0, x1, entries, groups, cw, first },
+            Layout::Top { x0, x1, entries, groups, .. } => Layout::Top { x0, x1, entries, groups, first },
             side => side,
         }
     }
@@ -792,16 +810,9 @@ fn inside((x, y, w, h): Rect, px: f32, py: f32) -> bool {
     px >= x as f32 && px < (x + w) as f32 && py >= y as f32 && py < (y + h) as f32
 }
 
-/// `text` cut to `max` characters, with `…` where it was: its characters, for `Soft::paint_text`, with no string made.
-pub fn fit(text: &str, max: usize) -> impl Iterator<Item = char> + '_ {
-    let long = text.chars().count() > max;
-    text.chars().take(if long { max.saturating_sub(1) } else { usize::MAX }).chain(long.then_some('…'))
-}
-
-/// A count written in decimal, a character at a time, with no string made: it is painted again with every list.
-fn dec(n: usize) -> impl Iterator<Item = char> {
-    let width = digits(n) as u32;
-    (0..width).rev().map(move |i| char::from(b'0' + (n / 10usize.pow(i) % 10) as u8))
+/// `n` in decimal, in `buf`: a count painted again with every list needs no string of its own.
+fn dec(n: usize, buf: &mut [u8; 20]) -> &str {
+    crate::overlay::dec(n, buf)
 }
 
 fn plus(p: &mut Paint, b: Rect, hot: bool) {
@@ -835,7 +846,7 @@ enum Grouping {
 }
 
 /// What a row, a tab or a header is painted with besides its own data: whether the pointer is over it and on its
-/// cross, where its group is, how wide a character of the pane count is, where the spinners are in their turn,
+/// cross, where its group is, how wide a digit of the pane count is, where the spinners are in their turn,
 /// and how opaque it is (1, or `DRAGGED` for the row being dragged and for its ghost).
 #[derive(Clone, Copy)]
 struct Ink {
@@ -845,12 +856,6 @@ struct Ink {
     bcw: i32,
     phase: f32,
     fade: f32,
-}
-
-/// `c` as it looks over the glass at opacity `k`.
-fn faded(c: Rgb, k: f32) -> Rgb {
-    let mix = |a: u8, bg: u8| (bg as f32 + (a as f32 - bg as f32) * k + 0.5) as u8;
-    Rgb { r: mix(c.r, palette::BG.r), g: mix(c.g, palette::BG.g), b: mix(c.b, palette::BG.b) }
 }
 
 /// A ring `d` px across that turns: its track at `track` of the opacity of `c`, and a quarter of it in `c`, whose
@@ -1043,64 +1048,62 @@ fn chip_shapes(p: &mut Paint, b: Rect, g: &GroupItem, over: bool, phase: f32, fa
     p.fade = 1.0;
 }
 
-/// The title of one row or tab, in the grid's font at 0.85 of its size.
+/// The title of one row or tab (12.5 px, dim, bright when it is the window on screen or under the pointer) and its
+/// pane count (10.5 px, centred in its box).
 fn row_text(soft: &Soft, fb: &mut [u32], b: Rect, it: &Item, over: bool, fade: f32, scratch: &mut Vec<u8>) {
-    let (ox, oy) = soft.origin();
-    let m = soft.small(0.85);
     let (x, y, rw, rh) = b;
-    let bm = soft.small(0.72);
-    let bw = badge_w(it.badge, bm.cell_w as i32);
+    let bw = badge_w(it.badge, badge_cw(soft));
     let dot = if it.unread && !it.selected { 6 + 7 } else { 0 };
     let room = (rw - 9 - 13 - 7 - 5 - if over { CLOSE + 6 } else { 18 } - if bw > 0 { bw + 7 } else { 0 } - dot).max(0);
-    let label = fit(it.title, (room / m.cell_w as i32).max(1) as usize);
-    let c: Rgb = faded(if it.selected || over { palette::FG } else { palette::DIM }, fade);
-    soft.paint_text(fb, ox + (x + 9 + 13 + 7) as usize, oy + (y + rh / 2) as usize, label, pack(c.r, c.g, c.b, 255), false, &m, scratch);
+    let c = if it.selected || over { palette::FG } else { palette::DIM };
+    soft.ui_cut_text(fb, x + 9 + 13 + 7, y + rh / 2, it.title, room, TITLE_PX, c, fade, 400, scratch);
     if bw > 0 {
         let bb = badge_box(b, bw);
-        let d = faded(palette::DIM, fade);
-        soft.paint_text(fb, ox + (bb.0 + 5) as usize, oy + (bb.1 + bb.3 / 2) as usize, dec(it.badge), pack(d.r, d.g, d.b, 255), false, &bm, scratch);
+        let mut buf = [0u8; 20];
+        let n = dec(it.badge, &mut buf);
+        let nx = bb.0 + (bb.2 - soft.ui_width(n, BADGE_PX)) / 2;
+        soft.ui_text(fb, nx, bb.1 + bb.3 / 2, n, BADGE_PX, palette::DIM, fade, 400, scratch);
     }
 }
 
-/// The text of a pane's row.
+/// The text of a pane's row (12 px).
 fn pane_text(soft: &Soft, fb: &mut [u32], b: Rect, it: &PaneItem, over: bool, scratch: &mut Vec<u8>) {
-    let (ox, oy) = soft.origin();
-    let m = soft.small(0.82);
     let (x, y, rw, rh) = b;
     let room = (rw - 8 - 13 - 7 - PANE_RIGHT - CLOSE - 7).max(0);
-    let label = fit(it.title, (room / m.cell_w as i32).max(1) as usize);
-    let c: Rgb = if it.active || over { palette::FG } else { palette::DIM };
-    soft.paint_text(fb, ox + (x + 8 + 13 + 7) as usize, oy + (y + rh / 2) as usize, label, pack(c.r, c.g, c.b, 255), false, &m, scratch);
+    let c = if it.active || over { palette::FG } else { palette::DIM };
+    soft.ui_cut_text(fb, x + 8 + 13 + 7, y + rh / 2, it.title, room, PANE_PX, c, 1.0, 400, scratch);
 }
 
-/// A group's name (medium weight, dim, bright under the pointer: `.gchip`) and, at the right end, how many windows it has.
+/// A group's name (12 px, medium weight, dim, bright under the pointer: `.side .gchip`) and, at the right end, how many
+/// windows it has (11 px, faint).
 fn head_text(soft: &Soft, fb: &mut [u32], b: Rect, g: &GroupItem, over: bool, fade: f32, scratch: &mut Vec<u8>) {
-    let (ox, oy) = soft.origin();
-    let m = soft.small(0.85);
     let (x, y, w, h) = b;
-    let cw = m.cell_w as i32;
-    let count_w = digits(g.count) * cw;
+    let mut buf = [0u8; 20];
+    let count = dec(g.count, &mut buf);
+    let count_w = soft.ui_width(count, COUNT_PX);
     let room = (w - 6 - 7 - 6 - 8 - count_w - 22).max(0);
-    let name = fit(&g.name, (room / cw).max(1) as usize);
-    let (fg, faint) = (faded(if over { palette::FG } else { palette::DIM }, fade), faded(palette::FAINT, fade));
-    let cy = oy + (y + h / 2) as usize;
-    soft.paint_text(fb, ox + (x + 6 + 7 + 6) as usize, cy, name, pack(fg.r, fg.g, fg.b, 255), true, &m, scratch);
-    soft.paint_text(fb, ox + (x + w - 22 - count_w) as usize, cy, dec(g.count), pack(faint.r, faint.g, faint.b, 255), false, &m, scratch);
+    let cy = y + h / 2;
+    let fg = if over { palette::FG } else { palette::DIM };
+    soft.ui_cut_text(fb, x + 6 + 7 + 6, cy, &g.name, room, GROUP_PX, fg, fade, crate::font::MEDIUM, scratch);
+    soft.ui_text(fb, x + w - 22 - count_w, cy, count, COUNT_PX, palette::FAINT, fade, 400, scratch);
 }
 
-/// A group chip's name (medium weight, dim, bright under the pointer) and its count, in the tabs.
+/// A group chip's name (12.5 px, medium weight, dim, bright under the pointer) and its count (11 px, faint), in the tabs.
 fn chip_text(soft: &Soft, fb: &mut [u32], b: Rect, g: &GroupItem, over: bool, fade: f32, scratch: &mut Vec<u8>) {
-    let (ox, oy) = soft.origin();
-    let m = soft.small(0.85);
-    let cw = m.cell_w as i32;
     let (x, y, _, h) = b;
-    let chars = chip_chars(g, cw);
-    let name = fit(&g.name, chars as usize);
-    let (fg, faint) = (faded(if over { palette::FG } else { palette::DIM }, fade), faded(palette::FAINT, fade));
-    let cy = oy + (y + h / 2) as usize;
+    let mut buf = [0u8; 20];
+    let count = dec(g.count, &mut buf);
+    let count_w = soft.ui_width(count, COUNT_PX);
+    let cy = y + h / 2;
     let nx = x + CHIP_PAD + CHIP_DOT + CHIP_GAP;
-    soft.paint_text(fb, ox + nx as usize, cy, name, pack(fg.r, fg.g, fg.b, 255), true, &m, scratch);
-    soft.paint_text(fb, ox + (nx + chars * cw + CHIP_GAP) as usize, cy, dec(g.count), pack(faint.r, faint.g, faint.b, 255), false, &m, scratch);
+    let fg = if over { palette::FG } else { palette::DIM };
+    let name_w = soft.ui_cut_text(fb, nx, cy, &g.name, g.label_w - count_w, TITLE_PX, fg, fade, crate::font::MEDIUM, scratch);
+    soft.ui_text(fb, nx + name_w + CHIP_GAP, cy, count, COUNT_PX, palette::FAINT, fade, 400, scratch);
+}
+
+/// How wide a digit of a tab's pane count is.
+fn badge_cw(soft: &Soft) -> i32 {
+    soft.ui_width("0", BADGE_PX).max(1)
 }
 
 fn over_row(hover: Option<Part>, i: usize) -> bool {
@@ -1231,7 +1234,7 @@ fn paint_drag(soft: &Soft, fb: &mut [u32], lay: Layout, entries: &[Entry], group
     let (fw, fh) = soft.fb_size();
     let (ox, oy) = soft.origin();
     let panel = matches!(lay, Layout::Side { .. });
-    let bcw = soft.small(0.72).cell_w as i32;
+    let bcw = badge_cw(soft);
     let ghost = lay.grab_box(d.grab).map(|r| (d.at.0, d.at.1, r.2, r.3));
     if let Some(gb) = ghost {
         let mut p = Paint { fb: &mut *fb, w: fw, h: fh, ox: ox as i32, oy: oy as i32, fade: 1.0 };
@@ -1273,7 +1276,7 @@ pub fn paint(soft: &Soft, fb: &mut [u32], (x0, y0, w, h): Rect, grid_on_right: b
     }
     let lay = Layout::Side { x0, y0, w, entries };
     let bottom = y0 + h;
-    let bcw = soft.small(0.72).cell_w as i32;
+    let bcw = badge_cw(soft);
     // While something is dragged the pointer lights nothing: the marks say where it would go.
     let hover = if look.drag.is_some() { None } else { look.hover };
     let ink = |over, cross_hot, group, fade| Ink { over, cross_hot, group, bcw, phase: look.phase, fade };
@@ -1306,10 +1309,9 @@ pub fn paint(soft: &Soft, fb: &mut [u32], (x0, y0, w, h): Rect, grid_on_right: b
             }
         }
     }
-    let m = soft.small(0.85);
-    let head = fit(title, ((w - 24) / m.cell_w as i32).max(1) as usize);
-    let f = palette::FAINT;
-    soft.paint_text(fb, ox + (x0 + 16) as usize, oy + (y0 + HEAD_TOP + BTN / 2) as usize, head, pack(f.r, f.g, f.b, 255), false, &m, scratch);
+    // The header's title, left of its buttons (`.side-head`: 11.5 px, faint).
+    let room = lay.new_box().0 - (x0 + 16) - 8;
+    soft.ui_cut_text(fb, x0 + 16, y0 + HEAD_TOP + BTN / 2, title, room, HEAD_PX, palette::FAINT, 1.0, 400, scratch);
     for (k, e) in entries.iter().enumerate() {
         let b = lay.rect(k);
         if b.1 + b.3 > bottom {
@@ -1329,11 +1331,6 @@ fn group_of(entries: &[Entry], k: usize, groups: &[GroupItem]) -> u8 {
     entries[..k].iter().rev().find_map(|e| if let Entry::Head(g) = e { Some(groups[*g].color) } else { None }).unwrap_or(0)
 }
 
-/// How wide a character of a group's chip is at the top: the grid's font at 0.85 of its size.
-pub fn chip_cw(soft: &Soft) -> i32 {
-    soft.small(0.85).cell_w as i32
-}
-
 /// Paints the tabs in the title bar between window pixels `x0` and `x1`, over a cleared bar: each group in a
 /// container tinted with its colour, with its chip and tabs, the loose windows' tabs, the `+`.
 #[allow(clippy::too_many_arguments)]
@@ -1343,8 +1340,8 @@ pub fn paint_top(soft: &Soft, fb: &mut [u32], (x0, x1): (i32, i32), first: usize
     if fb.len() < fw * fh {
         return;
     }
-    let lay = Layout::Top { x0, x1, entries, groups, cw: chip_cw(soft), first };
-    let bcw = soft.small(0.72).cell_w as i32;
+    let lay = Layout::Top { x0, x1, entries, groups, first };
+    let bcw = badge_cw(soft);
     let hover = if look.drag.is_some() { None } else { look.hover };
     let ink = |over, cross_hot, group, fade| Ink { over, cross_hot, group, bcw, phase: look.phase, fade };
     let fade_of = |e: Entry| if is_grab(e, look.drag) { DRAGGED } else { 1.0 };
@@ -1405,16 +1402,19 @@ fn edit_box((x, y, w, h): Rect) -> Rect {
     (x + left, y + (h - EDIT_H) / 2, (w - left - 5 - CLOSE - 7).max(2 * EDIT_PAD), EDIT_H)
 }
 
-/// How many characters of `cw` pixels fit in a field `w` pixels wide: the text's own padding on the left and a
-/// hairline of room on the right, where a caret after the last character sits.
-pub fn edit_cols(w: i32, cw: i32) -> usize {
-    ((w - EDIT_PAD - 2) / cw.max(1)).max(1) as usize
+/// The first character shown when the caret is at character `caret` and the field shows `room` pixels of text:
+/// the text scrolls just far enough to keep the caret in view (a function of the caret, nothing is stored).
+/// `width(a, b)` is how wide characters `a..b` are.
+pub fn edit_first(caret: usize, room: i32, width: impl Fn(usize, usize) -> i32) -> usize {
+    (0..=caret).find(|&k| width(k, caret) <= room).unwrap_or(caret)
 }
 
-/// The first character shown when the caret is at `caret` and `cols` fit: the text scrolls just far enough to
-/// keep the caret in view (a function of the caret, nothing is stored).
-pub fn edit_first(caret: usize, cols: usize) -> usize {
-    (caret + 1).saturating_sub(cols)
+/// How far the text of a field `field_w` pixels wide is scrolled, in pixels, when the caret is at character `caret`
+/// of `text`: the width of what is out of sight on the left (`edit_first`). What a press in the field adds to its x.
+pub fn edit_scroll(soft: &Soft, text: &str, caret: usize, field_w: i32) -> i32 {
+    let at = |k: usize| text.char_indices().nth(k).map_or(text.len(), |(i, _)| i);
+    let first = edit_first(caret, field_w - EDIT_PAD - 2, |a, z| soft.ui_width(&text[at(a)..at(z)], TITLE_PX));
+    soft.ui_width(&text[..at(first)], TITLE_PX)
 }
 
 impl Layout<'_> {
@@ -1435,23 +1435,25 @@ pub fn paint_rename(soft: &Soft, fb: &mut [u32], lay: Layout, win: usize, ed: &E
     if fb.len() < fw * fh {
         return;
     }
-    let m = soft.small(0.85);
-    let cw = m.cell_w as i32;
-    let cols = edit_cols(b.2, cw);
-    let first = edit_first(ed.caret, cols);
+    // Character `k` starts at byte `at(k)`; the text from character `a` to `z` is `ed.text[at(a)..at(z)]`.
+    let at = |k: usize| ed.text.char_indices().nth(k).map_or(ed.text.len(), |(i, _)| i);
+    let width = |a: usize, z: usize| soft.ui_width(&ed.text[at(a)..at(z)], TITLE_PX);
+    let room = b.2 - EDIT_PAD - 2;
+    let first = edit_first(ed.caret, room, width);
     let cy = b.1 + b.3 / 2;
-    let ch = (m.cell_h as i32).min(b.3 - 6);
+    let ch = (TITLE_PX * 1.3).round() as i32;
+    let x_of = |k: usize| b.0 + EDIT_PAD + width(first, k.max(first));
     {
         let mut p = Paint { fb: &mut *fb, w: fw, h: fh, ox: ox as i32, oy: oy as i32, fade: 1.0 };
         p.rrect(b.0, b.1, b.2, b.3, 6.0, [0.0; 3], 0.45);
         p.outline(b.0, b.1, b.2, b.3, 6.0, WHITE, 0.25);
         if let Some((a, z)) = ed.sel {
-            let (a, z) = (a.saturating_sub(first).min(cols), z.saturating_sub(first).min(cols));
-            if z > a {
-                p.rrect(b.0 + EDIT_PAD + a as i32 * cw, cy - ch / 2, (z - a) as i32 * cw, ch, 2.0, palette::unit(palette::ACCENT), 0.30);
+            let (xa, xz) = (x_of(a), x_of(z).min(b.0 + b.2 - 2));
+            if xz > xa {
+                p.rrect(xa, cy - ch / 2, xz - xa, ch, 2.0, palette::unit(palette::ACCENT), 0.30);
             }
         }
-        let x = b.0 + EDIT_PAD + (ed.caret - first.min(ed.caret)) as i32 * cw;
+        let x = x_of(ed.caret);
         p.shape(x, cy - ch / 2, x + 1, cy - ch / 2 + ch, palette::unit(palette::FG), 1.0, &|_, _| 1.0);
         if !over_row(hover, win)
             && let Some(k) = lay.entries().iter().position(|e| matches!(e, Entry::Row { win: w, .. } if *w == win))
@@ -1459,9 +1461,8 @@ pub fn paint_rename(soft: &Soft, fb: &mut [u32], lay: Layout, win: usize, ed: &E
             cross(&mut p, close_box(lay.rect(k)), false);
         }
     }
-    let shown: String = ed.text.chars().skip(first).take(cols).collect();
-    let c = palette::FG;
-    soft.paint_text(fb, ox + (b.0 + EDIT_PAD) as usize, oy + cy as usize, shown.chars(), pack(c.r, c.g, c.b, 255), false, &m, scratch);
+    let shown = &ed.text[at(first)..];
+    soft.ui_cut_text(fb, b.0 + EDIT_PAD, cy, shown, room, TITLE_PX, palette::FG, 1.0, 400, scratch);
 }
 
 #[cfg(test)]
@@ -1487,7 +1488,7 @@ mod tests {
         assert_eq!(lay.hit((g.0 + 3) as f32, (g.1 + 3) as f32), Some(Part::NewGroup));
         assert_eq!((g.0 - (b.0 + b.2), g.1, g.2, g.3), (2, b.1, b.2, b.3));
         assert_eq!(g.0 + g.2, 220 - 6, "6 px from the panel's edge");
-        assert!(Layout::Top { x0: 118, x1: 900, entries: &e, groups: &[], cw: 8, first: 0 }.group_box().is_none());
+        assert!(Layout::Top { x0: 118, x1: 900, entries: &e, groups: &[], first: 0 }.group_box().is_none());
         // The margin, and rows that are not there.
         assert_eq!(lay.hit(2.0, (n.1 + 5) as f32), None);
         let few = rows(1);
@@ -1586,14 +1587,16 @@ mod tests {
         assert_eq!(lay.hit((a.0 + 30) as f32, (a.1 + 5) as f32), Some(Part::Row(0)));
     }
 
+    /// A group whose chip's texts are measured as 8 px a character, as `measure` would with such a font.
     fn group(name: &str, count: usize) -> GroupItem {
-        GroupItem { id: 0, name: name.into(), color: 1, collapsed: false, count, busy: false }
+        let label_w = label_w(name.chars().count() as i32 * 8, digits(count) * 8);
+        GroupItem { id: 0, name: name.into(), color: 1, collapsed: false, count, busy: false, label_w }
     }
 
     #[test]
     fn tabs_share_the_bar_and_shrink_down_to_a_least_width() {
         let e = rows(3);
-        let wide = Layout::Top { x0: 118, x1: 900, entries: &e, groups: &[], cw: 8, first: 0 };
+        let wide = Layout::Top { x0: 118, x1: 900, entries: &e, groups: &[], first: 0 };
         assert_eq!(wide.rect(0).2, TAB_W);
         let (a, b) = (wide.rect(0), wide.rect(1));
         assert_eq!(b.0, a.0 + a.2 + TAB_GAP);
@@ -1603,7 +1606,7 @@ mod tests {
         assert!(plus.0 + plus.2 <= 900);
         // Eight tabs in a narrow bar: narrower, not narrower than the least.
         let e8 = rows(8);
-        let tight = Layout::Top { x0: 118, x1: 700, entries: &e8, groups: &[], cw: 8, first: 0 };
+        let tight = Layout::Top { x0: 118, x1: 700, entries: &e8, groups: &[], first: 0 };
         assert!(tight.rect(0).2 < TAB_W && tight.rect(0).2 >= TAB_MIN);
         // Tabs sit inside the title bar, above its hairline.
         assert!(a.1 >= 0 && a.1 + a.3 < TITLE_H as i32);
@@ -1615,7 +1618,7 @@ mod tests {
     fn tabs_past_the_bar_scroll_into_reach_a_tab_at_a_time() {
         // Nine tabs in the bar of a 900 px window (76 to 824): at their least width seven fit before the `+`.
         let e = rows(9);
-        let at = |first| Layout::Top { x0: 76, x1: 824, entries: &e, groups: &[], cw: 8, first };
+        let at = |first| Layout::Top { x0: 76, x1: 824, entries: &e, groups: &[], first };
         let click = |lay: Layout, k: usize| {
             let r = lay.rect(k);
             lay.hit((r.0 + 10) as f32, (r.1 + 10) as f32)
@@ -1639,7 +1642,7 @@ mod tests {
         // The `+` is at the end of the bar when they do not all fit, and after the last tab when they do.
         assert_eq!(lay.new_box().0, 824 - TAB_NEW);
         let few = rows(2);
-        let one = Layout::Top { x0: 76, x1: 824, entries: &few, groups: &[], cw: 8, first: 1 };
+        let one = Layout::Top { x0: 76, x1: 824, entries: &few, groups: &[], first: 1 };
         assert_eq!(one.new_box().0, one.rect(1).0 + one.rect(1).2 + TAB_GAP);
         // A tab beyond the bar is brought in by the least scroll, one to the left by taking it to the start.
         assert_eq!((at(0).reveal(3), at(0).reveal(8), at(2).reveal(8), at(2).reveal(0), at(2).reveal(5)), (0, 2, 2, 0, 2));
@@ -1653,7 +1656,7 @@ mod tests {
         let wg = [Some(0), Some(0), Some(0), None, None, None, None, None, None];
         let e = entries(&wg, &[false], &[1; 9], None);
         let g = [group("docs", 3)];
-        let at = |first| Layout::Top { x0: 76, x1: 700, entries: &e, groups: &g, cw: 8, first };
+        let at = |first| Layout::Top { x0: 76, x1: 700, entries: &e, groups: &g, first };
         assert_eq!(e[0], Entry::Head(0));
         // One notch passes the whole group; a start in the middle of one is the group's start.
         assert_eq!(at(0).scroll(1), 4);
@@ -1692,7 +1695,7 @@ mod tests {
         let folded = entries(&[Some(0), None], &[true], &[1, 1], None);
         assert!(Layout::Side { x0: 0, y0: 42, w: 220, entries: &folded }.edit_rect(0).is_none());
         let tabs = rows(2);
-        let top = Layout::Top { x0: 118, x1: 900, entries: &tabs, groups: &[], cw: 8, first: 0 };
+        let top = Layout::Top { x0: 118, x1: 900, entries: &tabs, groups: &[], first: 0 };
         assert!(top.edit_rect(1).is_some() && top.edit_rect(2).is_none());
         let t = top.rect(1);
         assert_eq!(top.edit_rect(1).unwrap().0, t.0 + 29);
@@ -1700,20 +1703,22 @@ mod tests {
 
     #[test]
     fn the_rename_text_scrolls_just_far_enough_to_keep_the_caret_in_view() {
-        // A field 120 px wide with 8 px characters: (120 - 7 - 2) / 8 = 13 columns.
-        assert_eq!(edit_cols(120, 8), 13);
-        assert_eq!(edit_cols(78, 7), 9, "a name of eight letters fits a narrow tab with its caret after it, with no scrolling");
-        assert_eq!(edit_first(8, 9), 0);
-        assert_eq!(edit_cols(5, 8), 1, "never none");
-        assert_eq!(edit_first(0, 13), 0);
-        assert_eq!(edit_first(12, 13), 0, "the caret at the last column: no scroll yet");
-        assert_eq!(edit_first(13, 13), 1, "one past: scrolled by one");
-        assert_eq!(edit_first(20, 13), 8);
-        // The caret is always inside the window it asks for.
+        // A field 120 px wide shows 120 - 7 - 2 = 111 px of text; with 8 px characters, thirteen and the caret.
+        let w8 = |a: usize, z: usize| (z - a) as i32 * 8;
+        assert_eq!(edit_first(0, 111, w8), 0);
+        assert_eq!(edit_first(13, 111, w8), 0, "thirteen characters fit with the caret after them: no scroll yet");
+        assert_eq!(edit_first(14, 111, w8), 1, "one more: scrolled by one");
+        assert_eq!(edit_first(20, 111, w8), 7);
+        // The caret is always in view, and the text is scrolled no further than that takes.
         for caret in 0..60 {
-            let first = edit_first(caret, 13);
-            assert!(caret >= first && caret - first < 13, "{caret}");
+            let first = edit_first(caret, 111, w8);
+            assert!(caret >= first && w8(first, caret) <= 111, "{caret}");
+            assert!(first == 0 || w8(first - 1, caret) > 111, "{caret}: scrolled too far");
         }
+        // Proportional text: wide and narrow letters in turn (12 and 4 px) scroll by what they take.
+        let w = |a: usize, z: usize| (a..z).map(|i| if i % 2 == 0 { 12 } else { 4 }).sum::<i32>();
+        assert_eq!(edit_first(10, 40, w), 5);
+        assert_eq!(edit_first(3, 0, w), 3, "a field with no room shows from the caret");
     }
 
     #[test]
@@ -1736,7 +1741,7 @@ mod tests {
         let wg = [Some(0), Some(0), None];
         let e = top_entries(&wg, &[false], 0);
         let groups = [group("arcton", 3)];
-        let lay = Layout::Top { x0: 118, x1: 900, entries: &e, groups: &groups, cw: 8, first: 0 };
+        let lay = Layout::Top { x0: 118, x1: 900, entries: &e, groups: &groups, first: 0 };
         let (chip, a, b, loose) = (lay.rect(0), lay.rect(1), lay.rect(2), lay.rect(3));
         // 9 px of padding, an 8 px dot, 6 px gaps, the name and the count: 9 + 8 + 6 + 6 * 8 + 6 + 8 + 9.
         assert_eq!((chip.2, chip.3), (CHIP_FIXED + 7 * 8, CHIP_H));
@@ -1769,7 +1774,7 @@ mod tests {
         let groups = [group("arcton", 3), group("docs", 1)];
         // [Head 0, Row 0, Row 1, Head 1, Row 2, Row 3]
         for x1 in [500, 700, 900, 1400] {
-            let lay = Layout::Top { x0: 118, x1, entries: &e, groups: &groups, cw: 8, first: 0 };
+            let lay = Layout::Top { x0: 118, x1, entries: &e, groups: &groups, first: 0 };
             let plus = lay.new_box();
             let last = lay.rect(e.len() - 1);
             assert!(plus.0 + plus.2 <= x1, "{x1}: the + fits");
@@ -1782,8 +1787,8 @@ mod tests {
             assert_eq!([lay.rect(2).2, lay.rect(4).2, lay.rect(5).2], [w; 3], "{x1}");
         }
         // As the bar narrows the tabs do: with room for them all they are the natural width.
-        let narrow = Layout::Top { x0: 118, x1: 500, entries: &e, groups: &groups, cw: 8, first: 0 };
-        let roomy = Layout::Top { x0: 118, x1: 1400, entries: &e, groups: &groups, cw: 8, first: 0 };
+        let narrow = Layout::Top { x0: 118, x1: 500, entries: &e, groups: &groups, first: 0 };
+        let roomy = Layout::Top { x0: 118, x1: 1400, entries: &e, groups: &groups, first: 0 };
         assert!(narrow.rect(1).2 < roomy.rect(1).2);
         assert_eq!(roomy.rect(1).2, TAB_W);
     }
@@ -1791,7 +1796,7 @@ mod tests {
     #[test]
     fn what_does_not_fit_the_bar_is_left_out_and_the_plus_stays_in_reach() {
         let e = rows(20);
-        let lay = Layout::Top { x0: 118, x1: 600, entries: &e, groups: &[], cw: 8, first: 0 };
+        let lay = Layout::Top { x0: 118, x1: 600, entries: &e, groups: &[], first: 0 };
         let plus = lay.new_box();
         assert_eq!(plus.0 + plus.2, 600, "the + is pinned to the end of the bar");
         // The tabs after the last one that fits are not found, nor drawn.
@@ -1807,12 +1812,10 @@ mod tests {
     #[test]
     fn long_names_make_the_chip_at_most_180_px() {
         let long = group("a very very long group name indeed", 12);
-        assert_eq!(chip_w(&long, 8), CHIP_FIXED + (chip_chars(&long, 8) + 2) * 8);
-        assert!(chip_w(&long, 8) <= CHIP_MAX);
-        assert!(chip_w(&long, 8) > CHIP_MAX - 8, "it takes what it is given");
-        assert_eq!(chip_w(&group("x", 1), 8), CHIP_FIXED + 2 * 8);
-        // A wide font still shows a character of the name.
-        assert!(chip_chars(&long, 40) >= 1);
+        assert_eq!(chip_w(&long), CHIP_MAX, "a long name takes all a chip has room for, and no more");
+        assert_eq!(chip_w(&group("x", 1)), CHIP_FIXED + 2 * 8);
+        // A count too wide for any name leaves none, and the chip is still no wider than its texts.
+        assert_eq!(label_w(50, CHIP_MAX), CHIP_MAX);
     }
 
     #[test]
@@ -1902,7 +1905,7 @@ mod tests {
         let wg = [Some(0), Some(0), None, None];
         let e = top_entries(&wg, &[false], 0);
         let groups = [group("arcton", 2)];
-        let lay = Layout::Top { x0: 118, x1: 900, entries: &e, groups: &groups, cw: 8, first: 0 };
+        let lay = Layout::Top { x0: 118, x1: 900, entries: &e, groups: &groups, first: 0 };
         // [Head 0, Row 0, Row 1, Row 2, Row 3]
         let (chip, a, loose) = (lay.rect(0), lay.rect(1), lay.rect(4));
         let y = (a.1 + 10) as f32;
@@ -1946,7 +1949,7 @@ mod tests {
         let wg = [Some(0), None];
         let te = top_entries(&wg, &[false], 0);
         let groups = [group("g", 1)];
-        let top = Layout::Top { x0: 118, x1: 900, entries: &te, groups: &groups, cw: 8, first: 0 };
+        let top = Layout::Top { x0: 118, x1: 900, entries: &te, groups: &groups, first: 0 };
         let (chip, tab, free) = (top.rect(0), top.rect(1), top.rect(2));
         assert_eq!(top.mark(Target::Near { win: 1, after: false }), Some(Mark::Line((free.0 - MARK, free.1, MARK, free.3))));
         assert_eq!(top.mark(Target::Near { win: 0, after: true }), Some(Mark::Line((tab.0 + tab.2, tab.1, MARK, tab.3))));
@@ -1979,7 +1982,7 @@ mod tests {
         // takes its group.
         let te = top_entries(&wg, &[false], 0);
         let groups = [group("g", 2)];
-        let top = Layout::Top { x0: 118, x1: 900, entries: &te, groups: &groups, cw: 8, first: 0 };
+        let top = Layout::Top { x0: 118, x1: 900, entries: &te, groups: &groups, first: 0 };
         let tab = top.rect(2);
         let to = top.target(Grab::Win(3), (tab.0 + 5) as f32, (tab.1 + 5) as f32).unwrap();
         assert_eq!(to, Target::Near { win: 1, after: false });
@@ -2012,19 +2015,9 @@ mod tests {
     }
 
     #[test]
-    fn titles_are_cut_with_an_ellipsis() {
-        let cut = |t: &str, n| fit(t, n).collect::<String>();
-        assert_eq!(cut("short", 10), "short");
-        assert_eq!(cut("a very long title", 8), "a very …");
-        assert_eq!(cut("abc", 1), "…");
-        assert_eq!(cut("abc", 0), "…");
-        assert_eq!(cut("abc", 3), "abc");
-    }
-
-    #[test]
     fn counts_are_written_without_a_string() {
         for n in [0, 1, 9, 10, 99, 100, 12345, usize::MAX] {
-            assert_eq!(dec(n).collect::<String>(), n.to_string());
+            assert_eq!(dec(n, &mut [0; 20]), n.to_string());
             assert_eq!(digits(n), n.to_string().len() as i32);
         }
     }

@@ -1,0 +1,46 @@
+# Publishes the website (site/, built by scripts/site.sh) on GitHub Pages: https://iv44n.github.io/axon/,
+# with the release installer (scripts/get.sh) at /install.sh. Repository settings → Pages → Source: GitHub Actions.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "assets/axon.svg"
+      - "scripts/get.sh"
+      - "scripts/site.sh"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build the site
+        run: |
+          sh -n scripts/get.sh
+          scripts/site.sh
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: target/site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

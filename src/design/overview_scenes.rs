@@ -111,7 +111,7 @@ impl Fake {
         let mut soft = Soft::new(&FontCfg::sized(PX), OPACITY);
         soft.set_ui(ui);
         // Only the framebuffer's size is wanted from the call; its picture is thrown away.
-        soft.begin_frame(&mut vec![0u32; w * h], w, h, 1, 1);
+        soft.begin_frame(&mut vec![0u32; w * h], w, h, 1, 1, &crate::view::Fold::default());
         Fake { soft, scratch: Vec::new() }
     }
 }

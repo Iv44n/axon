@@ -109,7 +109,7 @@ pub fn remove_stale_reports(dir: &Path) {
 //
 // axon cannot see where the shell's prompt is, so the shell marks it: when the flag file `$AXON_CHIPS`
 // exists, the prompt starts with a line of its own holding one concealed space (SGR 8) and ends with a
-// concealed space right where the user types (`view::prompt_row` finds them), and at every prompt the
+// concealed space right where the user types (`view::live_prompt` finds them), and at every prompt the
 // shell writes what only it knows to `$AXON_CONTEXT`. axon creates the flag while the chips are on and
 // removes it when they are off, so the setting takes effect at the next prompt, with no restart. The
 // hook puts the shell's own prompt back when the flag is gone. Concealed spaces are invisible, count as

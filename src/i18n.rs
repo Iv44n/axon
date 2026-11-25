@@ -87,6 +87,8 @@ strings! {
     SettingsTitle: "Settings", "Ajustes";
     Windows: "Windows", "Ventanas";
     GroupName: "group", "grupo";
+    // What the composer says while nothing is typed at the prompt (the reference's `.ph`).
+    TypeACommand: "Type a command", "Escribe un comando";
     Pane: "Pane", "Panel";
     TabFont: "Font", "Fuente";
     TabInput: "Input", "Entrada";

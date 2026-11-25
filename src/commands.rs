@@ -231,7 +231,7 @@ pub fn sample() -> (Vec<WinInfo>, Vec<GroupItem>) {
             win(2, "pruebas", "~/lab/apps/arcton", Some(0)),
             win(3, "~", "~", None),
         ],
-        vec![GroupItem { id: 0, name: "arcton".into(), color: 1, collapsed: false, count: 3, busy: false }],
+        vec![GroupItem { id: 0, name: "arcton".into(), color: 1, collapsed: false, count: 3, busy: false, label_w: 0 }],
     )
 }
 
@@ -363,7 +363,7 @@ mod tests {
         let tenth = (0..l.total()).find(|&e| l.id(e) == Cmd::Window(9).id()).unwrap();
         assert_eq!(l.keys(tenth), "");
         // A group of one says "1 window".
-        let one = [GroupItem { id: 0, name: "solo".into(), color: 0, collapsed: false, count: 1, busy: false }];
+        let one = [GroupItem { id: 0, name: "solo".into(), color: 0, collapsed: false, count: 1, busy: false, label_w: 0 }];
         let l = build(&state(&wins, &one));
         let g = (0..l.total()).find(|&e| l.id(e) == Cmd::Group(0).id()).unwrap();
         assert_eq!(l.desc(g), "1 window");
@@ -375,7 +375,7 @@ mod tests {
         // ends, a close is undone) the entry still means the same window and group.
         let win = |id, title: &str, group| WinInfo { id, title: title.into(), place: "~".into(), group };
         let wins = [win(7, "a", Some(0)), win(2, "b", None)];
-        let groups = [GroupItem { id: 5, name: "g".into(), color: 0, collapsed: false, count: 1, busy: false }];
+        let groups = [GroupItem { id: 5, name: "g".into(), color: 0, collapsed: false, count: 1, busy: false, label_w: 0 }];
         let cmds = shown(&build(&state(&wins, &groups)));
         assert_eq!(&cmds[cmds.len() - 4..], &[Cmd::Window(7), Cmd::Window(2), Cmd::Group(5), Cmd::Fold(5)]);
         // A window's id is long: what does not fit in an entry's number is dropped, as the app's lookup does.

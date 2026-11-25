@@ -627,13 +627,19 @@ impl Vmap {
 
 // -------------------------------------------------------------- ui font --
 
-/// A proportional font for the interface around the terminal (the settings panel and the overlays), where the grid's
-/// monospace font reads as code. Loaded when the first of them opens, shared by whoever else opens while it lives, and
-/// dropped when the last closes (`release_memory` then gives its pages back): it is ~4 MB of parsed outlines that the
-/// terminal itself never needs.
+/// The proportional font of the interface around the terminal: the title, the panel of windows, the tabs, the
+/// settings panel and the overlays (the reference's `--ui`, Geist), where the grid's monospace font reads as code.
+/// The window holds it from its first frame (`Soft`); whoever else asks for it while it lives gets the same one.
+/// It is read through `cmap::narrow`, so only the outlines of the characters an interface draws are parsed:
+/// ~2 MB for an Inter-like font instead of ~8.5.
 pub struct UiFont {
     font: Font,
 }
+
+/// The synthetic weight of the UI font's bold (a heading, a selected label).
+pub const BOLD: u16 = 640;
+/// Its medium: the reference's `font-weight: 500` (the title's name, a group's name, a card's title).
+pub const MEDIUM: u16 = 500;
 
 thread_local! {
     /// The font the holders of `UiFont::shared` have now: not a copy of it, only a way to find the one they hold.
@@ -653,8 +659,19 @@ pub fn release_memory() {
     }
 }
 
-/// Families tried in order: the desktop's own where it has one, then common good ones.
-const UI_FAMILIES: [&str; 6] = ["Ubuntu Sans", "Inter", "Cantarell", "Noto Sans", "Open Sans", "DejaVu Sans"];
+/// Families tried in order: the reference's own (Geist), the two that look most like it (Inter, and GNOME's Adwaita
+/// Sans, drawn from it), then the desktop's and other common good ones. Not Cantarell: its file is CFF2, which
+/// `fontdue` parses but draws nothing from.
+const UI_FAMILIES: [&str; 7] = ["Geist", "Inter", "Adwaita Sans", "Ubuntu Sans", "Noto Sans", "Open Sans", "DejaVu Sans"];
+
+/// The UI font in `path`, with its character map narrowed to what an interface draws (`cmap::narrow`), or none
+/// when it cannot be read or draws nothing (an outline format `fontdue` does not draw).
+fn load_ui_font(path: &Path) -> Option<Font> {
+    let bytes = std::fs::read(path).ok()?;
+    let bytes = crate::cmap::narrow(&bytes, crate::cmap::ui_char).unwrap_or(bytes);
+    let font = Font::from_bytes(bytes, FontSettings { load_substitutions: false, ..FontSettings::default() }).ok()?;
+    font.rasterize('H', 12.0).1.iter().any(|&c| c != 0).then_some(font)
+}
 
 impl UiFont {
     /// The font a holder already has, else the first of `UI_FAMILIES` installed (a regular, upright file) read from its
@@ -664,7 +681,10 @@ impl UiFont {
         if let Some(f) = UI_FONT.with(|w| w.borrow().upgrade()) {
             return Some(f);
         }
-        let font = find_any(font_dirs(), &UI_FAMILIES).and_then(|p| load_font(&p)).map(|font| std::rc::Rc::new(UiFont { font }))?;
+        let font = find_any(font_dirs(), &UI_FAMILIES).and_then(|p| load_ui_font(&p)).map(|font| std::rc::Rc::new(UiFont { font }));
+        // The file's bytes, their narrowed copy and the parser's scratch are free now: give their pages back.
+        release_memory();
+        let font = font?;
         UI_FONT.with(|w| *w.borrow_mut() = std::rc::Rc::downgrade(&font));
         Some(font)
     }
@@ -690,21 +710,22 @@ impl UiFont {
     }
 
     /// Calls `put(x, y, coverage)` for every inked pixel of `s` at `px`, its pen starting at `(x, baseline)`.
-    /// `bold` thickens the strokes by synthesis (the font file's variable axis is not read).
-    pub fn draw(&self, s: &str, px: f32, x: i32, baseline: i32, bold: bool, mut put: impl FnMut(i32, i32, u8)) {
+    /// A `weight` above 400 thickens the strokes by synthesis (the font file's variable axis is not read): 500 is
+    /// the reference's medium labels, `BOLD` its headings.
+    pub fn draw(&self, s: &str, px: f32, x: i32, baseline: i32, weight: u16, mut put: impl FnMut(i32, i32, u8)) {
         for (c, pen) in s.chars().zip(self.pen(s, px)) {
             if c == ' ' {
                 continue;
             }
             let (g, mut bmp) = self.font.rasterize(c, px);
             let mut w = g.width;
-            if bold && w > 0 {
-                // One extra column on the right, then the smear (`embolden` at weight 600).
+            if weight > 400 && w > 0 {
+                // One extra column on the right, then the smear.
                 let mut wide = vec![0u8; (w + 1) * g.height];
                 for (r, row) in bmp.chunks(w).enumerate() {
                     wide[r * (w + 1)..][..w].copy_from_slice(row);
                 }
-                embolden(&mut wide, w + 1, 640, 1);
+                embolden(&mut wide, w + 1, weight, 1);
                 (bmp, w) = (wide, w + 1);
             }
             let gx = x + pen.round() as i32 + g.xmin;

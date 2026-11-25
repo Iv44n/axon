@@ -24,9 +24,10 @@ and flat tops straddled two rows, which reads as soft and "pixelated" at 14-15 p
   channel. Fallback fonts (CJK, symbols) are rasterized grey and unhinted: they have no zones.
 - `[font] smoothing = "rgb" | "bgr" | "gray"` (default `rgb`, matches the desktop) and `hinting = true`. Both are in the
   config file only; they follow the panel layout, not a taste.
-- The settings screen and the prompt chips use `Soft::paint_text` / `UiFont`: a proportional UI font (Ubuntu Sans, Inter,
-  Cantarell, Noto Sans, Open Sans, DejaVu Sans, the first one found) loaded only while the screen is open. The grid and
-  the title bar stay in the monospaced font.
+- The settings screen and the prompt chips use `Soft::paint_text` / `UiFont`: a proportional UI font loaded only while the
+  screen is open; the grid and the title bar stay in the monospaced font. (Since [0036](0036-the-reference-cleaner.md): Geist,
+  Inter, Adwaita Sans, Ubuntu Sans, Noto Sans, Open Sans or DejaVu Sans, held by the window for the title, the panel and the tabs
+  too; the chips stay in the grid's font.)
 
 **Cost:** tiles are 3x larger (~0.5 MB at 15 px for the ASCII set); idle `wl` RSS is unchanged at 14 MB; flood 1.70 s
 (was 1.74 s before; run-to-run noise). The settings screen open costs ~7 MB more (the proportional font's parsed outlines: Ubuntu

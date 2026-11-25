@@ -583,21 +583,19 @@ impl App {
         Some(true)
     }
 
-    /// The field's box in window pixels, with the characters that fit and the grid's character width.
-    fn rename_box(&self) -> Option<(overlay::Rect, usize, i32)> {
+    /// The field's box in window pixels.
+    fn rename_box(&self) -> Option<overlay::Rect> {
         let r = self.rename.as_ref()?;
         let wi = self.win_index(r.win)?;
         let (lay, _) = self.list_layout()?;
-        let b = lay.edit_rect(wi)?;
-        let cw = self.soft.small(0.85).cell_w as i32;
-        Some((b, side::edit_cols(b.2, cw), cw))
+        lay.edit_rect(wi)
     }
 
     /// A press at window pixel `(x, y)` while a rename is open. On the field it places the caret (a double click
     /// selects a word, a third everything) and is taken; anywhere else it ends the rename, as the reference's blur, and
     /// is the app's.
     pub(super) fn rename_press(&mut self, x: f32, y: f32, time: u32) -> bool {
-        let Some((b, cols, cw)) = self.rename_box() else {
+        let Some(b) = self.rename_box() else {
             self.finish_rename(true);
             return false;
         };
@@ -605,10 +603,11 @@ impl App {
             self.finish_rename(true);
             return false;
         }
+        let soft = &self.soft;
         let Some(r) = self.rename.as_mut() else { return false };
         let n = r.clicks.press(time);
-        let first = side::edit_first(r.field.caret(), cols) as i32;
-        r.field.press(x as i32 - (b.0 + side::EDIT_PAD) + first * cw, &|s: &str| s.chars().count() as i32 * cw, n, false);
+        let scroll = side::edit_scroll(soft, r.field.text(), r.field.caret(), b.2);
+        r.field.press(x as i32 - (b.0 + side::EDIT_PAD) + scroll, &|s: &str| soft.ui_width(s, side::TITLE_PX), n, false);
         self.side_dirty = true;
         self.dirty = true;
         true
@@ -624,10 +623,11 @@ impl App {
     /// The pointer moved to window pixel `(x, y)` with a drag in the rename field: the selection grows to it. True if
     /// a drag is in progress (the move is then the field's alone).
     pub(super) fn rename_drag(&mut self, x: f32) -> bool {
-        let Some((b, cols, cw)) = self.rename_box() else { return false };
+        let Some(b) = self.rename_box() else { return false };
+        let soft = &self.soft;
         let Some(r) = self.rename.as_mut().filter(|r| r.field.dragging()) else { return false };
-        let first = side::edit_first(r.field.caret(), cols) as i32;
-        if r.field.drag(x as i32 - (b.0 + side::EDIT_PAD) + first * cw, &|s: &str| s.chars().count() as i32 * cw) {
+        let scroll = side::edit_scroll(soft, r.field.text(), r.field.caret(), b.2);
+        if r.field.drag(x as i32 - (b.0 + side::EDIT_PAD) + scroll, &|s: &str| soft.ui_width(s, side::TITLE_PX)) {
             self.side_dirty = true;
             self.dirty = true;
         }

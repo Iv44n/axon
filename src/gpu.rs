@@ -425,7 +425,7 @@ impl Glyphs for Gpu {
 }
 
 impl Backend for Gpu {
-    fn begin_frame(&mut self, rows: usize, cols: usize) -> bool {
+    fn begin_frame(&mut self, rows: usize, cols: usize, _fold: &crate::view::Fold) -> bool {
         let full = self.stale || self.nrows != rows || self.cols != cols;
         if full {
             self.stale = false;

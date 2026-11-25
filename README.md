@@ -3,6 +3,8 @@
 Native terminal emulator: **simple, minimalist, high-performance and futuristic**.
 Written in Rust, for Wayland (own client, CPU-rendered into `wl_shm`, no GPU stack) with a `winit` + `wgpu` fallback for X11 until it gets its own client (see `knowledge/decisions/core/0011-software-render-wl-shm.md`).
 
+**Website:** <https://iv44n.github.io/axon/> · **Install:** `curl -fsSL https://iv44n.github.io/axon/install.sh | sh` (see [Installation](#installation))
+
 ![axon: a dark glass window with its shadow](assets/screenshot.png)
 
 <sub>A frame from the real renderer (`scripts/design.sh`), with alpha: what you see behind it is this page.</sub>
@@ -10,7 +12,7 @@ Written in Rust, for Wayland (own client, CPU-rendered into `wl_shm`, no GPU sta
 - **Own Wayland client and CPU renderer**: the grid is painted straight into a shared-memory buffer, only the damaged rows. ~15 MB idle, no Vulkan or GL loaded.
 - **Zero idle usage**: no continuous redraw; it only paints when there are events (the one timer is the time chip's clock, once a minute, and only while that chip is shown).
 - **Full VT emulation** thanks to [`alacritty_terminal`](https://crates.io/crates/alacritty_terminal).
-- **Dark glass look** (after the `terminal.html` reference, ADR 0021): one rounded translucent pane with a soft shadow; a title bar and a status bar divided from the grid by hairlines, grey window buttons that turn red/yellow/green on hover, one amber accent and six clear hues (also the ANSI colours), outline chip icons and a settings panel docked beside the terminal. The frame is computed per pixel (`src/chrome.rs`), no images. On the default backend; the `winit` fallback only has the black-and-white colours.
+- **Dark glass look** (after the `terminal.html` reference, ADR 0021, 0036 and 0037): one rounded translucent pane with a soft shadow; a title bar divided from the grid by a hairline, the line you type at docked at the bottom below another (output rises above it; it is still your shell's own prompt and line editor), grey window buttons that turn red/yellow/green on hover, one amber accent and six clear hues (also the ANSI colours), a proportional UI font (Geist, else Inter) around the monospaced grid, the reference's airy margins, quiet outline-icon chips and a settings panel docked beside the terminal; the status bar is there if you ask for it (`[window] status_bar`). The frame is computed per pixel (`src/chrome.rs`), no images. On the default backend; the `winit` fallback only has the black-and-white colours.
 - **Windows, groups and panes**: one shell per window, listed in a panel at the left or right or as tabs in the title bar; windows can be put in coloured groups (a dialog with templates that open real windows with their commands typed in), renamed in place, reordered and regrouped by dragging, and closed with an *Undo*; each row says what its shell is doing (the prompt, a turning ring while a command runs, a red dot when the last one failed). **A group is a split view**, as a tab with split panes is in Warp: the windows of the group you are in are shown side by side (columns, rows or a grid), and `Ctrl+Space` on a window in no group makes the group. Right click opens the menu of whatever is under the pointer. See [Shortcuts](#shortcuts).
 - **Command palette and overview**: `Ctrl+K` lists actions, windows and groups (ranked as you type, each with its shortcut); `Alt+O` shows every window as a card with the last rows of its terminal, in a section per group, with a filter and drag and drop between groups.
 - **Prompt chips** (opt-in): a row of context chips on the line above your prompt (time, user, directory, git branch and changes, conda/venv, pyenv, Kubernetes), chosen and ordered by you. See [Prompt chips](#prompt-chips).
@@ -19,13 +21,30 @@ Written in Rust, for Wayland (own client, CPU-rendered into `wl_shm`, no GPU sta
 
 ## Requirements
 
-- Recent stable Rust (`cargo`, 2024 edition).
-- Linux. On Wayland: `libxkbcommon.so.0` (loaded at run time for keyboard layouts; every desktop with Wayland has it). On X11, or without that library, axon falls back to `winit` + `wgpu`, which needs a Vulkan/GL driver.
+- Linux on x86_64 or aarch64. The released binaries are linked on Ubuntu 22.04 and need glibc 2.35 or newer (Ubuntu 22.04,
+  Debian 12, Fedora 36 and later); elsewhere, or on musl, build from source with a recent stable Rust (`cargo`, 2024 edition).
+- On Wayland: `libxkbcommon.so.0` (loaded at run time for keyboard layouts; every desktop with Wayland has it). On X11, or without that library, axon falls back to `winit` + `wgpu`, which needs a Vulkan/GL driver.
 - A monospaced font. By default it looks for, in this order: `~/.local/share/fonts/JetBrainsMono[wght].ttf`,
   `CascadiaMonoNF.ttf`, `CascadiaMono.ttf` and DejaVu Sans Mono. JetBrains Mono has no Nerd/Powerline icons: set
   `AXON_FONT` to a Nerd Font if your prompt uses them.
 
 ## Installation
+
+**A released binary** (no Rust needed): the installer downloads `axon-<arch>-linux.tar.gz` from the GitHub release, checks its
+SHA-256 and runs the `install.sh` inside it, which puts the same files as a source install under the prefix.
+
+```sh
+curl -fsSL https://iv44n.github.io/axon/install.sh | sh                            # the latest release, under ~/.local
+curl -fsSL https://iv44n.github.io/axon/install.sh | sh -s -- --prefix /usr/local  # for everyone (it runs the install with sudo)
+curl -fsSL https://iv44n.github.io/axon/install.sh | sh -s -- --version v0.1.0     # a given release
+curl -fsSL https://iv44n.github.io/axon/install.sh | sh -s -- --uninstall          # remove it again
+```
+
+The installer is [`scripts/get.sh`](scripts/get.sh), served by the website as `install.sh`; `AXON_VERSION` and `AXON_PREFIX` do
+what the options do. A bundle also installs by hand, from the [releases page](https://github.com/Iv44n/axon/releases):
+`tar xzf axon-x86_64-linux.tar.gz && axon-x86_64-linux/install.sh`.
+
+**From source:**
 
 ```sh
 scripts/install.sh                       # build and install for your user under ~/.local
@@ -108,10 +127,11 @@ to 900, spacing -8 to 32, line height 0.8 to 3, opacity 0.3 to 1); weights snap 
 
 ### Prompt chips
 
-`[input] mode = "chips"` (or **Input type → Prompt chips** in the settings panel) draws a row of rounded chips on the
-line right above the prompt you are typing at, in the style of Warp's prompt chips. They sit exactly where you type, move
+`[input] mode = "chips"` (or **Input type → Prompt chips** in the settings panel) draws a row of quiet chips (an outline icon
+and coloured text, no box) on the line right above the prompt you are typing at, in the style of Warp's prompt chips. They sit exactly where you type, move
 with the prompt, and disappear while a program runs. The shell still edits the line: axon does not replace your prompt,
-it adds context above it. **The chips replace your prompt's own text** (`user@host:~/dir`) with a bare `$`, since they say it already; your `PS1` is kept and comes back when you switch to *Shell prompt*, and the window title is still set. Chips are drawn at **90 % of the font size** set in the settings (a 14 px font gives 12.6 px chips: text, icon, padding and height all follow), with outline icons, from the same font file, rasterized on the fly through one reused buffer, so they keep no tiles or caches.
+it adds context above it. Like any prompt in axon it is docked at the bottom of the window, below a hairline, and while
+nothing is typed it says *Type a command* after the cursor. **The chips replace your prompt's own text** (`user@host:~/dir`) with a bare `$`, since they say it already; your `PS1` is kept and comes back when you switch to *Shell prompt*, and the window title is still set. Chips are drawn at **84 % of the font size** set in the settings and 80 % opaque (a 14 px font gives 11.8 px chips; the icon and the spacing follow), with outline icons, from the same font file, rasterized on the fly through one reused buffer, so they keep no tiles or caches.
 
 ![axon prompt chips](assets/input-bar.png)
 
@@ -132,8 +152,8 @@ prints (at most twice a second), never on the UI thread.
 
 **How axon finds your prompt.** axon cannot see where the shell draws its prompt, so the shell marks it: while the chips
 are on, the prompt starts with a line of its own holding one concealed space (whose colour is the prompt's number) and
-ends with another where you type. axon finds those marks, so the chips stay on the line of every prompt, in the
-scrollback too, with what they said when you typed there. The marks are invisible, count as one column and copy as
+ends with another where you type. axon finds those marks, in the scrollback too: the prompt you are typing at gets the
+chips, and the line of a prompt whose command has run is left blank, a gap between one command and the next. The marks are invisible, count as one column and copy as
 spaces. **axon starts bash with the
 hook already in `PROMPT_COMMAND`**, so it works with nothing to configure and switches on and off at the next prompt
 without a restart. For zsh, fish, or a bash whose rc file replaces `PROMPT_COMMAND`, add one line to the rc file:
@@ -142,8 +162,9 @@ without a restart. For zsh, fish, or a bash whose rc file replaces `PROMPT_COMMA
 eval "$(axon shell-init bash)"          # ~/.bashrc;  zsh: ~/.zshrc;  fish: axon shell-init fish | source
 ```
 
-**How long each command took.** At the right end of a prompt's chips, once its command has finished, axon shows a green check
-or a red cross with the exit status (when it is not 0) and the time: `12ms`, `1.4s`, `2m 5s`. The hook tells axon when a
+**How long each command took.** At the right end of a command's line, once it has finished, axon shows a green check
+or a red cross with the exit status (when it is not 0) and the time: `12ms`, `1.4s`, `2m 5s`; always when it failed, else
+while the pointer is over its output. The hook tells axon when a
 command starts and when the next prompt appears, through window-title escapes that axon swallows (they never reach your
 title bar), and axon times them as it reads them. The last 256 prompts are remembered; older rows keep an empty line.
 The hook also tells axon your conda/venv, `PYENV_VERSION` and `KUBECONFIG` (only the shell knows them). A prompt
@@ -189,7 +210,7 @@ hinting = true              # snap flat tops, x-height and baseline to whole pix
 [window]
 opacity = 0.88              # 0.3 to 1
 blur = false                # ask the compositor to blur behind the glass (KDE, ext-background-effect; not GNOME)
-status_bar = true           # the 28 px bar at the bottom: shell, encoding, branch, key hints, grid size
+status_bar = false          # the 28 px bar at the bottom: shell, encoding, branch, key hints, grid size
 
 [ui]
 language = "auto"           # "auto" (your locale), "en" or "es": the language of the window's text
@@ -244,7 +265,29 @@ scripts/design.sh              # render the new frames, then open design/board.h
 ```
 
 The frames are build output (`design/frames/`, `design/baseline/`, git-ignored). `assets/screenshot.png` is a copy of
-`design/frames/rest.png`.
+`design/frames/rest.png`, `assets/input-bar.png` of `design/frames/chips-hover.png`.
+
+## Releases and website
+
+A tag `vX.Y.Z` equal to `Cargo.toml`'s version publishes a release (`.github/workflows/release.yml`, ADR 0035): it builds on
+Ubuntu 22.04 for x86_64 and aarch64, packs each with [`scripts/package.sh`](scripts/package.sh) (the binary, the icon,
+`config.example` and `install.sh`, as `axon-<arch>-linux.tar.gz` plus its `.sha256`; no version in the name, so
+`releases/latest/download/` always finds the newest) and attaches them to the GitHub release.
+
+```sh
+# bump version in Cargo.toml, commit, then
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+The website is [`site/`](site/index.html): one static page, no framework and no request to other hosts. Its pictures are frames
+of the real renderer in `site/shots/`. [`scripts/site.sh`](scripts/site.sh) builds it into `target/site/` with the icon and
+`scripts/get.sh` as `install.sh` (`--serve` serves it on <http://localhost:8000>, `--shots` copies fresh frames from
+`design/frames/`); `.github/workflows/pages.yml` publishes it on GitHub Pages at every push to `main` that touches it
+(Settings → Pages → Source: *GitHub Actions*).
+
+The page is in English and Spanish: the English text is the markup, the Spanish a dictionary at the end of `site/index.html`, keyed by
+`data-i18n*` attributes. The language is the `?lang=en|es` of the URL, else the visitor's last pick (the EN/ES switch in the header),
+else the browser's. A new string needs its `data-i18n` key and a Spanish entry.
 
 ## Benchmarks
 
@@ -253,27 +296,29 @@ Measured with [`scripts/bench.sh`](scripts/bench.sh) (`--clean` adds a cold buil
 can move size or speed** (rule in `CLAUDE.md`); older numbers stay in the history table.
 
 Machine: AMD Ryzen 5 5600H (12 threads) + RTX 3050 Mobile, Ubuntu, kernel 7.0.0-44, GNOME Shell 50.1 on Wayland.
-Last measured: 2026-11-25, at `169bda9` plus the change that makes a group the split (ADR 0034): everything since `02c3490` (mouse reporting, the config file, the prompt chips, the blur request, the sub-pixel text rasterizer, the UI after `terminal.html`) plus the second reference: windows and groups (side panel or top tabs), split panes, the overlay kit, the docked settings panel, the command palette, the overview of windows, the group dialog, context menus, inline rename, toasts with undo, drag and drop, status icons, and the fixes after the review. The machine was idle (`vmstat`: 96-99 % idle; a browser open).
+Last measured: 2026-11-25, at `c16281a` plus the change that makes the window the same as the reference, cleaner (ADR 0036: the UI font for the title, the panel and the tabs, its character map narrowed; no status bar by default; quiet chips; the reference's margins) and the one that docks the prompt at the bottom (ADR 0037), the flood and the spinners timed against a build of the same tree drawing the rows flat, in turn under the same load (ADR 0036 was timed against `c16281a`): everything since `02c3490` (mouse reporting, the config file, the prompt chips, the blur request, the sub-pixel text rasterizer, the UI after `terminal.html`) plus the second reference: windows and groups (side panel or top tabs), split panes, the overlay kit, the docked settings panel, the command palette, the overview of windows, the group dialog, context menus, inline rename, toasts with undo, drag and drop, status icons, and the fixes after the review. The machine was not idle (a browser held the load average at 1-2.5).
 
 **Build**
 
 | Binary | Cold release build |
 |---|---|
-| 7.9 MiB (8,302,768 bytes) | 101 s |
+| 7.9 MiB (8,315,096 bytes) | 101 s (before ADR 0036) |
 
 **Idle memory and CPU** (`AXON_BACKEND` selects the backend; `wl` is the own Wayland client with the CPU renderer and the
 default on Wayland, `winit` is the `winit` + `wgpu` fallback)
 
 | Backend | Font | RSS | PSS | Private (anon) | CPU |
 |---|---|---|---|---|---|
-| `wl` | JetBrains Mono (default) | **15 MB** | 11 MB | 6 MB | 0 ticks / 3 s |
-| `wl` | DejaVu Sans Mono | 21 MB | 17 MB | 11 MB | 0 ticks / 3 s |
-| `wl` | Cascadia Mono NF | 59 MB | 55 MB | 49 MB | 0 ticks / 3 s |
-| `winit` | JetBrains Mono (default) | 148 MB | 139 MB | 31 MB | 0 ticks / 3 s |
-| `winit` | DejaVu Sans Mono | 154 MB | 145 MB | 37 MB | 0 ticks / 3 s |
-| `winit` | Cascadia Mono NF | 189 MB | 180 MB | 74 MB | 0 ticks / 3 s |
+| `wl` | JetBrains Mono (default) | **19 MB** | 15 MB | 8 MB | 0 ticks / 3 s |
+| `wl` | DejaVu Sans Mono | 25 MB | 20 MB | 14 MB | 1 tick / 3 s |
+| `wl` | Cascadia Mono NF | 61 MB | 56 MB | 50 MB | 0 ticks / 3 s |
+| `winit` | JetBrains Mono (default) | 151 MB | 71 MB | 31 MB | 1 tick / 3 s |
+| `winit` | DejaVu Sans Mono | 156 MB | 77 MB | 37 MB | 0 ticks / 3 s |
+| `winit` | Cascadia Mono NF | 193 MB | 113 MB | 74 MB | 0 ticks / 3 s |
 
-The idle target is under 50 MB of RSS. `wl` meets it with the default font; a Nerd Font such as Cascadia Mono NF costs
+The idle target is under 50 MB of RSS. `wl` meets it with the default font (the 4 MB over the 15 MB of before are the UI
+font: 2.7 MB of its parsed outlines, narrowed to the characters an interface draws, and ~1.5 MB more of the binary's own code
+paged in; opening the settings or an overlay no longer loads a font); a Nerd Font such as Cascadia Mono NF costs
 ~45 MB inside `fontdue` (it parses every glyph), which the own font reader will remove. The `winit` backend cannot meet
 the target: the Vulkan loader and the drivers map ~94 MB. (`winit`'s PSS went from 56 to 96 and now 139 MB with the RSS
 unchanged: PSS divides shared pages among every process that maps them, so it follows what else runs on the desktop.)
@@ -283,12 +328,12 @@ unchanged: PSS divides shared pages among every process that maps them, so it fo
 
 | State | RSS | Private (anon) | CPU |
 |---|---|---|---|
-| One window | 14.8 MB | 5.7 MB | 0 ticks / 5 s |
-| Three windows (grouped or not) | 17.0 MB | 8.0 MB | 0 ticks / 5 s |
-| A group of four windows shown split (`AXON_PANES=4`) | 18.0 MB | 9.1 MB | 0 ticks / 5 s |
-| Settings panel open | 23.1 MB | 14.1 MB | 0 ticks / 5 s |
-| Overview of windows open (one window) | 19.8 MB | 10.7 MB | 0 ticks / 5 s |
-| Three windows, each marked as running (the status spinners turn) | 17.0 MB | 8.0 MB | 3 ticks / 5 s |
+| One window | 18.6 MB | 8.4 MB | 0 ticks / 5 s |
+| Three windows (grouped or not) | 21.1 MB | 10.6 MB | 0 ticks / 5 s |
+| A group of four windows shown split (`AXON_PANES=4`) | 22.3 MB | 11.7 MB | 0 ticks / 5 s |
+| Settings panel open | 22.8 MB | 11.8 MB | 0 ticks / 5 s |
+| Overview of windows open (one window) | 19.1 MB | 8.4 MB | 0 ticks / 5 s |
+| Three windows, each marked as running (the status spinners turn) | 21.3 MB | 10.6 MB | 11 ticks / 5 s |
 
 A shell killed with `SIGKILL` closes only its own window; when the last one goes, axon quits and removes its report files.
 
@@ -296,10 +341,15 @@ A shell killed with `SIGKILL` closes only its own window; when the last one goes
 
 | Backend | Time | RSS afterwards |
 |---|---|---|
-| `wl` | 1.65 s | 37 MB |
-| `winit` | 1.35 s | 177 MB |
+| `wl` | 1.87 s | 40 MB |
+| `winit` | 1.47 s | 180 MB |
 
-Idle machine, four runs of `scripts/bench.sh` in this stretch (`wl` 1.58, 1.57, 1.63 and 1.65 s, `winit` 1.33, 1.30, 1.38 and 1.35 s):
+This time the machine was busy (load average 2.4-2.7): three runs each of this build and of the same tree drawing the rows
+flat (no docked prompt), in turn, gave `wl` 1.87, 1.89 and 1.86 s against 1.87, 1.84 and 1.85 s, the same within the noise; a
+`scripts/bench.sh` run just before, under load too, gave 2.10 s. For ADR 0036, three runs each of the build before it and
+after it gave 1.81, 1.86 and 1.73 s against 1.78, 1.78 and 1.74 s (the RSS after it is 3 MB higher, the UI font). The spinners
+of three running windows cost 10-11 ticks every 5 s in both builds of the A/B; the 3 ticks measured for ADR 0036 did not come
+back in either. Before, idle machine, four runs of `scripts/bench.sh` in this stretch (`wl` 1.58, 1.57, 1.63 and 1.65 s, `winit` 1.33, 1.30, 1.38 and 1.35 s):
 run-to-run noise is about 0.1 s, and the last two are within it of the first two. The 1.95-2.08 s of the title bar build was the machine (a browser held the load average at 3-4), not the code.
 
 Not measured yet: startup time, input latency, and a comparison with Alacritty, Ghostty and foot (not installed here).
@@ -308,6 +358,8 @@ Not measured yet: startup time, input latency, and a comparison with Alacritty, 
 
 | Date | Change | Binary | Idle RSS `winit` | Idle RSS `wl` |
 |---|---|---|---|---|
+| 2026-11-25 | The prompt docked at the bottom below a hairline (ADR 0037): `view::Fold` lays the lines on the rows, `Soft::band` draws them; +0.9 KB; flood and spinners the same as the rows drawn flat (A/B); one or two rows fewer for every program (the composer's gaps are kept) | 8,315,096 B | 151 MB | 19 MB |
+| 2026-11-25 | The same as the reference, cleaner (ADR 0036): the UI font (Inter) for the title, the panel and the tabs, its character map narrowed to ~900 characters (`cmap.rs`: 2.7 MB parsed, not ~8.5); no status bar by default; quiet chips on the live prompt, a command's status at the end of its line; 22 px margins; +11.4 KB; settings open 22 MB (was 23), overview open 18.5 MB (was 20) | 8,314,200 B | 151 MB | 19 MB |
 | 2026-11-25 | A group is the split (ADR 0034): a group's windows are shown side by side, `Ctrl+Space` makes the group; no new dependency, +8.2 KB over the row below; a group of four windows 18 MB | 8,302,768 B | 148 MB | 15 MB |
 | 2026-11-25 | The second reference (`a44df93`): groups, split panes, overlay kit, docked settings, command palette, overview, group dialog, menus, rename, toasts, drag and drop, status icons, and the review fixes; +561 KB over the title bar row; three windows 17 MB, settings open 23 MB, overview open 20 MB | 8,294,576 B | 147 MB | 15 MB |
 | 2026-11-24 | Title bar after the reference: panel button, name and place as the title, windows as tabs at the top (`tabs = "top"`) | 7,733,936 B | 149 MB | 15 MB |
@@ -351,7 +403,8 @@ src/
 ├─ dnd.rs       drag and drop in that list: what a drop means and the new order (pure)
 ├─ panes.rs     the split layouts (columns, rows, grid), focus order, the 20 x 5 minimum (pure); a group's windows are the panes
 ├─ paint.rs     antialiased shapes composited into the framebuffer (settings panel, prompt chips)
-├─ bar.rs       the prompt chips: layout, icons, painting over the reserved prompt line (grid's own font)
+├─ bar.rs       the prompt chips: layout, icons, painting over the reserved prompt line (grid's own font); a command's status
+├─ cmap.rs      a font's character map narrowed to what the interface draws (the UI font parses ~900 glyphs, not ~2 900)
 ├─ i18n.rs      the interface's strings in English and Spanish (`tr`), the language setting
 ├─ history.rs   each prompt's chips as they were, and how long its command ran (the hook's title escapes)
 ├─ context.rs   what the chips say: directory, git, Python, Kubernetes, time (read on a thread)
@@ -370,7 +423,7 @@ src/
 ├─ overlay_demo.rs  the kit's debug screens (`AXON_DEMO_OVERLAY`)
 ├─ overview.rs  the overview of windows (`Alt+O`): cards, sections, filter, keyboard and pointer, an overlay
 ├─ config.rs    the settings file: parser, writer, `axon config`, `axon shell-init`
-├─ view.rs      grid → cells for any renderer (damage, cursor, selection)
+├─ view.rs      grid → cells for any renderer (damage, cursor, selection); `Fold`: the prompt docked at the bottom
 ├─ session.rs   Term + PTY thread
 ├─ wl.rs        own Wayland client: wire protocol, window, shm buffers
 ├─ wlapp.rs     the default app on wl.rs + soft.rs: windows (a group's are shown split), keyboard, pointer, clipboard, one poll loop
@@ -382,6 +435,7 @@ src/
 ├─ design.rs    (tests) design board frames, own PNG encoder, incremental-repaint check
 └─ shader.wgsl  Cell and background shaders
 design/board.html   the design board (frames from scripts/design.sh)
+site/index.html     the website (GitHub Pages), built by scripts/site.sh
 ```
 
 Flow: `wl_keyboard → xkb → input → PTY → Term (alacritty) → coalesced Wakeup → View::build → soft → wl_shm buffer`.

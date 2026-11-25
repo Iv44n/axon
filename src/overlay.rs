@@ -95,14 +95,15 @@ pub struct Ink {
     pub px: f32,
     pub c: [f32; 3],
     pub a: f32,
-    pub bold: bool,
+    /// 400 regular, `font::MEDIUM`, `font::BOLD`: synthesized from the regular file.
+    pub weight: u16,
     /// Pixels outside `clip.0..clip.1` (window x) are left alone: a field showing the end of a long text.
     pub clip: (i32, i32),
 }
 
 impl Ink {
     pub fn new(px: f32, c: [f32; 3]) -> Ink {
-        Ink { px, c, a: 1.0, bold: false, clip: (i32::MIN, i32::MAX) }
+        Ink { px, c, a: 1.0, weight: 400, clip: (i32::MIN, i32::MAX) }
     }
 
     pub fn alpha(mut self, a: f32) -> Ink {
@@ -111,7 +112,13 @@ impl Ink {
     }
 
     pub fn bold(mut self) -> Ink {
-        self.bold = true;
+        self.weight = crate::font::BOLD;
+        self
+    }
+
+    /// The reference's `font-weight: 500`.
+    pub fn medium(mut self) -> Ink {
+        self.weight = crate::font::MEDIUM;
         self
     }
 
@@ -148,7 +155,7 @@ impl Text {
         if let Some(f) = &self.prop {
             // Centred on the middle of the capitals, the way the eye reads a label.
             let base = cy + (f.cap_height(k.px) / 2.0).round() as i32;
-            f.draw(s, k.px, x, base, k.bold, |gx, gy, cov| {
+            f.draw(s, k.px, x, base, k.weight, |gx, gy, cov| {
                 if gx >= x0 && gx < x1 {
                     p.put(gx, gy, k.c, k.a * cov as f32 / 255.0);
                 }
@@ -163,7 +170,7 @@ impl Text {
             if c == ' ' {
                 continue;
             }
-            fonts.raster_into(&mut buf, &m, c, k.bold, false);
+            fonts.raster_into(&mut buf, &m, c, k.weight > crate::font::MEDIUM, false);
             let (gx, gy) = (x + n as i32 * cw, cy - ch / 2);
             for yy in 0..ch {
                 for xx in 0..cw {
@@ -769,6 +776,12 @@ pub fn fill(p: &mut Paint, x: i32, y: i32, w: i32, h: i32, c: [f32; 3], a: f32) 
     }
 }
 
+/// How opaque the scrim is. The reference's is `rgba(6, 6, 7, .5)` over a 3 px blur, which smears the terminal's
+/// text into a faint haze; without the blur half would leave that text sharp and legible behind the dialog. Over
+/// the glass, which is almost the scrim's colour, a deeper scrim takes the text down as far and leaves the rest
+/// as it was, for a fill instead of a blur of the whole window at every frame of an open dialog.
+const SCRIM_A: f32 = 0.78;
+
 /// The dimmed backdrop of a modal: everything under the title bar (the grid and the status bar), with the
 /// window's rounded bottom corners. The title bar stays as it is, so the window can still be moved and closed.
 pub fn scrim(p: &mut Paint, g: Geo) {
@@ -777,8 +790,8 @@ pub fn scrim(p: &mut Paint, g: Geo) {
     let top = TITLE_H as i32;
     // The rows above the corners are a plain fill; only the last rows need the corners' coverage.
     let edge = (g.h - r.ceil() as i32).max(top);
-    fill(p, 0, top, g.w, edge - top, SCRIM, 0.5);
-    p.shape(0, edge, g.w, g.h, SCRIM, 0.5, &|x, y| if y < wh - r { 1.0 } else { (0.5 - chrome::rounded_rect(x, y, ww, wh, r)).clamp(0.0, 1.0) });
+    fill(p, 0, top, g.w, edge - top, SCRIM, SCRIM_A);
+    p.shape(0, edge, g.w, g.h, SCRIM, SCRIM_A, &|x, y| if y < wh - r { 1.0 } else { (0.5 - chrome::rounded_rect(x, y, ww, wh, r)).clamp(0.0, 1.0) });
 }
 
 /// How far a shadow reaches, how far down it is cast and how dark it is at most.
@@ -964,8 +977,8 @@ pub fn button_width(t: &Text, label: &str) -> i32 {
     t.width(label, PX) + 2 * BTN_PAD
 }
 
-/// A button after the reference's `.btn`: 7 % white (12 % under the pointer), radius 9; the primary one is
-/// `#f4f4f5` with dark text (white under the pointer).
+/// A button after the reference's `.btn`: 7 % white (12 % under the pointer), radius 9, its label medium; the
+/// primary one is `#f4f4f5` with dark text (white under the pointer).
 pub fn button(p: &mut Paint, t: &Text, (x, y, w, h): Rect, label: &str, primary: bool, lit: bool) {
     if primary {
         p.rrect(x, y, w, h, 9.0, [if lit { 1.0 } else { 0.957 }; 3], 1.0);
@@ -973,7 +986,7 @@ pub fn button(p: &mut Paint, t: &Text, (x, y, w, h): Rect, label: &str, primary:
         p.rrect(x, y, w, h, 9.0, WHITE, if lit { 0.12 } else { 0.07 });
     }
     let ink = if primary { [0.067, 0.067, 0.075] } else { fg() };
-    t.draw(p, x + (w - t.width(label, PX)) / 2, y + h / 2, label, Ink::new(PX, ink));
+    t.draw(p, x + (w - t.width(label, PX)) / 2, y + h / 2, label, Ink::new(PX, ink).medium());
 }
 
 /// Counts presses that follow each other closely: one, two (a word), three (everything).

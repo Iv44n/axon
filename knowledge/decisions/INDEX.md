@@ -4,5 +4,6 @@ One leaf per decision, in the branch of its topic; the number is global and neve
 ADR (a statement the code made false is corrected where it stands). A new ADR goes in the branch it belongs to; none fits: a new branch.
 
 - [Core](core/INDEX.md) — 0001-0013: stack, rendering, data-oriented rules, own implementations, Wayland client.
-- [Interface](interface/INDEX.md) — 0012-0022: glass look, config and settings file, prompt chips, text quality, i18n.
-- [Workspace](workspace/INDEX.md) — 0023-0033: windows, panes, overlays, palette, overview, groups, drag, fidelity.
+- [Interface](interface/INDEX.md) — 0012-0022, 0036-0037: glass look, config and settings file, prompt chips, text quality, i18n, the reference cleaner, the docked prompt.
+- [Workspace](workspace/INDEX.md) — 0023-0034: windows, panes, overlays, palette, overview, groups, drag, fidelity.
+- [Distribution](distribution/INDEX.md) — 0035: release bundles, the `curl | sh` installer, the website on GitHub Pages.

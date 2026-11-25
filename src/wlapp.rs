@@ -17,10 +17,10 @@ use alacritty_terminal::{
     event::{Event as TermEvent, EventListener, Notify, WindowSize},
     event_loop::Notifier,
     grid::Scroll,
-    index::{Column, Point, Side},
+    index::{Column, Line, Point, Side},
     selection::{Selection, SelectionType},
     sync::FairMutex,
-    term::{TermMode, viewport_to_point},
+    term::TermMode,
 };
 use rustix::{
     event::{EventfdFlags, PollFd, PollFlags, Timespec, eventfd, poll},
@@ -359,6 +359,9 @@ struct App {
     dirty: bool,
     quit: bool,
     mouse: (f32, f32),
+    /// The pane and viewport row the pointer is over in the grid, when it is: the status of the command whose block
+    /// that is shows at the end of its line (`bar::Chips::frame`).
+    grid_hover: Option<(usize, usize)>,
     selecting: bool,
     /// The button a program is being told about (mouse reporting), and the cell last reported.
     held: Option<u8>,
@@ -532,6 +535,7 @@ fn group_items(groups: &[Group], wins: &[Win]) -> Vec<side::GroupItem> {
                 count: members().map(|w| w.panes.len()).sum(),
                 // A folded group says that a window in it runs a command, which its own rows no longer show.
                 busy: x.collapsed && members().any(|w| w.panes.iter().any(running)),
+                label_w: 0,
             }
         })
         .collect()
@@ -564,7 +568,7 @@ fn paint_tabs(soft: &Soft, fb: &mut [u32], items: &side::Items, groups: &[side::
     soft.clear_rect(fb, (ox + x0 as usize, oy, ox + x1 as usize, oy + chrome::TITLE_H));
     side::paint_top(soft, fb, (x0, x1), first, entries, groups, items, look, scratch);
     if let Some((wi, f)) = edit {
-        side::paint_rename(soft, fb, side::Layout::Top { x0, x1, entries, groups, cw: side::chip_cw(soft), first }, wi, &edit_of(f), look.hover, scratch);
+        side::paint_rename(soft, fb, side::Layout::Top { x0, x1, entries, groups, first }, wi, &edit_of(f), look.hover, scratch);
     }
 }
 
@@ -577,7 +581,7 @@ fn spin_side(soft: &Soft, fb: &mut [u32], items: &side::Items, groups: &[side::G
 /// The same for the tabs in the title bar.
 fn spin_tabs(soft: &Soft, fb: &mut [u32], items: &side::Items, groups: &[side::GroupItem], entries: &[side::Entry], (w, first): (u32, usize), look: side::Look) {
     let (x0, x1) = tabs_span(w);
-    let lay = side::Layout::Top { x0, x1, entries, groups, cw: side::chip_cw(soft), first };
+    let lay = side::Layout::Top { x0, x1, entries, groups, first };
     side::paint_spin(soft, fb, lay, 0, entries, groups, items, look);
 }
 
@@ -779,6 +783,7 @@ impl App {
             waiting: None,
             quit: false,
             mouse: (0.0, 0.0),
+            grid_hover: None,
             selecting: false,
             held: None,
             reported: (usize::MAX, 0),
@@ -961,12 +966,16 @@ impl App {
             self.soft.select(i);
             self.soft.set_dim(if i == focus { 255 } else { UNFOCUSED });
             let mut t = pane.term.lock();
-            pane.chips.frame(chips_on, pane.ctx_dirty, &pane.history, chips, &mut t, &mut pane.view, &mut self.soft, fb, (w, h), self.ui.focused && i == focus);
+            let hover = self.grid_hover.filter(|&(p, _)| p == i).map(|(_, r)| r);
+            pane.chips.frame(chips_on, pane.ctx_dirty, &pane.history, chips, &mut t, &mut pane.view, &mut self.soft, fb, (w, h), self.ui.focused && i == focus, hover);
             drop(t);
             pane.ctx_dirty = false;
         }
         self.soft.set_dim(255);
         self.soft.select(0);
+        if let Some(i) = self.close_shown.filter(|&i| i < n && Some(i) != cross) {
+            self.soft.clear_pane_close(fb, i);
+        }
         if let Some(i) = cross {
             self.soft.paint_pane_close(fb, i, self.close_hot);
         }
@@ -1149,7 +1158,7 @@ impl App {
     fn list_layout(&self) -> Option<(side::Layout<'_>, (i32, i32, i32, i32))> {
         if self.tabs_on_top() {
             let (x0, x1) = tabs_span(self.w);
-            let lay = side::Layout::Top { x0, x1, entries: &self.entries, groups: &self.gitems, cw: side::chip_cw(&self.soft), first: self.strip_first };
+            let lay = side::Layout::Top { x0, x1, entries: &self.entries, groups: &self.gitems, first: self.strip_first };
             return Some((lay, (x0, 0, x1 - x0, chrome::TITLE_H as i32 - 1)));
         }
         let (bx, by, bw, bh) = self.side_box()?;
@@ -1469,6 +1478,7 @@ impl App {
     /// The groups as the list shows them, from the windows and groups as they are now.
     fn refresh_groups(&mut self) {
         self.gitems = group_items(&self.groups, &self.wins);
+        side::measure(&mut self.gitems, &self.soft);
     }
 
     /// Drops the groups that no window is in, and renumbers the others in the windows.
@@ -1600,6 +1610,12 @@ impl App {
                 }
                 if self.pane_hover.take().is_some() || self.close_hot {
                     self.close_hot = false;
+                    self.dirty = true;
+                }
+                if let Some((pi, r)) = self.grid_hover.take()
+                    && self.chips_on()
+                    && self.pane(pi).chips.block_of(r).is_some()
+                {
                     self.dirty = true;
                 }
                 if self.ui.hover != 0 || self.ui.down {
@@ -2462,24 +2478,34 @@ impl App {
     }
 
     /// The cell of pane `pi` under the pointer `(col, row)`, and which half of it: the pointer outside the pane's
-    /// grid counts as the nearest cell (a drag that left the pane goes on selecting in it).
+    /// grid counts as the nearest cell (a drag that left the pane goes on selecting in it). The row is one of the
+    /// pane's rows as its last frame laid the lines on them (`view::Fold`): the composer's are below its gap.
     fn viewport_cell(&self, pi: usize) -> (usize, usize, Side) {
-        let (cw, ch) = (self.cw as f32, self.ch as f32);
+        let cw = self.cw as f32;
         let (rect, framed) = self.pane_box(pi);
         let g = self.soft.grid(rect, framed);
         let (cols, rows) = self.pane(pi).size;
         let fx = ((self.mouse.0 - g.x as f32) / cw).max(0.0);
-        let fy = ((self.mouse.1 - g.y as f32) / ch).max(0.0);
         let col = (fx as usize).min(cols - 1);
-        let row = (fy as usize).min(rows - 1);
+        let row = self.soft.row_at(pi, self.mouse.1).min(rows - 1);
         (col, row, if fx.fract() < 0.5 { Side::Left } else { Side::Right })
+    }
+
+    /// The line of pane `pi`'s terminal its row `row` shows (the history's are negative): a blank row above the
+    /// first line in view stands for that line.
+    fn row_line(&self, pi: usize, row: usize) -> i32 {
+        let fold = self.pane(pi).view.fold();
+        if fold.rows == 0 {
+            let off = self.pane(pi).term.lock().grid().display_offset();
+            return row as i32 - off as i32;
+        }
+        fold.line(row).unwrap_or(fold.floor)
     }
 
     /// The terminal point of pane `pi` under the pointer, and which half of its cell.
     fn cell_at(&self, pi: usize) -> (Point, Side) {
         let (col, row, side) = self.viewport_cell(pi);
-        let off = self.pane(pi).term.lock().grid().display_offset();
-        (viewport_to_point(off, Point::new(row, Column(col))), side)
+        (Point::new(Line(self.row_line(pi, row)), Column(col)), side)
     }
 
     /// Whether the pointer feeds the program in pane `pi` instead of selecting: it asked for reports, and Shift
@@ -2492,11 +2518,13 @@ impl App {
     /// Sends `ev` to pane `pi` at the cell under the pointer. Returns whether a report went out.
     fn report(&mut self, pi: usize, ev: mouse::Event) -> bool {
         let (col, row, _) = self.viewport_cell(pi);
+        // The program counts the rows of its screen: the line the row shows.
+        let screen = self.row_line(pi, row).clamp(0, self.pane(pi).size.1 as i32 - 1) as usize;
         let mods = self.xkb.as_ref().map(|x| x.mods()).unwrap_or_default();
         let (wi, pj) = self.shown().locate(pi);
         let pane = &self.wins[wi].panes[pj];
         let mode = *pane.term.lock().mode();
-        let Some(r) = mouse::encode(mode, ev, mods, col, row) else { return false };
+        let Some(r) = mouse::encode(mode, ev, mods, col, screen) else { return false };
         self.reported = (col, row);
         pane.pty.notify(r.bytes().to_vec());
         true
@@ -2609,6 +2637,16 @@ impl App {
                 self.ui.hover = now.button();
                 self.dirty = true;
             }
+        }
+        // The row of the grid under the pointer: a command's status shows while the pointer is over its block.
+        // Only a move into another command's block is drawn (with the chips on): a move within one changes nothing.
+        let row = if now == Hit::Client { self.pane_under(x, y).map(|pi| (pi, self.viewport_cell(pi).1)) } else { None };
+        if row != self.grid_hover {
+            let block = |h: Option<(usize, usize)>| h.and_then(|(pi, r)| self.pane(pi).chips.block_of(r).map(|b| (pi, b)));
+            if self.chips_on() && block(row) != block(self.grid_hover) {
+                self.dirty = true;
+            }
+            self.grid_hover = row;
         }
         // Over a pane of several: its cross shows at the corner, and the pointer is a hand on it.
         let hp = if now == Hit::Client && self.shown().n > 1 { self.pane_under(x, y) } else { None };

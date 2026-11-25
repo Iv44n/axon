@@ -22,7 +22,7 @@ The bar, its reserved rows and its hit-test exclusions were removed.
 
 **How axon finds the prompt.** axon cannot see where the shell draws it, so the shell marks it. While the chips are on,
 the prompt starts with a line of its own holding one concealed space (SGR 8) in its first column and ends with another
-concealed space right where the user types. `view::prompt_row` looks for the end mark on the cursor's row (or the first
+concealed space right where the user types. `view::live_prompt` looks for the end mark on the cursor's row (or the first
 row of a wrapped command), then for the start mark up to four rows above, and the chips go on that reserved line. A
 program's output leaves no mark at the cursor, so chips follow the *active* prompt only and vanish while a command runs;
 old prompts keep a blank line. Marks are invisible, one column each, copied as spaces.

@@ -53,9 +53,10 @@ impl Overlay for Palette { // modal: Modal::new(580, h).at_top(60), field: Field
 `overlays.deadline(now)`, `tick` (`Tick::Repaint` while a toast fades, `Gone` when it goes). `AXON_DEMO_OVERLAY=field|list|menu|toast|modal` opens one. Design board: group `overlays`
 (`src/design/overlay_scenes.rs`, English and Spanish).
 
-**Cost and rules:** text is the desktop's proportional font (`UiFont`), loaded when the first overlay opens and dropped when
-the last closes (12 ms to load in release; RSS 15.7 to 18.9 MB while one is open; the pages go back to the system and the
-font is shared with the settings panel, [0031](0031-review-fixes-paint-path.md)), else the grid's font. No cache: rows are summed from the metrics when asked,
+**Cost and rules:** text is the proportional UI font (`UiFont`), loaded when the first overlay opened and dropped when
+the last closed (12 ms to load in release; RSS 15.7 to 18.9 MB while one was open; shared with the settings panel,
+[0031](0031-review-fixes-paint-path.md)); since [0036](../interface/0036-the-reference-cleaner.md) the window holds it, narrowed, from
+its first frame, so an overlay opens without loading anything. Else the grid's font. No cache: rows are summed from the metrics when asked,
 positions come from widths. A frame with the palette open costs 3.6 ms over the grid (a menu 1.1 ms; the scrim and the card's
 inside are plain fills, `overlay::fill`, because per-pixel coverage over them took 19 ms), repaints the grid and allocates
 (glyphs; a toast alone repaints only its box since 0031); idle is 0 % CPU with a list open and with a toast shown and gone. Vertical clipping is a sub-slice of the

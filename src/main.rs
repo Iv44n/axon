@@ -2,6 +2,7 @@
 mod bar;
 mod cell;
 mod chrome;
+mod cmap;
 mod commands;
 mod config;
 mod context;

@@ -1,15 +1,17 @@
 ---
 name: axon-design-language
-description: axon's visual language (dark glass after the terminal.html reference: amber accent, hairlines, coloured window buttons, status bar, chips, settings) - palette, frame, cursor, typography and what NOT to do. Use it when changing colors, effects, typography or any aesthetic detail.
+description: axon's visual language (dark glass after the terminal.html reference: amber accent, hairlines, coloured window buttons, the UI font around the grid, quiet chips, settings) - palette, frame, cursor, typography and what NOT to do. Use it when changing colors, effects, typography or any aesthetic detail.
 ---
 
 # Design language
 
 **Principles:** dark translucent glass, rounded, one amber accent and six clear hues, hairlines instead of panes.
 The look is the `terminal.html` reference the user supplied (ADR 0021, which supersedes the black-and-white
-identity of 0012 and the no-separators rule of 0015): title bar and status bar share the glass of the grid, divided from it
-by a 1 px hairline. Decision records: `knowledge/decisions/interface/0021` (this look), `0020` (text), `0015`, `0014` (shadow, design
-board). The frame lives in `src/chrome.rs` and `src/soft.rs`; the tokens in `src/palette.rs`. **Look before and after every
+identity of 0012 and the no-separators rule of 0015; ADR 0036 makes it the same as the reference, cleaner: the UI font around the
+grid, no status bar by default, quiet chips, the reference's margins; ADR 0037 docks the prompt being typed at at the bottom, as the
+reference's composer): the title bar shares the glass of the grid, divided from it
+by a 1 px hairline. Decision records: `knowledge/decisions/interface/0021`, `0036` and `0037` (this look), `0020` (text), `0015`, `0014`
+(shadow, design board). The frame lives in `src/chrome.rs` and `src/soft.rs`; the tokens in `src/palette.rs`. **Look before and after every
 visual change** on the design board: `scripts/design.sh --baseline` (keeps the current frames), change the code,
 `scripts/design.sh`, open `design/board.html` (backdrops, 1x/2x/4x pixel zoom, baseline/split compare). Its frames come
 from the real renderer.
@@ -27,23 +29,31 @@ from the real renderer.
 - Shadow in a margin around the window (Mutter draws none for us): black, spread 26 px, cast 8 px down, 55% at most with a
   cubic falloff. The margin is outside the window geometry; only an 8 px band of it takes the pointer (resize). None when square.
 - Glass: one tint (`GLASS`), outline of 7% white on the outermost pixel (none when square), a 1 px 5% light just inside the top edge.
-- Title bar 40 px (`TITLE_H`): a 3.5% white light fading out downward, a 7% hairline on its last row. The title is centred in the grid
-  font between the panel button and the gear (x from 114 to 46 px short of the right edge): `user@host:` in `DIM`, the rest in the text colour
-  (100%, 55% unfocused). Buttons on the left, macOS order, 12 px discs 20 px apart, centred at y = 19: resting grey `#3a3a3e` (55% unfocused); the pointer over any of them colours all three (close `#ff5f57`, minimize
+- Title bar 40 px (`TITLE_H`): a 3.5% white light fading out downward, a 7% hairline on its last row. The title is centred in the UI
+  font (12.5 px) between the panel button and the gear (x from 114 to 46 px short of the right edge): the window's name medium (500) in the text
+  colour, 0.6 em on its place in `DIM` (100%, 55% unfocused); cut with `…`, the place first. Buttons on the left, macOS order, 12 px discs 20 px apart, centred at y = 19: resting grey `#3a3a3e` (55% unfocused); the pointer over any of them colours all three (close `#ff5f57`, minimize
   `#febc2e`, maximize `#28c840`) and shows dark glyphs (x, -, a square); pressed is dimmer.
 - Settings button: a 28 px square at the right end (centre 22 px from the edge) with a two-slider icon in `DIM`; hovered it turns to the text
   colour on a rounded 7% white highlight (12% pressed). Its own hover state (`Hit::Settings`, `Ui.hover == 4`). With the windows as tabs at the
   top the panel button gives way to the tabs (x from 76 to 76 px short of the edge) and a new-group button of the same kind sits left of the gear
   (centre 52 px from the edge, `Hit::NewGroup`, `Ui.hover == 6`).
-- Status bar 28 px (`STATUS_H`, `Ui.status`, `[window] status_bar`): 2% white tint, a 7% hairline on its first row; a green dot with a faint
+- Status bar, **off by default** (the reference has none; `[window] status_bar = true` brings it back), 28 px (`STATUS_H`, `Ui.status`): 2% white tint, a 7% hairline on its first row; a green dot with a faint
   halo and the shell, `UTF-8`, the branch (icon and name, with the chips on) at 82% of the font size in `DIM`; on the right the grid size and
   the hints (`↑↓ history`, `Tab complete`, `Ctrl L clear`, `Ctrl , settings`) as keycaps (4% fill, 7% outline, a thicker foot) followed by a
   label, dropped from the left when they do not fit. It takes grid rows (`Soft.bottom`).
-- Prompt chips (`bar.rs`, ADR 0018): on the reserved line above the prompt being typed at, each an 8 px-radius pill 90% of the row high,
-  10% fill of its hue, 58% outline, an outline icon (1.5-unit strokes on the reference's 16-unit grid, never filled shapes), regular text in
-  the grid font in the hue. Hues: time red, user green, env cyan, pyenv amber, host grey `#a1a1aa`, dir magenta, branch yellow, changes
-  `#ff8a4c`, kube blue. The chips are 90% of the grid font size and 8 px apart (at 14 px); cut with `…` then dropped from the end. The shell's
-  own `$` is bold amber (hook). Chips stay on every prompt (history ring) and, once its command ran, the right end of the line shows a green check or a red cross with the exit status when not 0, then the duration in `FAINT` (`12ms`, `1.4s`, `2m 5s`), at 80% of the chip font. Judge it on the `chips*` scenes.
+- Prompt chips (`bar.rs`, ADR 0018, 0036): only on the reserved line above the prompt being typed at, quiet as in the reference's composer:
+  no box, an outline icon (1.05 em; 1.5-unit strokes on the reference's 16-unit grid, never filled shapes) 0.45 em from regular text in the
+  grid font, all in the chip's hue at 80%. Hues: time red, user green, env cyan, pyenv amber, host grey `#a1a1aa`, dir magenta, branch yellow,
+  changes `#ff8a4c`, kube blue. 84% of the grid font size, 1.1 em apart; cut with `…` then dropped from the end. The shell's own `$` is bold
+  amber (hook). The prompts of commands that ran keep no chips: their reserved line is the gap between two commands. How a command ended (a
+  green check or a red cross with the status when not 0, then the duration in `FAINT`: `12ms`, `1.4s`, `2m 5s`, at 78% of the grid font)
+  shows at the right end of the command's own line when it failed (not 130, Ctrl+C) or the pointer is over its block, and only if the
+  command's text leaves room. Judge it on the `chips*` scenes (`chips-hover` for the pointer).
+- The composer (`view::Fold`, `Soft::band`, ADR 0037): the prompt being typed at (chips row and prompt; without the hook's marks or
+  while a command runs, the cursor's line) is docked at the bottom of each pane under a full-width hairline of white at 5%, 22 px below
+  the rows above (10 + line + 11), 0.45 em between the chips and the prompt, 14 px under it; output ends right over it, a fresh or
+  cleared screen is empty above it. While nothing is typed: *Type a command* in `FAINT` right after the cursor. Never an own box,
+  background or editor: it is the shell's line, placed.
 - Settings panel (`settings.rs`, ADR 0026 after the reference's `.prefs`): not modal, docked beside the grid, 372 px (62% of a narrow window at
   most), no background of its own (the glass shows), a 7% hairline on the grid's side; at the edge opposite the windows' panel. Header: the title
   (15 px, bold) and a 28 px close cross; tabs in a rounded 5% container with a 10% marker that slides (0.22 s); a body of 40 px rows (label
@@ -55,9 +65,13 @@ from the real renderer.
   own prompt; the windows' panel rows are inert with the tabs at the top. While it is open the title bar's sliders icon stays lit.
   Controls fade (`Paint.fade`, 0.12-0.16 s). Judge it on the `prefs*` scenes.
 - The window list's screens (ADR 0029; the `groups` group of the board): the group dialog (card 470 wide, name field, eight 24 px colour swatches with a card-coloured ring and a coloured one when picked, a 150 px list of 30 px rows with a 16 px check box and the group's badge, three 75 px template cards with an amber 9% fill when chosen, footer 63 px with the summary and the white primary button; the error line `#ff8d8d` under the name), the rename field in a row (22 px, 25% hairline, black 45%, the cross stays) and the menus and toasts of the list.
-- Overlays (`overlay.rs` and the kit, ADR 0025; judge them on the `overlays` group of the board): a scrim `rgba(6,6,7,.5)` under the title bar (the title bar stays live); a card `#141416` radius 16, 10% white outline, the settings' soft shadow, rising 6 px while it fades in over 0.14 s; a menu or toast `#17171a` (radius 12 / 11, tighter shadow). Text in the desktop's proportional font at the reference's sizes (13 base, 12.5 menu and toast, 11.5 small, 11 headings, 10.5 key caps, 14.5 the palette's input, 15 a dialog's title). Fields: 36 px box (black 35%, 7% outline; focused: amber 60% outline and a 3 px amber 16% glow), 30 px search box, the palette's bare row with a hairline; a solid 1 px caret, amber 30% selection, placeholder `FAINT`. Lists: rows 40 px (51 with a description), headings 11 px `FAINT`, 24 px icon box at 5%, selected row 9% white, matched characters amber, shortcuts as one key cap per key, a thin scrollbar thumb. Menus: 29 px rows (a heading 23, a separator 11), a 14 px column for the amber check, danger `#ff8d8d`, disabled at 40%. Toast: 37 px high (39 with an action, whose button has 6 px of padding), 6.5 s, 40 px above the window's bottom edge. Footer of the palette 35 px. Never a blinking caret.
+- Overlays (`overlay.rs` and the kit, ADR 0025; judge them on the `overlays` group of the board): a scrim `rgb(6,6,7)` at 78% under the title bar (the reference's 50% over a 3 px blur; without the blur 78% takes the text behind as far down; the title bar stays live); a card `#141416` radius 16, 10% white outline, the settings' soft shadow, rising 6 px while it fades in over 0.14 s; a menu or toast `#17171a` (radius 12 / 11, tighter shadow). Text in the UI font at the reference's sizes, labels the reference sets at 500 medium (a palette entry, a button, a card's or member's title) (13 base, 12.5 menu and toast, 11.5 small, 11 headings, 10.5 key caps, 14.5 the palette's input, 15 a dialog's title). Fields: 36 px box (black 35%, 7% outline; focused: amber 60% outline and a 3 px amber 16% glow), 30 px search box, the palette's bare row with a hairline; a solid 1 px caret, amber 30% selection, placeholder `FAINT`. Lists: rows 40 px (51 with a description), headings 11 px `FAINT`, 24 px icon box at 5%, selected row 9% white, matched characters amber, shortcuts as one key cap per key, a thin scrollbar thumb. Menus: 29 px rows (a heading 23, a separator 11), a 14 px column for the amber check, danger `#ff8d8d`, disabled at 40%. Toast: 37 px high (39 with an action, whose button has 6 px of padding), 6.5 s, 40 px above the window's bottom edge. Footer of the palette 35 px. Never a blinking caret.
 - Overview of windows (`overview.rs`, ADR 0028; judge it on the `overview*` scenes): over the workspace only, not the panel or the title bar; `--bg` at 98.5 % (the reference's 94 % over a blur, which we do not have). Header 57 px (14 above, a 30 px search box, 12 below, a 7 % hairline): the title (15 px, bold), `6 windows · 2 groups` (12 px `DIM`), the filter (220 px, focused: amber outline), two ghost buttons (28 px, 7 % outline, 14 px icon) and a 28 px cross; narrow, it drops the count, the words, the buttons. Body padding 16 / 20 / 24: a section per group (radius 14, the group's colour at 5 %, padding 10, a 24 px head with the dot, name, count and a *+ Window* ghost button), then the windows in none; cards in `auto-fill` columns of at least 210 px, 12 px apart, 178 px high: `#101012`, radius 12, a 7 % outline (18 % and lifted 1 px under the pointer, amber 70 % plus a 25 % ring for the window on screen), a 118 px preview (the grid's font at 0.75, `#b4b4bb`, the last line in the text colour or amber when a command runs, fading out over the top 38 %), a foot under a hairline (status icon, name, unread dot, pane count, key cap, cross) and the directory in 11.5 px `DIM`. The dashed tile at the end (88 px, 14 radius) turns amber under the pointer. A card can be carried to a section or the tile (5 px make it a drag, the card goes to 40 %; the section takes its colour at 10 % and a dashed 70 % border, the tile turns amber), and a group's chip in its head opens the edit dialog; with groups and no window in none, "No group" stays with a dashed empty box.
-- Grid padding: 0.9 x font size on the sides, title bar + 0.45 x font size above, status bar + 0.45 x font size below.
+- The panel of windows and the tabs (`side.rs`): the UI font at the reference's sizes: 12.5 px a window's title (dim, the text colour when on
+  screen or under the pointer), 12 px medium a group's name in the panel (12.5 at the top), 11 px `FAINT` its count, 11.5 px `FAINT` the header,
+  12 px a pane's row, 10.5 px a tab's pane count.
+- Grid padding (`soft::PAD_X`): the reference's `.screen` and `.block` paddings added up, whatever the font size: 22 px on the sides, 16 above
+  the first row, 14 below the last (16 above the status bar when it is on); a split pane has the same inside its 1 px border.
 
 ## Rules
 1. One accent (amber) and six hues, all from `palette.rs`; a new colour needs a reason the user gave. Chrome stays dark and quiet.
@@ -69,7 +83,11 @@ from the real renderer.
 7. Minimum 4.5:1 contrast for the main text and for `ANSI[8]` (gray) on the glass body.
 8. Sharpness: `chrome::pixel` samples at `x + 0.5`, so anything that should be crisp (button discs, 1 px strokes) is centred on `n + 0.5`, never on an integer. Text is plain source-over; glyph coverage is raised to 0.70 when a tile is baked (`font.rs`). Squaring coverage, or centring on a pixel border, is what made the first version look soft.
 9. Text sharpness (ADR 0020): glyphs are supersampled 6x, vertically hinted (`Vmap`: baseline, x-height, cap height snapped to whole rows) and drawn with LCD sub-pixel coverage (`[font] smoothing`, `hinting`). Never go back to grey, unhinted `fontdue` coverage for the grid; check `text-plain`, `text-gray` and `text-unhinted` in the design board after touching `font.rs`.
-10. The settings panel uses one proportional UI font (`UiFont`) at 13 px (12 in the notes); the grid and the title bar stay monospaced. Controls fade (`Paint.fade`, 0.12-0.16 s) and frames are requested only while a fade runs.
+10. Two typefaces: the grid's monospace (and the chips, which are part of the prompt) and one proportional UI font (`UiFont`, the reference's
+    Geist; Inter or Adwaita Sans where it is not installed) for everything around the grid: the title, the panel and tabs, the settings, the
+    overlays. The window holds it from its first frame, read through `cmap::narrow` (~2 MB parsed, not ~8.5). Weights are synthesized from the
+    regular file: 500 (`font::MEDIUM`) for names and labels, `font::BOLD` for headings. Controls fade (`Paint.fade`, 0.12-0.16 s) and frames
+    are requested only while a fade runs.
 
 ## What NOT to do
 - Lighter panes or opaque blocks (hairlines and faint tints are the only dividers), anything on the edge that is brighter in one

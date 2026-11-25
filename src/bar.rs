@@ -1,16 +1,22 @@
-//! The prompt chips: a row of rounded pills (time, user, directory, git branch...) on the line right
-//! above the prompt the user is typing at, drawn with the grid's own font at 90 % of its size and
-//! rasterized on the fly (no tiles of their own).
+//! The prompt chips: the time, the user, the directory, the git branch... as quiet coloured text with an icon
+//! (the reference's composer: no box, 80 % opaque) on the line right above the prompt the user is typing at,
+//! drawn with the grid's own font at 84 % of its size and rasterized on the fly (no tiles of their own).
+//! The prompts of commands that have run keep no chips: their reserved line is the space between two
+//! commands, and how a command ended (a check or a cross, the status, the time) is shown at the right end of
+//! its line when it failed or the pointer is over it, as the reference's blocks do.
 //!
-//! The line is one the shell reserved (`view::prompt_row`); the chips are drawn over its blank cells.
+//! The line is one the shell reserved (`view::live_prompt`), the first of the composer (`view::Fold`); the chips are
+//! drawn over its blank cells. While nothing is typed at that prompt, the composer says what it is for (the
+//! reference's placeholder, in the faint colour after the cursor).
 //! A framebuffer that is repainted row by row must still equal a full repaint, so `Chips::frame`
-//! repaints the row a chip row appears on, moves from or changes on, and draws the chips again only
-//! on rows that were repainted: never twice over the same pixels.
+//! repaints the row something appears on, moves from or changes on, and draws again only on rows that
+//! were repainted: never twice over the same pixels.
 //! Coordinates are window pixels, the origin the window's top-left corner (not the shadow's).
-use alacritty_terminal::{Term, event::EventListener, vte::ansi::Rgb};
+use alacritty_terminal::{Term, event::EventListener, grid::Dimensions, vte::ansi::Rgb};
 
 use crate::{
-    cell::pack,
+    cell::{Cell, Glyphs, pack},
+    i18n::{Str, tr},
     palette,
     config::Chip,
     context::Context,
@@ -20,20 +26,20 @@ use crate::{
     view::{self, View},
 };
 
-/// Chips are drawn at this fraction of the font size set in the settings: text, icon, padding and height
-/// (a 14 px font gives 12.6 px chips).
-pub const SCALE: f32 = 0.9;
+/// Chips are drawn at this fraction of the font size set in the settings (`.pill { font-size: .84em }`).
+pub const SCALE: f32 = 0.84;
 
-/// The size, in pixels, of the parts of a chip. They are designed for 14 px text (`k = 1`: icon 14, padding
-/// 9, icon gap 6, chip gap 8) and scale with it.
+/// How opaque a chip is (`.c-box .meta .pill { opacity: .8 }`).
+const ALPHA: f32 = 0.8;
+
+/// The size, in pixels, of the parts of a chip, for chip text of a given size: the icon is 1.05 em of it, 0.45 em
+/// from the text, and the chips are 1.1 em of the grid's font apart.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Dims {
     /// Width of a character cell of the chip text.
     pub cw: usize,
-    /// Scale from the 14 px design.
+    /// Scale of the icon from its 14 px design.
     pub k: f32,
-    /// Space inside a chip, left and right of its content.
-    pub pad: usize,
     pub icon: usize,
     /// Space between the icon and the text.
     pub icon_gap: usize,
@@ -44,14 +50,14 @@ pub struct Dims {
 impl Dims {
     /// For chip text of `px` pixels whose character cell is `cw` wide.
     pub fn new(px: f32, cw: usize) -> Dims {
-        let k = px / 14.0;
-        let at = |v: f32| (v * k).round().max(1.0) as usize;
-        Dims { cw, k, pad: at(9.0), icon: at(14.0), icon_gap: at(6.0), gap: at(8.0) }
+        let at = |v: f32| v.round().max(1.0) as usize;
+        let icon = 1.05 * px;
+        Dims { cw, k: icon / 14.0, icon: at(icon), icon_gap: at(0.45 * px), gap: at(1.1 * px / SCALE) }
     }
 
     /// A chip with `chars` characters of text.
     fn width(&self, chars: usize) -> usize {
-        2 * self.pad + self.icon + self.icon_gap + chars * self.cw
+        self.icon + self.icon_gap + chars * self.cw
     }
 }
 
@@ -125,73 +131,90 @@ pub fn layout(ctx: &Context, chips: &[Chip], d: &Dims, left: usize, right: usize
         .collect()
 }
 
-/// Draws the chips on grid row `row`, which has just been repainted (blank). A chip is `SCALE` of the
-/// row's height, centred in it, so it never touches the lines above and below. `scratch` is the glyph
-/// coverage buffer the text is rasterized through.
-pub fn paint(soft: &Soft, fb: &mut [u32], ctx: &Context, chips: &[Chip], row: usize, run: Option<&Run>, scratch: &mut Vec<u8>) {
+/// Draws the chips on grid row `row` of the pane being built, which has just been repainted (blank), between
+/// where its text starts and where it may reach. `scratch` is the glyph coverage buffer the text is rasterized
+/// through. An unfocused pane's chips are as dim as its text.
+pub fn paint(soft: &Soft, fb: &mut [u32], ctx: &Context, chips: &[Chip], row: usize, scratch: &mut Vec<u8>) {
     let (_, ch) = soft.cell();
-    // The pane being built: its text starts at `left`, row 0 is at `top`, and the chips may reach `right`.
-    let (left, top, right) = soft.content_box();
-    let wy = top + row * ch as usize; // the row's top, in window pixels
-    // An unfocused pane's chips are as dim as its text.
-    paint_line(soft, fb, ctx, chips, run, (wy, ch as usize), (left, right), (1.0, soft.dim_alpha()), scratch);
+    let (left, _, right) = soft.content_box();
+    paint_line(soft, fb, ctx, chips, (soft.row_top(row), ch as usize), (left, right), soft.dim_alpha(), scratch);
 }
 
-/// Draws the chips on a line `ch` pixels tall whose top is window pixel row `wy`, between the columns
-/// `left` and `right`, for a font `scale` times the grid's; `fade` multiplies the shapes' opacity. `run`,
-/// how the prompt's command ended, is drawn at the right end (a check or a cross, the status when it is
-/// not 0, and the time); the chips get what is left.
+/// The placeholder after the cursor at column `col` of row `row` (`.ph`: "Type a command", faint), in the grid's
+/// font, as far as the row reaches. `cells` is scratch.
+fn paint_hint(soft: &mut Soft, fb: &mut [u32], (row, col): (usize, usize), cols: usize, cells: &mut Vec<Cell>) {
+    let faint = pack(palette::FAINT.r, palette::FAINT.g, palette::FAINT.b, 255);
+    cells.clear();
+    for c in tr(Str::TypeACommand).chars().take(cols.saturating_sub(col + 1)) {
+        let tf = soft.glyph(c, false, false);
+        cells.push(Cell { tf, fg: faint, bg: 0 });
+    }
+    let (cw, _) = soft.cell();
+    let (left, _, _) = soft.content_box();
+    let (ox, oy) = soft.origin();
+    soft.paint_cells_at(fb, ox + left + (col + 1) * cw as usize, oy + soft.row_top(row), cells);
+}
+
+/// Draws the chips on a line `ch` pixels tall whose top is window pixel row `wy`, between the columns `left` and
+/// `right`; `fade` multiplies their opacity.
 #[allow(clippy::too_many_arguments)]
-pub fn paint_line(soft: &Soft, fb: &mut [u32], ctx: &Context, chips: &[Chip], run: Option<&Run>, (wy, ch): (usize, usize), (left, right): (usize, usize), (scale, fade): (f32, f32), scratch: &mut Vec<u8>) {
+pub fn paint_line(soft: &Soft, fb: &mut [u32], ctx: &Context, chips: &[Chip], (wy, ch): (usize, usize), (left, right): (usize, usize), fade: f32, scratch: &mut Vec<u8>) {
     let (w, h) = soft.fb_size();
     let (ox, oy) = soft.origin();
     if fb.len() < w * h || ch < 8 {
         return;
     }
-    let small = soft.small(scale * SCALE);
+    let small = soft.small(SCALE);
     let d = Dims::new(small.px, small.cell_w as usize);
-    let chip_h = ((ch as f32 * SCALE).round() as usize).clamp(6, ch);
     let cy = wy as f32 + ch as f32 / 2.0;
-    let mut right = right;
-    if let Some(run) = run {
-        right = paint_run(soft, fb, run, (cy, right), (scale, fade), scratch).saturating_sub(d.gap);
-    }
     for slot in layout(ctx, chips, &d, left, right) {
         let color = color(slot.chip);
-        let mut p = Paint { fb: &mut *fb, w, h, ox: ox as i32, oy: oy as i32, fade };
-        let (x, y, cwid, chei) = (slot.x as i32, (wy + (ch - chip_h) / 2) as i32, slot.w as i32, chip_h as i32);
-        let r = (8.0 * d.k).min(chip_h as f32 / 2.0);
-        p.rrect(x, y, cwid, chei, r, color, 0.10);
-        p.outline(x, y, cwid, chei, r, color, 0.58);
-        icon(&mut p, slot.chip, (slot.x + d.pad) as f32 + d.icon as f32 / 2.0, cy, d.k, color);
+        let mut p = Paint { fb: &mut *fb, w, h, ox: ox as i32, oy: oy as i32, fade: fade * ALPHA };
+        icon(&mut p, slot.chip, slot.x as f32 + d.icon as f32 / 2.0, cy, d.k, color);
 
-        // The text: one cell per character, in the chip's colour.
-        let fg = pack((color[0] * 255.0) as u8, (color[1] * 255.0) as u8, (color[2] * 255.0) as u8, 255);
+        // The text: one cell per character, in the chip's colour as seen through its opacity.
+        let fg = pack((color[0] * 255.0) as u8, (color[1] * 255.0) as u8, (color[2] * 255.0) as u8, (255.0 * ALPHA * fade) as u8);
         let text = ctx.get(slot.chip);
         let cut = text.chars().count() > slot.chars;
         let chars = text.chars().take(slot.chars).enumerate().map(|(i, c)| if cut && i + 1 == slot.chars { '\u{2026}' } else { c });
-        if fade > 0.5 {
-            soft.paint_text(fb, ox + slot.x + d.pad + d.icon + d.icon_gap, oy + cy.round() as usize, chars, fg, false, &small, scratch);
-        }
+        soft.paint_text(fb, ox + slot.x + d.icon + d.icon_gap, oy + cy.round() as usize, chars, fg, false, &small, scratch);
     }
 }
 
-/// The status at the right end of a prompt's line: a check or a cross, the exit code when it is not 0, and
-/// how long the command ran, ending at window column `right` and centred on window row `cy`. Returns
-/// where it starts.
-fn paint_run(soft: &Soft, fb: &mut [u32], run: &Run, (cy, right): (f32, usize), (scale, fade): (f32, f32), scratch: &mut Vec<u8>) -> usize {
+/// How wide the status of `run` is (`paint_run`), in pixels, for the grid's font.
+fn run_width(soft: &Soft, run: &Run) -> usize {
+    let m = soft.small(RUN_SCALE);
+    let cw = m.cell_w as usize;
+    let (size, gap, sep) = run_parts(m.px);
+    let code_w = if run.status == 0 { 0 } else { gap + digits(run.status) * cw };
+    size + code_w + sep + history::duration_text(run.ms).chars().count() * cw
+}
+
+/// The status is drawn at this fraction of the grid's font (`.b-info { font-size: .78em }`).
+const RUN_SCALE: f32 = 0.78;
+
+/// The parts of a status at `px`: the mark (1 em), the gap before the status code (0.3 em) and before the time (0.6 em).
+fn run_parts(px: f32) -> (usize, usize, usize) {
+    (px.round().max(8.0) as usize, (px * 0.3).round() as usize, (px * 0.6).round() as usize)
+}
+
+/// How many characters `n` is written with, its sign included.
+fn digits(n: i32) -> usize {
+    n.unsigned_abs().checked_ilog10().map_or(1, |l| l as usize + 1) + (n < 0) as usize
+}
+
+/// The status at the right end of a command's line: a check or a cross, the exit code when it is not 0, and how
+/// long the command ran, ending at window column `right` and centred on window row `cy`.
+fn paint_run(soft: &Soft, fb: &mut [u32], run: &Run, (cy, right): (f32, usize), fade: f32, scratch: &mut Vec<u8>) {
     let (w, h) = soft.fb_size();
     let (ox, oy) = soft.origin();
-    let m = soft.small(scale * 0.8);
+    let m = soft.small(RUN_SCALE);
     let cw = m.cell_w as usize;
     let ok = run.status == 0;
     let (code, time) = (if ok { String::new() } else { run.status.to_string() }, history::duration_text(run.ms));
-    let size = m.px.round().max(8.0) as usize; // the mark is 1 em
-    let gap = (m.px * 0.3).round() as usize;
-    let sep = (m.px * 0.6).round() as usize;
+    let (size, gap, sep) = run_parts(m.px);
     let code_w = if ok { 0 } else { gap + code.chars().count() * cw };
-    let total = size + code_w + sep + time.chars().count() * cw;
-    let x0 = right.saturating_sub(total);
+    let x0 = right.saturating_sub(run_width(soft, run));
     let hue = palette::unit(if ok { palette::GREEN } else { palette::RED });
     {
         let mut p = Paint { fb: &mut *fb, w, h, ox: ox as i32, oy: oy as i32, fade };
@@ -207,39 +230,68 @@ fn paint_run(soft: &Soft, fb: &mut [u32], run: &Run, (cy, right): (f32, usize), 
             (t / 2.0 + 0.5 - d * k).clamp(0.0, 1.0)
         });
     }
-    if fade > 0.5 {
-        let hue8 = |c: Rgb| pack(c.r, c.g, c.b, 255);
-        let cyi = oy + cy.round() as usize;
-        let mut x = ox + x0 + size;
-        if !ok {
-            soft.paint_text(fb, x + gap, cyi, code.chars(), hue8(if ok { palette::GREEN } else { palette::RED }), false, &m, scratch);
-            x += code_w;
-        }
-        soft.paint_text(fb, x + sep, cyi, time.chars(), hue8(palette::FAINT), false, &m, scratch);
+    let hue8 = |c: Rgb| pack(c.r, c.g, c.b, (255.0 * fade) as u8);
+    let cyi = oy + cy.round() as usize;
+    let mut x = ox + x0 + size;
+    if !ok {
+        soft.paint_text(fb, x + gap, cyi, code.chars(), hue8(palette::RED), false, &m, scratch);
+        x += code_w;
     }
-    x0
+    soft.paint_text(fb, x + sep, cyi, time.chars(), hue8(palette::FAINT), false, &m, scratch);
 }
 
-/// A prompt's line as it was drawn: its row, which prompt and the revision of its record.
+/// What is drawn on a prompt's lines.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Show {
+    /// The chips, on its reserved line: the prompt being typed at.
+    Chips,
+    /// How its command ended, at the right end of the command's line (the row after the reserved one).
+    Run,
+    /// The placeholder, on the row of the prompt being typed at while nothing is typed (`row` is that row, `n` the
+    /// cursor's column).
+    Hint,
+}
+
+/// A prompt as it was drawn: its reserved row, which prompt, the revision of its record, and what was drawn.
 #[derive(Clone, Copy, PartialEq)]
 struct Drawn {
     row: usize,
     n: u32,
     rev: u32,
+    show: Show,
 }
 
-/// The rows the chips were drawn on in the last frame.
+impl Drawn {
+    /// The row it is drawn on.
+    fn line(&self) -> usize {
+        match self.show {
+            Show::Chips | Show::Hint => self.row,
+            Show::Run => self.row + 1,
+        }
+    }
+}
+
+/// What was drawn over the rows in the last frame.
 #[derive(Default)]
 pub struct Chips {
     last: Vec<Drawn>,
     now: Vec<Drawn>,
     rows: Vec<(usize, u32)>,
     scratch: Vec<u8>,
+    /// The placeholder's cells, built when it is drawn.
+    cells: Vec<Cell>,
 }
 
 impl Chips {
-    /// One frame: the grid, and the chips over the reserved line of every prompt on screen when `on`,
-    /// each from its own record (`history`): what it said when it was typed at and how its command ended.
+    /// The reserved row of the prompt whose block row `y` is in (a block runs from a prompt to the next), as the
+    /// last frame found the prompts; none above the first. The pointer moving within a block changes nothing drawn.
+    pub fn block_of(&self, y: usize) -> Option<usize> {
+        self.rows.iter().rev().find(|&&(row, _)| row <= y).map(|&(row, _)| row)
+    }
+
+    /// One frame: the grid, with the composer apart (`view::Fold`), and over it, when `on`, the chips of the prompt
+    /// being typed at (with the placeholder while nothing is typed) and the status of each command on screen that
+    /// failed or that the pointer is over (`hover`: the row under it). Each prompt finds its record in `history`.
     /// `changed`: the settings changed since the last frame.
     #[allow(clippy::too_many_arguments)]
     pub fn frame<L: EventListener>(
@@ -254,40 +306,88 @@ impl Chips {
         fb: &mut [u32],
         (w, h): (usize, usize),
         focused: bool,
+        hover: Option<usize>,
     ) {
         self.now.clear();
+        let fold = view::fold(term, true);
         if on {
-            view::prompt_rows(term, &mut self.rows);
+            view::prompt_rows(term, &fold, &mut self.rows);
             // A shell whose hook predates the numbered prompts marks only the one being typed at.
-            if self.rows.is_empty() {
-                if let (Some(row), Some(latest)) = (view::prompt_row(term), history.latest()) {
-                    self.rows.push((row, latest.n));
-                }
+            if self.rows.is_empty()
+                && let (Some(row), Some(latest)) = (view::live_prompt(term).and_then(|l| fold.row(l)), history.latest())
+            {
+                self.rows.push((row, latest.n));
             }
+            let live = history.latest().filter(|_| !history.running()).map(|r| r.n);
+            let hovered = hover.and_then(|y| self.block_of(y));
             for &(row, n) in &self.rows {
-                self.now.push(Drawn { row, n, rev: history.get(n).map_or(0, |r| r.rev) });
+                let Some(rec) = history.get(n) else { continue };
+                // A command's line is above the composer: the status never lands in it.
+                let show = if Some(n) == live {
+                    Show::Chips
+                } else if rec.run.is_some_and(|r| (r.status != 0 && r.status != 130) || hovered == Some(row)) && row + 1 < fold.split {
+                    Show::Run
+                } else {
+                    continue;
+                };
+                self.now.push(Drawn { row, n, rev: rec.rev, show });
+            }
+            let cursor = term.grid().cursor.point;
+            if fold.chips && view::input_empty(term)
+                && let Some(row) = fold.row(cursor.line.0)
+            {
+                self.now.push(Drawn { row, n: cursor.column.0 as u32, rev: 0, show: Show::Hint });
             }
         }
-        // Whatever was drawn over a row must go when it changes or leaves; where chips arrive or change,
-        // the row is rebuilt so they are drawn on fresh pixels.
+        // Whatever was drawn over a row must go when it changes or leaves; where something arrives or changes,
+        // the row is rebuilt so it is drawn on fresh pixels.
         for d in &self.last {
             if changed || !self.now.contains(d) {
-                view.invalidate_row(d.row);
+                view.invalidate_row(d.line());
             }
         }
         for d in &self.now {
             if changed || !self.last.contains(d) {
-                view.invalidate_row(d.row);
+                view.invalidate_row(d.line());
             }
         }
         std::mem::swap(&mut self.last, &mut self.now);
-        view.build(term, focused, &mut Target { soft: &mut *soft, fb: &mut *fb, w, h });
+        view.build_folded(term, focused, fold, &mut Target { soft: &mut *soft, fb: &mut *fb, w, h });
+        let (ch, cw) = (soft.cell().1 as usize, soft.cell().0 as usize);
+        let (left, _, right) = soft.content_box();
         for d in &self.last {
-            if let (true, Some(rec)) = (soft.row_repainted(d.row), history.get(d.n)) {
-                paint(soft, fb, &rec.ctx, chips, d.row, rec.run.as_ref(), &mut self.scratch);
+            if !soft.row_repainted(d.line()) {
+                continue;
+            }
+            if d.show == Show::Hint {
+                paint_hint(soft, fb, (d.row, d.n as usize), term.columns(), &mut self.cells);
+                continue;
+            }
+            let Some(rec) = history.get(d.n) else { continue };
+            match (d.show, rec.run) {
+                (Show::Chips, _) => paint(soft, fb, &rec.ctx, chips, d.row, &mut self.scratch),
+                (Show::Run, Some(run)) => {
+                    // At the right end of the command's line, if its text leaves room there (a long command keeps it).
+                    let used = left + cw * fold.line(d.line()).map_or(0, |l| used_cols(term, l));
+                    let gap = cw * 2;
+                    if right >= used + gap + run_width(soft, &run) {
+                        let cy = soft.row_top(d.line()) as f32 + ch as f32 / 2.0;
+                        paint_run(soft, fb, &run, (cy, right), soft.dim_alpha(), &mut self.scratch);
+                    }
+                }
+                _ => {}
             }
         }
     }
+}
+
+/// How many columns of line `line` hold text: up to the last cell that is not blank.
+fn used_cols<L: EventListener>(term: &Term<L>, line: i32) -> usize {
+    use alacritty_terminal::index::{Column, Line};
+    let grid = term.grid();
+    let line = Line(line);
+    let cols = term.columns();
+    (0..cols).rev().find(|&c| !matches!(grid[line][Column(c)].c, ' ' | '\0')).map_or(0, |c| c + 1)
 }
 
 /// The chip's icon: a 14 px design scaled by `k`, centred on `(cx, cy)`.
@@ -353,8 +453,8 @@ fn icon_coverage(chip: Chip, px: f32, py: f32, cx: f32, cy: f32) -> f32 {
 mod tests {
     use super::*;
 
-    /// The 14 px design: icon 14, padding 9, icon gap 6, chip gap 8, 9 px characters.
-    const D: Dims = Dims { cw: 9, k: 1.0, pad: 9, icon: 14, icon_gap: 6, gap: 8 };
+    /// Icon 14, icon gap 6, chip gap 8, 9 px characters.
+    const D: Dims = Dims { cw: 9, k: 1.0, icon: 14, icon_gap: 6, gap: 8 };
 
     fn ctx(texts: &[(Chip, &str)]) -> Context {
         let mut c = Context::default();
@@ -370,8 +470,8 @@ mod tests {
         let slots = layout(&c, &[Chip::Dir, Chip::Kube, Chip::Time, Chip::Branch], &D, 20, 2000);
         assert_eq!(slots.iter().map(|s| s.chip).collect::<Vec<_>>(), [Chip::Dir, Chip::Time, Chip::Branch]);
         assert_eq!(slots[0].x, 20);
-        // Each chip starts a gap after the previous one ends; its width is padding, icon, gap and text.
-        assert_eq!(slots[0].w, 2 * 9 + 14 + 6 + 9 * 9);
+        // Each chip starts a gap after the previous one ends; its width is icon, gap and text (no box, no padding).
+        assert_eq!(slots[0].w, 14 + 6 + 9 * 9);
         assert_eq!(slots[1].x, slots[0].x + slots[0].w + 8);
     }
 
@@ -416,17 +516,17 @@ mod tests {
     }
 
     #[test]
-    fn chips_are_a_tenth_smaller_than_the_font_they_follow() {
-        // 14 px text gives 12.6 px chips; everything in them follows, icon and spacing included.
-        let big = Dims::new(14.0, 9);
-        assert_eq!(big, D);
-        let small = Dims::new(14.0 * SCALE, 8);
-        assert_eq!((small.icon, small.pad, small.icon_gap, small.gap), (13, 8, 5, 7));
+    fn chips_follow_the_reference_s_proportions() {
+        // 14 px text gives 11.76 px chips (`.84em`): a 12 px icon (1.05 em) 5 px from the text (.45 em), and 15 px
+        // between chips (1.1 em of the grid's font).
+        let d = Dims::new(14.0 * SCALE, 7);
+        assert_eq!((d.icon, d.icon_gap, d.gap), (12, 5, 15));
+        assert!((d.k * 14.0 - 1.05 * 14.0 * SCALE).abs() < 1e-3, "the icon is drawn at its own size");
         // A bigger font gives bigger chips, in proportion.
         let large = Dims::new(20.0 * SCALE, 10);
-        assert!(large.icon > small.icon && large.pad > small.pad);
+        assert!(large.icon > d.icon && large.gap > d.gap && large.icon_gap >= d.icon_gap);
         // The width of a chip is made of its parts.
-        assert_eq!(small.width(4), 2 * 8 + 13 + 5 + 4 * 8);
+        assert_eq!(d.width(4), 12 + 5 + 4 * 7);
     }
 
     #[test]

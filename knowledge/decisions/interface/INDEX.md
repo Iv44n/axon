@@ -10,5 +10,7 @@ How the window looks and what the user can configure: glass, the settings file, 
 - [0018 · Prompt chips](0018-input-bar.md) — opt-in context chips above the prompt; the shell marks its prompt; grid's own font.
 - [0019 · Window blur](0019-window-blur.md) — `[window] blur` asks the compositor to blur behind the glass; GNOME offers none.
 - [0020 · Sharp text](0020-text-quality.md) — glyphs supersampled 6x, vertical hinting, LCD sub-pixel coverage; proportional settings font.
-- [0021 · UI after the terminal.html reference](0021-ui-refactor-terminal-reference.md) — amber accent, hairlines, coloured window buttons, status bar, outline chip icons.
+- [0021 · UI after the terminal.html reference](0021-ui-refactor-terminal-reference.md) — superseded in part by 0036; amber accent, hairlines, coloured buttons, outline chip icons stand.
 - [0022 · i18n](0022-i18n.md) — English and Spanish through one `strings!` list; `[ui] language`.
+- [0036 · The reference, cleaner](0036-the-reference-cleaner.md) — superseded in part by 0037; UI font around the grid (narrowed `cmap`), no status bar, quiet chips, 22 px margins stand.
+- [0037 · The prompt docked at the bottom](0037-the-prompt-docked-at-the-bottom.md) — the shell's prompt below a hairline at the bottom, output rising above; `view::Fold`.

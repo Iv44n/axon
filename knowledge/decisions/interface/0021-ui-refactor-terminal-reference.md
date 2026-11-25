@@ -1,10 +1,15 @@
 ---
 type: decision
-status: accepted
-updated: 2026-11-24
-related: [0012-glass-chrome-black-white.md, 0015-continuous-glass.md, 0017-settings-screen.md, 0018-input-bar.md, 0020-text-quality.md]
+status: superseded-by-0036
+updated: 2026-11-25
+related: [0036-the-reference-cleaner.md, 0012-glass-chrome-black-white.md, 0015-continuous-glass.md, 0017-settings-screen.md, 0018-input-bar.md, 0020-text-quality.md]
 ---
 # 0021 · The interface follows the `terminal.html` reference
+
+> Superseded in part by [0036](0036-the-reference-cleaner.md): the title, the panel and the tabs are in the UI font, the status bar
+> is off by default, the chips are quiet text on the prompt being typed at only (a command's status shows at the end of its line
+> when it failed or under the pointer), the grid has the reference's margins. The palette, the frame, the buttons, the settings and
+> the hook's channel below still hold.
 
 **Decision:** the window chrome, the status line, the prompt chips and the settings screen are drawn after the HTML
 mock-up the user supplied (`terminal.html`, "arcton"). It replaces the strictly black-and-white identity of
@@ -53,7 +58,7 @@ the *colour* of its concealed cell (`ESC[8;38;2;R;G;Bm`, 24 bits): invisible, no
 scrolls with the row, so any row on screen or in the scrollback finds its `Record` again. `History` is a ring of 256
 records (the chips as they were when the next prompt came, the result, a revision); the newest record follows the live
 chips until then. A shell whose hook predates this (an old `axon shell-init` in an rc file that was not re-evaluated)
-still gets the live chips on the active prompt, through `view::prompt_row`.
+still gets the live chips on the active prompt, through `view::live_prompt`.
 
 **Application icon (`assets/axon.svg`):** redrawn in the same language: dark glass window with a hairline under the title bar,
 the three buttons in their traffic-light colours, two outline chips (green, magenta) on the line above the prompt, a bold amber

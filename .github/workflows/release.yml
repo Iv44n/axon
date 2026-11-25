@@ -1,0 +1,83 @@
+# A tag vX.Y.Z (equal to Cargo.toml's version) builds the release bundles and publishes them as a GitHub release:
+# axon-<arch>-linux.tar.gz and .sha256 per architecture (scripts/package.sh), which scripts/get.sh installs.
+# Built on Ubuntu 22.04 so the binaries need glibc 2.35, not the newest one.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: The tag is Cargo.toml's version
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml's version $version"
+            exit 1
+          fi
+
+      - name: Rust stable
+        run: |
+          if ! command -v rustup >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Pack
+        run: |
+          scripts/package.sh --no-build
+          test -f "target/dist/axon-${{ matrix.arch }}-linux.tar.gz"
+          echo "newest glibc symbol: $(objdump -T target/release/axon | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: axon-${{ matrix.arch }}-linux
+          path: target/dist/axon-${{ matrix.arch }}-linux.tar.gz*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: dist
+        run: |
+          sha256sum -c ./*.sha256
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber ./*.tar.gz ./*.sha256
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "axon $GITHUB_REF_NAME" \
+              --generate-notes ./*.tar.gz ./*.sha256
+          fi

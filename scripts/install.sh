@@ -8,11 +8,24 @@
 #
 # System-wide as root: build as your user first, then `sudo scripts/install.sh --no-build --prefix /usr/local`
 # (root usually has no `cargo` in its PATH). Packagers can set DESTDIR.
+# A release bundle carries this script next to the binary (scripts/package.sh): run there, it installs what sits
+# beside it and never builds. The web installer (scripts/get.sh) downloads a bundle and runs it.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+here=$(cd "$(dirname "$0")" && pwd)
+
+if [ -f "$here/../Cargo.toml" ]; then
+  # A checkout: scripts/install.sh.
+  cd "$here/.."
+  SRC_BIN=target/release/axon SRC_ICON=assets/axon.svg SRC_CONF=assets/config.example
+  BUILD=1
+else
+  # A release bundle: install.sh, axon, axon.svg and config.example in one folder.
+  cd "$here"
+  SRC_BIN=axon SRC_ICON=axon.svg SRC_CONF=config.example
+  BUILD=0
+fi
 
 PREFIX="$HOME/.local"
-BUILD=1
 UNINSTALL=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -20,7 +33,7 @@ while [ $# -gt 0 ]; do
     --prefix=*) PREFIX=${1#--prefix=} ;;
     --no-build) BUILD=0 ;;
     --uninstall) UNINSTALL=1 ;;
-    -h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "install: unknown option '$1' (try --help)" >&2; exit 2 ;;
   esac
   shift
@@ -55,11 +68,15 @@ if [ "$BUILD" = 1 ]; then
   }
   cargo build --release
 fi
-[ -x target/release/axon ] || { echo "install: target/release/axon is missing (run without --no-build)." >&2; exit 1; }
+[ -x "$SRC_BIN" ] || {
+  if [ -f Cargo.toml ]; then echo "install: target/release/axon is missing (run without --no-build)." >&2
+  else echo "install: there is no axon binary next to this script ($here)." >&2; fi
+  exit 1
+}
 
-install -Dm755 target/release/axon "$BIN"
-install -Dm644 assets/axon.svg "$ICON"
-install -Dm644 assets/config.example "$CONF"
+install -Dm755 "$SRC_BIN" "$BIN"
+install -Dm644 "$SRC_ICON" "$ICON"
+install -Dm644 "$SRC_CONF" "$CONF"
 
 # The Exec line must be an absolute path (the launcher has no PATH of ours); quote it if it has spaces.
 exec_path="$PREFIX/bin/axon"
@@ -81,7 +98,8 @@ DESK
 chmod 644 "$DESKTOP"
 refresh_caches
 
-echo "Installed axon $(grep -m1 '^version' Cargo.toml | cut -d'"' -f2) under $PREFIX:"
+version=$("$BIN" --version 2>/dev/null | cut -d' ' -f2) || true
+echo "Installed axon ${version:+$version }under $PREFIX:"
 echo "  $BIN"
 echo "  $DESKTOP"
 echo "  $ICON"

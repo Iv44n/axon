@@ -826,7 +826,7 @@ impl GroupDialog {
             }
             let tx = rx + 8 + 16 + 10;
             let title = t.fit(&row.title, PX, (right - tx).max(0));
-            t.draw(&mut b, tx, cy, &title, Ink::new(PX, fg()));
+            t.draw(&mut b, tx, cy, &title, Ink::new(PX, fg()).medium());
             let mx = tx + t.width(&title, PX) + 10;
             if right - mx > 24 {
                 let meta = t.fit(&row.place, PX_SMALL, right - mx);

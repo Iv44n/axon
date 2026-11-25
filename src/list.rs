@@ -667,9 +667,9 @@ fn paint_item(p: &mut Paint, t: &Text, l: &List, n: usize, (x, y, w, h): Rect) {
     // Hits past a cut are not drawn: the cut text is a prefix of the label, and only its characters are asked about.
     let label = t.fit(l.label(e), PX, room);
     if desc.is_empty() {
-        highlighted(p, t, tx, cy, &label, Ink::new(PX, fg()), l.label_hits(n));
+        highlighted(p, t, tx, cy, &label, Ink::new(PX, fg()).medium(), l.label_hits(n));
     } else {
-        highlighted(p, t, tx, y + 8 + 9, &label, Ink::new(PX, fg()), l.label_hits(n));
+        highlighted(p, t, tx, y + 8 + 9, &label, Ink::new(PX, fg()).medium(), l.label_hits(n));
         highlighted(p, t, tx, y + 8 + 18 + 1 + 8, &t.fit(desc, PX_SMALL, room), Ink::new(PX_SMALL, dim()), l.desc_hits(n));
     }
 }

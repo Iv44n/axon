@@ -1644,7 +1644,7 @@ impl Settings {
             let hx = if self.hairline_left { 0 } else { bw - 1 };
             p.shape(hx, 0, hx + 1, bh, WHITE, 0.07, &|_, _| 1.0);
 
-            self.text(&mut p, x0 + EDGE, 10 + CLOSE / 2, tr(Str::SettingsTitle), PX_TITLE, fg, 1.0, true);
+            self.text(&mut p, x0 + EDGE, 10 + CLOSE / 2, tr(Str::SettingsTitle), PX_TITLE, fg, 1.0, font::BOLD);
             let (cx, cy, cwid, chei) = self.close_rect();
             let lit = self.lit(&|h| h == Hit::Close);
             if lit > 0.0 {
@@ -1666,7 +1666,7 @@ impl Settings {
                 let (on, lit) = (page == self.page, self.lit(&|h| h == Hit::Tab(page)));
                 let label = page.label();
                 let c = if on { fg } else { mix3(dim, fg, lit) };
-                self.text(&mut p, x + (tw - self.width(label, PX)) / 2, y + th / 2, label, PX, c, 1.0, false);
+                self.text(&mut p, x + (tw - self.width(label, PX)) / 2, y + th / 2, label, PX, c, 1.0, font::MEDIUM);
                 // The keyboard is on the tab bar: a 2 px ring, 2 px off the active tab (the reference's focus outline).
                 if on && self.focus && self.tabs_focus {
                     p.outline(x - 3, y - 3, tw + 6, th + 6, 11.0, accent, 0.7);
@@ -1692,14 +1692,14 @@ impl Settings {
             let lit = self.lit(&|h| h == Hit::Defaults);
             p.rrect(bx, by, bwid, bhei, 9.0, WHITE, mix(0.07, 0.12, lit));
             let label = tr(Str::Reset);
-            self.text(&mut p, bx + (bwid - self.width(label, PX)) / 2, by + bhei / 2, label, PX, fg, 1.0, false);
+            self.text(&mut p, bx + (bwid - self.width(label, PX)) / 2, by + bhei / 2, label, PX, fg, 1.0, font::MEDIUM);
             if let Some(n) = &self.notice {
                 let room = self.cw() - (bx + bwid - x0) - EDGE - 12;
                 let mut shown = n.clone();
                 while self.width(&shown, PX_NOTE) > room && shown.chars().count() > 1 {
                     shown = shown.chars().take(shown.chars().count() - 2).chain(['\u{2026}']).collect();
                 }
-                self.text(&mut p, bx + bwid + 12, by + bhei / 2, &shown, PX_NOTE, accent, 1.0, false);
+                self.text(&mut p, bx + bwid + 12, by + bhei / 2, &shown, PX_NOTE, accent, 1.0, 400);
             }
         }
     }
@@ -1733,7 +1733,7 @@ impl Settings {
             let first = if row.kind() == Kind::Chips { top + CHIPS_PAD + 9 } else { mid - ((n as f32 - 1.0) * 9.1).round() as i32 };
             for (k, line) in lines[..n].iter().enumerate() {
                 let y = first + (k as f32 * 18.2).round() as i32;
-                self.text(p, x0 + ROW_X + ROW_PAD, y, line, PX, mix3(dim, fg, glow), live, false);
+                self.text(p, x0 + ROW_X + ROW_PAD, y, line, PX, mix3(dim, fg, glow), live, 400);
             }
             match row.kind() {
                 Kind::Picker => {
@@ -1750,7 +1750,7 @@ impl Settings {
                     while self.width(&shown, PX) > nw - 16 && shown.chars().count() > 1 {
                         shown = label.chars().take(shown.chars().count().saturating_sub(2)).chain(['\u{2026}']).collect();
                     }
-                    self.text(p, nx + (nw - self.width(&shown, PX)) / 2, mid, &shown, PX, fg, 1.0, false);
+                    self.text(p, nx + (nw - self.width(&shown, PX)) / 2, mid, &shown, PX, fg, 1.0, 400);
                 }
                 Kind::Switch => {
                     let on = match row {
@@ -1769,7 +1769,7 @@ impl Settings {
                         (_, true, _) => tr(Str::On),
                         _ => tr(Str::Off),
                     };
-                    self.text(p, cx + sw + 10, mid, note, PX, dim, live, false);
+                    self.text(p, cx + sw + 10, mid, note, PX, dim, live, 400);
                 }
                 Kind::Radios => {
                     let count = options(row).1;
@@ -1790,7 +1790,7 @@ impl Settings {
                             p.disc(rcx, rcy, 3.0, accent, live);
                         }
                         let c = if on { fg } else { mix3(dim, fg, lit) };
-                        self.text(p, x + 8 + 14 + 8, y + RADIO_H / 2, options(row).0[n], PX, c, live, false);
+                        self.text(p, x + 8 + 14 + 8, y + RADIO_H / 2, options(row).0[n], PX, c, live, 400);
                     }
                 }
                 Kind::Chips => self.draw_chips(p, selected, dim, accent),
@@ -1832,7 +1832,7 @@ impl Settings {
                 p.outline(vx, vy, vw, vh, 6.0, accent, 0.6);
                 let tw = self.width(&e.text, PX);
                 let tx = right - tw;
-                self.text(p, tx, mid, &e.text, PX, fg, 1.0, false);
+                self.text(p, tx, mid, &e.text, PX, fg, 1.0, 400);
                 if e.selected {
                     p.rrect(tx - 2, mid - 9, tw + 4, 18, 3.0, accent, 0.28);
                 } else {
@@ -1845,7 +1845,7 @@ impl Settings {
                 if lit > 0.0 {
                     p.outline(vx, vy, vw, vh, 6.0, WHITE, 0.10 * lit);
                 }
-                self.text(p, right - self.width(&v, PX), mid, &v, PX, fg, 1.0, false);
+                self.text(p, right - self.width(&v, PX), mid, &v, PX, fg, 1.0, 400);
             }
         }
     }
@@ -1877,7 +1877,7 @@ impl Settings {
             } else {
                 p.ring(dot, (y + ch / 2) as f32, 2.75, 1.5, dim, a);
             }
-            self.text(p, x + 10 + 7 + 8, y + ch / 2, chip_label(chip), PX, if on { color } else { dim }, a, false);
+            self.text(p, x + 10 + 7 + 8, y + ch / 2, chip_label(chip), PX, if on { color } else { dim }, a, font::MEDIUM);
         };
         for (n, &chip) in slots.iter().enumerate() {
             let (x, cy, cw, ch) = self.slot_rect(n);
@@ -1909,11 +1909,11 @@ impl Settings {
             let cy = ty + (line as f32 * NOTE_LINE + NOTE_LINE / 2.0).round() as i32;
             let x = tx + wx;
             match ink {
-                Ink::Text => self.text(p, x, cy, word, PX_NOTE, dim, 1.0, false),
+                Ink::Text => self.text(p, x, cy, word, PX_NOTE, dim, 1.0, 400),
                 Ink::Code => {
                     let bw = self.ink_width(word, ink);
                     p.rrect(x, cy - 9, bw, 18, 4.0, WHITE, 0.07);
-                    self.text(p, x + 5, cy, word, PX_CODE, fg, 1.0, false);
+                    self.text(p, x + 5, cy, word, PX_CODE, fg, 1.0, 400);
                 }
                 Ink::Key => {
                     let bw = self.ink_width(word, ink);
@@ -1931,7 +1931,7 @@ impl Settings {
                             (1.0 - d1.min(d2)).clamp(0.0, 1.0)
                         });
                     } else {
-                        self.text(p, x + 6, cy, word, PX_KBD, fg, 1.0, false);
+                        self.text(p, x + 6, cy, word, PX_KBD, fg, 1.0, 400);
                     }
                 }
             }
@@ -1940,11 +1940,11 @@ impl Settings {
 
     /// `s` with its left edge at `x` and its vertical centre at `cy` (panel-local pixels), `px` high.
     #[allow(clippy::too_many_arguments)]
-    fn text(&self, p: &mut Paint, x: i32, cy: i32, s: &str, px: f32, c: [f32; 3], a: f32, bold: bool) {
+    fn text(&self, p: &mut Paint, x: i32, cy: i32, s: &str, px: f32, c: [f32; 3], a: f32, weight: u16) {
         if let Some(f) = &self.prop {
             // Centred on the middle of the capitals, the way the eye reads a label.
             let base = cy + (f.cap_height(px) / 2.0).round() as i32;
-            f.draw(s, px, x, base, bold, |gx, gy, cov| p.put(gx, gy, c, a * cov as f32 / 255.0));
+            f.draw(s, px, x, base, weight, |gx, gy, cov| p.put(gx, gy, c, a * cov as f32 / 255.0));
             return;
         }
         let (cw, ch) = (self.ui.cell_w as i32, self.ui.cell_h as i32);
@@ -1953,7 +1953,7 @@ impl Settings {
             if c0 == ' ' {
                 continue;
             }
-            let bmp = self.ui.raster(c0, bold, false);
+            let bmp = self.ui.raster(c0, weight > font::MEDIUM, false);
             let (gx, gy) = (x + n as i32 * step, cy - ch / 2);
             for yy in 0..ch {
                 for xx in 0..cw {

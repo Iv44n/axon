@@ -1,9 +1,9 @@
-//! Grid -> cells: reads the terminal and tells a backend which rows to paint.
+//! Grid -> cells: reads the terminal and tells a backend which rows to paint, and on which rows its lines go (`Fold`).
 //! Backend-agnostic: the GPU renderer and the CPU renderer both implement `Backend`.
 use alacritty_terminal::{
     Term,
     event::EventListener,
-    grid::Dimensions,
+    grid::{Dimensions, GridCell},
     index::{Column, Line, Point},
     selection::SelectionRange,
     term::{TermDamage, TermMode, cell::Flags},
@@ -15,11 +15,106 @@ use crate::palette;
 
 /// What the grid builder needs from a renderer, besides the glyph tiles.
 pub trait Backend: Glyphs {
-    /// Starts a frame for a `rows` x `cols` grid. Returns true when every row has to be written:
-    /// first frame, the grid size changed, or the glyph tiles were reassigned.
-    fn begin_frame(&mut self, rows: usize, cols: usize) -> bool;
+    /// Starts a frame for a `rows` x `cols` grid whose lines are laid out as `fold` says. Returns true when every
+    /// row has to be written: first frame, the grid size changed, or the glyph tiles were reassigned.
+    fn begin_frame(&mut self, rows: usize, cols: usize, fold: &Fold) -> bool;
     /// Receives `count` consecutive rows starting at `first`: `count * cols` cells, row-major.
     fn put_rows(&mut self, first: usize, count: usize, cells: &[Cell]);
+    /// Whether it draws the composer apart (`Fold`); one that does not gets the rows as the terminal has them.
+    fn docks(&self) -> bool {
+        false
+    }
+}
+
+/// How the terminal's lines are laid on a pane's rows (ADR 0037). The composer, the prompt being typed at (from its
+/// reserved line, where the chips go) or else the line the cursor is on, and whatever is below either, takes the
+/// last rows, which the backend draws apart below a hairline; the lines above it end on the row right over it. So
+/// the prompt sits at the bottom from the first one on and what commands print rises above it, as the reference's
+/// composer and blocks; scrolled back, the rows above scroll and the composer stays. A cleared screen shows nothing
+/// above the prompt (the cleared lines are the history, shown when scrolled to). The alternate screen (a
+/// full-screen program) and a backend without a composer get the rows as the terminal has them (`flat`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Fold {
+    /// Rows of the pane.
+    pub rows: usize,
+    /// The composer's first row; `rows` when there is no composer.
+    pub split: usize,
+    /// The line on row 0 (history lines are negative): the rows above `split` show `top + row`.
+    pub top: i32,
+    /// Lines above this one are shown blank: the first line in view (`-display_offset`).
+    pub floor: i32,
+    /// The composer's first line: the rows from `split` on show `live + row - split`.
+    pub live: i32,
+    /// The composer starts with the prompt's reserved line (the chips' row).
+    pub chips: bool,
+}
+
+impl Fold {
+    /// The rows as the terminal has them, scrolled back `offset` lines.
+    pub fn flat(rows: usize, offset: usize) -> Fold {
+        let top = -(offset as i32);
+        Fold { rows, split: rows, top, floor: top, live: rows as i32, chips: false }
+    }
+
+    /// There is a composer.
+    pub fn docked(&self) -> bool {
+        self.split < self.rows
+    }
+
+    /// The line row `row` shows; None for a blank row (above the first line in view, or past the last row).
+    pub fn line(&self, row: usize) -> Option<i32> {
+        if row >= self.rows {
+            None
+        } else if row >= self.split {
+            Some(self.live + (row - self.split) as i32)
+        } else {
+            let l = self.top + row as i32;
+            (l >= self.floor).then_some(l)
+        }
+    }
+
+    /// The row line `line` is shown on, if it is shown.
+    pub fn row(&self, line: i32) -> Option<usize> {
+        if self.docked() && line >= self.live {
+            let r = self.split as i64 + (line - self.live) as i64;
+            return (r < self.rows as i64).then_some(r as usize);
+        }
+        let r = line as i64 - self.top as i64;
+        (line >= self.floor && r >= 0 && r < self.split as i64).then_some(r as usize)
+    }
+}
+
+/// Lays the lines of `term` on its rows (`Fold`); `dock` when the backend draws a composer.
+pub fn fold<L: EventListener>(term: &Term<L>, dock: bool) -> Fold {
+    let grid = term.grid();
+    let (rows, offset) = (term.screen_lines(), grid.display_offset());
+    if !dock || rows < 2 || term.mode().contains(TermMode::ALT_SCREEN) {
+        return Fold::flat(rows, offset);
+    }
+    let cols = term.columns();
+    let (n, first) = (rows as i32, -(grid.history_size() as i32));
+    let cursor = grid.cursor.point.line.0;
+    // The composer's first line: the reserved line of the prompt being typed at, else the first of the lines the
+    // cursor's wraps from (a command typed at a prompt without the hook, a long line a program is writing).
+    let (mut live, mut chips) = match live_prompt(term) {
+        Some(l) => (l, true),
+        None => {
+            let mut l = cursor;
+            while l > first && cursor - l < n - 1 && grid[Line(l - 1)][Column(cols - 1)].flags.contains(Flags::WRAPLINE) {
+                l -= 1;
+            }
+            (l, false)
+        }
+    };
+    // Its last: the cursor's, or the last below it that holds anything (completions listed under the prompt).
+    let last = (cursor + 1..n).rev().find(|&l| !grid[Line(l)].is_clear()).unwrap_or(cursor);
+    if last - live + 1 > n {
+        (live, chips) = (last - n + 1, false);
+    }
+    let split = (n - (last - live + 1)) as usize;
+    let floor = -(offset as i32);
+    // The lines above end right over the composer; scrolled back, they start at the first line in view.
+    Fold { rows, split, top: floor.min(live - split as i32), floor, live, chips }
 }
 
 /// Frame-to-frame state that `Term`'s damage does not cover, and the scratch rows are built in.
@@ -33,6 +128,8 @@ pub struct View {
     stage: Vec<Cell>,
     /// Rows the caller wants repainted at the next frame (something is drawn over them).
     wanted: Vec<usize>,
+    /// How the last frame laid the lines on the rows: another layout repaints every row.
+    fold: Fold,
 }
 
 impl View {
@@ -44,7 +141,13 @@ impl View {
             cols: 0,
             stage: Vec::new(),
             wanted: Vec::new(),
+            fold: Fold::default(),
         }
+    }
+
+    /// How the last frame laid the terminal's lines on the rows: what the pointer is over.
+    pub fn fold(&self) -> Fold {
+        self.fold
     }
 
     /// Repaints `row` at the next frame even if the terminal did not change it.
@@ -54,10 +157,18 @@ impl View {
 
     /// Brings the backend up to date: only rows that changed since the last frame are rebuilt.
     pub fn build<L: EventListener>(&mut self, term: &mut Term<L>, focused: bool, out: &mut impl Backend) {
+        let fold = fold(term, out.docks());
+        self.build_folded(term, focused, fold, out);
+    }
+
+    /// The same, with the lines laid out as `fold` (from `fold`) says.
+    pub fn build_folded<L: EventListener>(&mut self, term: &mut Term<L>, focused: bool, fold: Fold, out: &mut impl Backend) {
         let (rows, cols) = (term.screen_lines(), term.columns());
-        let mut full = out.begin_frame(rows, cols);
-        // The terminal was resized (a pane got another size): what is on screen is of the old grid.
-        full |= self.cols != cols || self.dirty.len() != rows;
+        let mut full = out.begin_frame(rows, cols, &fold);
+        // The terminal was resized (a pane got another size): what is on screen is of the old grid. Lines that
+        // moved to other rows (the composer grew, the prompt moved down) are a new picture too.
+        full |= self.cols != cols || self.dirty.len() != rows || fold != self.fold;
+        self.fold = fold;
         self.cols = cols;
         self.dirty.clear();
         self.dirty.resize(rows, false);
@@ -66,8 +177,9 @@ impl View {
         match term.damage() {
             TermDamage::Full => full = true,
             TermDamage::Partial(lines) => {
+                // Damage is in lines of the screen; scrolled back, every row is rebuilt anyway.
                 for d in lines {
-                    if let Some(f) = self.dirty.get_mut(d.line) {
+                    if let Some(f) = fold.row(d.line as i32).and_then(|r| self.dirty.get_mut(r)) {
                         *f = true;
                     }
                 }
@@ -85,7 +197,7 @@ impl View {
         let content = term.renderable_content();
         let offset = content.display_offset;
         let cur = content.cursor;
-        let shown = content.mode.contains(TermMode::SHOW_CURSOR) && offset == 0;
+        let shown = content.mode.contains(TermMode::SHOW_CURSOR) && shows_cursor(&fold, offset, cur.point.line.0);
         let shape = if !focused { CursorShape::HollowBlock } else { cur.shape };
         let cursor = (cur.point, shape, shown);
         let selection = content.selection;
@@ -97,8 +209,8 @@ impl View {
         } else {
             let dirty = &mut self.dirty;
             let mut mark = |from: i32, to: i32| {
-                for r in from.max(0)..=to.min(rows as i32 - 1) {
-                    dirty[r as usize] = true;
+                for r in (from..=to).filter_map(|l| fold.row(l)) {
+                    dirty[r] = true;
                 }
             };
             if cursor != self.last_cursor {
@@ -127,7 +239,7 @@ impl View {
             }
             self.stage.clear();
             self.stage.resize((row - first) * cols, Cell::BLANK);
-            build_rows(out, term, first, &mut self.stage, focused);
+            build_rows(out, term, &fold, first, &mut self.stage, focused);
             out.put_rows(first, row - first, &self.stage);
         }
     }
@@ -137,18 +249,17 @@ impl View {
 /// how many rows a typed command may wrap over.
 const PROMPT_LINES: i32 = 4;
 
-/// Where the shell put the line the prompt chips go on, as a viewport row.
+/// The line (of the terminal: the history's are negative) the shell put the prompt being typed at's chips on.
 ///
 /// The shell's hook (`context.rs`) makes the prompt start with a line of its own holding one concealed
 /// space (SGR 8) in its first column, and end with a concealed space right before where the user types.
 /// So the prompt being typed at is the one whose end marker is on the cursor's row (or on an earlier
 /// row of a command that wrapped), and the chips go on the reserved line above it. Output a program
-/// printed since leaves no marker at the cursor. Only a hook older than the numbered prompts is drawn from this: the rest use `prompt_rows`.
-pub fn prompt_row<L: EventListener>(term: &Term<L>) -> Option<usize> {
+/// printed since leaves no marker at the cursor. Whether the view is scrolled back does not matter: the
+/// composer (`Fold`) shows this prompt either way.
+pub fn live_prompt<L: EventListener>(term: &Term<L>) -> Option<i32> {
     let grid = term.grid();
-    if grid.display_offset() != 0 {
-        return None;
-    }
+    let first = -(grid.history_size() as i32);
     let cols = term.columns();
     let marker = |line: i32, col: usize| {
         let c = &grid[Line(line)][Column(col)];
@@ -157,7 +268,7 @@ pub fn prompt_row<L: EventListener>(term: &Term<L>) -> Option<usize> {
     let mut row = grid.cursor.point.line.0;
     let mut end = None;
     for _ in 0..=PROMPT_LINES {
-        if row < 0 || row >= term.screen_lines() as i32 {
+        if row < first {
             return None;
         }
         if (0..cols).any(|c| marker(row, c)) {
@@ -165,39 +276,57 @@ pub fn prompt_row<L: EventListener>(term: &Term<L>) -> Option<usize> {
             break;
         }
         // Up a row only when the one above wraps into this one.
-        if row == 0 || !grid[Line(row - 1)][Column(cols - 1)].flags.contains(Flags::WRAPLINE) {
+        if row == first || !grid[Line(row - 1)][Column(cols - 1)].flags.contains(Flags::WRAPLINE) {
             return None;
         }
         row -= 1;
     }
     let end = end?;
-    (1..=PROMPT_LINES).find_map(|d| (end - d >= 0 && marker(end - d, 0)).then_some((end - d) as usize))
+    (1..=PROMPT_LINES).map(|d| end - d).find(|&l| l >= first && marker(l, 0))
 }
 
-/// The reserved lines of every prompt on screen, as `(viewport row, prompt number)`, oldest first: a
-/// hidden space in the first column whose colour is the number (`context.rs`, `history.rs`). Unlike
-/// `prompt_row` it finds the prompts of commands that have run, in the scrollback too.
-pub fn prompt_rows<L: EventListener>(term: &Term<L>, out: &mut Vec<(usize, u32)>) {
+/// Nothing is typed at the prompt yet: the cursor is right after the prompt's end marker (`live_prompt`) and its
+/// line is empty from there on. The composer then says what it is for (`bar.rs`).
+pub fn input_empty<L: EventListener>(term: &Term<L>) -> bool {
+    let grid = term.grid();
+    let (cur, cols) = (grid.cursor.point, term.columns());
+    let row = &grid[cur.line];
+    let col = cur.column.0;
+    let after_marker = col > 0 && col < cols && {
+        let m = &row[Column(col - 1)];
+        m.c == ' ' && m.flags.contains(Flags::HIDDEN)
+    };
+    after_marker && !term.mode().contains(TermMode::ALT_SCREEN) && (col..cols).all(|c| row[Column(c)].is_empty())
+}
+
+/// Whether the cursor is drawn: on the screen in view, or in the composer while the rows above are scrolled back.
+fn shows_cursor(fold: &Fold, offset: usize, line: i32) -> bool {
+    offset == 0 || (fold.docked() && line >= fold.live && fold.row(line).is_some())
+}
+
+/// The reserved lines of every prompt on the rows, as `(row, prompt number)` with the rows laid out as `fold`
+/// says, oldest first: a hidden space in the first column whose colour is the number (`context.rs`,
+/// `history.rs`). Unlike `live_prompt` it finds the prompts of commands that have run, in the scrollback too.
+pub fn prompt_rows<L: EventListener>(term: &Term<L>, fold: &Fold, out: &mut Vec<(usize, u32)>) {
     out.clear();
     let grid = term.grid();
-    let offset = grid.display_offset() as i32;
     for row in 0..term.screen_lines() {
-        let c = &grid[Line(row as i32 - offset)][Column(0)];
+        let Some(line) = fold.line(row) else { continue };
+        let c = &grid[Line(line)][Column(0)];
         if let (' ', true, Color::Spec(rgb)) = (c.c, c.flags.contains(Flags::HIDDEN), c.fg) {
             out.push((row, (rgb.r as u32) << 16 | (rgb.g as u32) << 8 | rgb.b as u32));
         }
     }
 }
 
-/// Fills `cells` with the rows starting at `first`: row-major, `term.columns()` cells per row.
-/// The slice arrives zeroed (blank), so only non-blank cells are written.
-fn build_rows<L: EventListener>(g: &mut impl Glyphs, term: &Term<L>, first: usize, cells: &mut [Cell], focused: bool) {
+/// Fills `cells` with the rows starting at `first`, the lines laid out as `fold` says: row-major, `term.columns()`
+/// cells per row. The slice arrives zeroed (blank), so only non-blank cells are written.
+fn build_rows<L: EventListener>(g: &mut impl Glyphs, term: &Term<L>, fold: &Fold, first: usize, cells: &mut [Cell], focused: bool) {
     let content = term.renderable_content();
     let colors = content.colors;
     let selection = content.selection;
-    let offset = content.display_offset as i32;
     let cur = content.cursor;
-    let show_cursor = content.mode.contains(TermMode::SHOW_CURSOR) && offset == 0;
+    let show_cursor = content.mode.contains(TermMode::SHOW_CURSOR) && shows_cursor(fold, content.display_offset, cur.point.line.0);
     let shape = if !focused { CursorShape::HollowBlock } else { cur.shape };
     let cursor_color = palette::CURSOR;
     let dark = palette::BG;
@@ -206,7 +335,8 @@ fn build_rows<L: EventListener>(g: &mut impl Glyphs, term: &Term<L>, first: usiz
     let cols = term.columns();
 
     for (n, out) in cells.chunks_exact_mut(cols).enumerate() {
-        let line = Line((first + n) as i32 - offset);
+        let Some(line) = fold.line(first + n) else { continue };
+        let line = Line(line);
         let row = &term.grid()[line];
         let mut right_half: Option<u32> = None;
 
@@ -304,6 +434,15 @@ mod tests {
         t
     }
 
+    fn flat(t: &Term<VoidListener>) -> Fold {
+        Fold::flat(t.screen_lines(), t.grid().display_offset())
+    }
+
+    /// The lines the rows show, `None` for a blank one.
+    fn shown(f: &Fold) -> Vec<Option<i32>> {
+        (0..f.rows).map(|r| f.line(r)).collect()
+    }
+
     /// What the hook makes a prompt print: the reserved line, the prompt, the end marker.
     fn prompt(ps1: &str) -> String {
         format!("{MARK}\r\n{ps1}{MARK}")
@@ -314,61 +453,133 @@ mod tests {
         let numbered = |n: u32| format!("\x1b[8;38;2;{};{};{}m \x1b[0m\r\nme$ {MARK}", n >> 16, n >> 8 & 255, n & 255);
         let t = term(12, &format!("{}ls\r\nout\r\n{}\r\nout\r\n{}", numbered(1), numbered(258), numbered(70000)));
         let mut rows = Vec::new();
-        prompt_rows(&t, &mut rows);
+        prompt_rows(&t, &flat(&t), &mut rows);
         assert_eq!(rows, [(0, 1), (3, 258), (6, 70000)]);
         // The plain markers of an older hook, ordinary hidden spaces and coloured text are not numbered prompts.
         for text in [format!("{MARK}\r\nme$ {MARK}"), "\x1b[38;2;0;0;5m \x1b[0m".to_string(), "\x1b[8;38;2;0;0;5mx\x1b[0m".to_string()] {
-            prompt_rows(&term(5, &text), &mut rows);
+            let t = term(5, &text);
+            prompt_rows(&t, &flat(&t), &mut rows);
             assert!(rows.is_empty(), "{text:?}");
         }
         // Scrolled back, the numbers follow the rows.
         let mut t = term(5, &format!("{}\r\n\r\n\r\n\r\n\r\n\r\n{}", numbered(1), numbered(2)));
-        prompt_rows(&t, &mut rows);
+        prompt_rows(&t, &flat(&t), &mut rows);
         assert_eq!(rows.iter().map(|r| r.1).collect::<Vec<_>>(), [2]);
         t.scroll_display(alacritty_terminal::grid::Scroll::Delta(4));
-        prompt_rows(&t, &mut rows);
+        prompt_rows(&t, &flat(&t), &mut rows);
         assert!(rows.iter().any(|r| r.1 == 1), "{rows:?}");
     }
 
     #[test]
     fn chips_go_on_the_reserved_line_above_the_prompt_being_typed_at() {
         let t = term(10, &format!("old output\r\n{}", prompt("me$ ")));
-        assert_eq!(prompt_row(&t), Some(1));
+        assert_eq!(live_prompt(&t), Some(1));
         // Text typed after the marker does not move it.
         let t = term(10, &format!("{}ls -la", prompt("me$ ")));
-        assert_eq!(prompt_row(&t), Some(0));
+        assert_eq!(live_prompt(&t), Some(0));
     }
 
     #[test]
     fn a_prompt_of_several_lines_and_a_wrapped_command_still_find_it() {
         let t = term(10, &format!("{MARK}\r\n~/code/project  main\r\nme$ {MARK}"));
-        assert_eq!(prompt_row(&t), Some(0));
+        assert_eq!(live_prompt(&t), Some(0));
         // A command longer than a row wraps onto the next ones: the marker is on the first.
         let t = term(10, &format!("x\r\n{}{}", prompt("me$ "), "a".repeat(35)));
-        assert_eq!(prompt_row(&t), Some(1));
+        assert_eq!(live_prompt(&t), Some(1));
     }
 
     #[test]
     fn no_chips_while_a_program_runs_or_without_the_hook() {
         // The command ran and printed: the cursor is past the output, no marker on its row.
         let t = term(10, &format!("{}ls\r\nfile-a\r\nfile-b\r\n", prompt("me$ ")));
-        assert_eq!(prompt_row(&t), None);
+        assert_eq!(live_prompt(&t), None);
         // A prompt without the markers (the hook is not installed).
-        assert_eq!(prompt_row(&term(10, "out\r\nme$ ")), None);
+        assert_eq!(live_prompt(&term(10, "out\r\nme$ ")), None);
         // The end marker without a reserved line above it.
-        assert_eq!(prompt_row(&term(10, &format!("me$ {MARK}"))), None);
+        assert_eq!(live_prompt(&term(10, &format!("me$ {MARK}"))), None);
         // Ordinary spaces are not markers.
-        assert_eq!(prompt_row(&term(10, " \r\nme$  ")), None);
+        assert_eq!(live_prompt(&term(10, " \r\nme$  ")), None);
     }
 
     #[test]
-    fn chips_need_the_live_screen_and_a_row_to_stand_on() {
+    fn chips_need_a_row_to_stand_on() {
         // The prompt on the very first row has no room above it for the reserved line.
-        assert_eq!(prompt_row(&term(10, &format!("me$ {MARK}"))), None);
-        // Scrolled back into the history: the prompt is not the one being typed at.
+        assert_eq!(live_prompt(&term(10, &format!("me$ {MARK}"))), None);
+        // Scrolled back into the history: the prompt being typed at is still the live one, which the composer shows.
         let mut t = term(5, &format!("{}\r\n\r\n\r\n\r\n\r\n\r\n{}", prompt("a$ "), prompt("b$ ")));
-        assert!(prompt_row(&t).is_some());
+        let live = live_prompt(&t);
+        assert_eq!(live, Some(3));
         t.scroll_display(alacritty_terminal::grid::Scroll::Delta(2));
-        assert_eq!(prompt_row(&t), None);
+        assert_eq!(live_prompt(&t), live);
+    }
+
+    #[test]
+    fn the_first_prompt_sits_at_the_bottom_with_nothing_above() {
+        let t = term(6, &prompt("$ "));
+        let f = fold(&t, true);
+        assert_eq!((f.split, f.live, f.chips), (4, 0, true), "the reserved line and the prompt are the composer");
+        assert_eq!(shown(&f), [None, None, None, None, Some(0), Some(1)]);
+        // A backend without a composer, and the alternate screen, get the rows as they are.
+        assert_eq!(fold(&t, false), Fold::flat(6, 0));
+        let alt = term(6, &format!("{}\x1b[?1049h", prompt("$ ")));
+        assert_eq!(fold(&alt, true), Fold::flat(6, 0));
+    }
+
+    #[test]
+    fn output_rises_over_the_composer_and_a_running_command_docks_its_cursor_line() {
+        // A command ran and printed two lines; the next prompt is the composer, everything else ends right above it.
+        let t = term(8, &format!("{}ls\r\na\r\nb\r\n{}", prompt("$ "), prompt("$ ")));
+        let f = fold(&t, true);
+        assert_eq!((f.split, f.live), (6, 4));
+        assert_eq!(shown(&f), [None, None, Some(0), Some(1), Some(2), Some(3), Some(4), Some(5)]);
+        assert_eq!((f.row(1), f.row(5), f.row(6)), (Some(3), Some(7), None));
+        // While a command runs (no marker at the cursor) the composer is the line the cursor is on.
+        let t = term(8, &format!("{}make\r\nbuilding", prompt("$ ")));
+        let f = fold(&t, true);
+        assert_eq!((f.split, f.live, f.chips), (7, 2, false));
+        assert_eq!(shown(&f), [None, None, None, None, None, Some(0), Some(1), Some(2)]);
+        // A full screen folds nothing away: the rows are the lines, the composer the last two.
+        let t = term(4, &format!("1\r\n2\r\n3\r\n4\r\n{}", prompt("$ ")));
+        let f = fold(&t, true);
+        assert_eq!((f.split, f.top), (2, 0));
+        assert_eq!(shown(&f), [Some(0), Some(1), Some(2), Some(3)]);
+    }
+
+    #[test]
+    fn a_wrapped_command_and_a_list_below_the_prompt_are_the_composer() {
+        let t = term(8, &format!("x\r\n{}{}", prompt("$ "), "a".repeat(35)));
+        let f = fold(&t, true);
+        assert_eq!((f.split, f.live), (5, 1), "the reserved line, the prompt and the row its command wrapped onto");
+        // Completions listed below the prompt (zsh) are kept with it.
+        let t = term(8, &format!("{}\x1b7\r\n\r\nfoo  bar\x1b8", prompt("$ ")));
+        let f = fold(&t, true);
+        assert_eq!((f.split, f.live), (4, 0));
+        assert_eq!(f.line(7), Some(3));
+    }
+
+    #[test]
+    fn scrolled_back_the_rows_above_scroll_and_the_composer_stays() {
+        let mut t = term(4, &format!("1\r\n2\r\n3\r\n4\r\n5\r\n{}", prompt("$ ")));
+        t.scroll_display(alacritty_terminal::grid::Scroll::Delta(2));
+        let f = fold(&t, true);
+        assert_eq!(shown(&f), [Some(-2), Some(-1), Some(2), Some(3)]);
+        assert!(shows_cursor(&f, 2, 3) && !shows_cursor(&f, 2, 1));
+        // A cleared screen: what was on it is history, shown only when scrolled to (from the composer up).
+        let mut t = term(4, &format!("1\r\n2\r\n3\x1b[H\x1b[2J{}", prompt("$ ")));
+        let f = fold(&t, true);
+        assert!(t.grid().history_size() > 0);
+        assert_eq!(shown(&f), [None, None, Some(0), Some(1)]);
+        t.scroll_display(alacritty_terminal::grid::Scroll::Delta(1));
+        assert_eq!(shown(&fold(&t, true)), [None, Some(-1), Some(0), Some(1)]);
+    }
+
+    #[test]
+    fn the_input_is_empty_right_after_the_prompt_only() {
+        assert!(input_empty(&term(6, &prompt("$ "))));
+        assert!(!input_empty(&term(6, &format!("{}ls", prompt("$ ")))));
+        // The cursor moved back over what was typed.
+        assert!(!input_empty(&term(6, &format!("{}ls\x1b[2D", prompt("$ ")))));
+        // A plain prompt, without the hook's markers.
+        assert!(!input_empty(&term(6, "$ ")));
     }
 }

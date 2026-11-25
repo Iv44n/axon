@@ -189,7 +189,8 @@ impl Default for WindowsCfg {
 /// The side panel's width limits, in pixels. The settings panel's box and slider use the same limits.
 pub const SIDE_W: (f32, f32) = (160.0, 320.0);
 
-#[derive(Clone, Debug, PartialEq)]
+/// Every field's default is its type's (the status bar is off, as in the reference).
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Config {
     pub font: FontCfg,
     pub input: InputCfg,
@@ -199,16 +200,10 @@ pub struct Config {
     /// Ask the compositor to blur what is behind the glass (`[window] blur`). Only compositors that offer
     /// it (KDE, and those with `ext-background-effect-v1`) do; GNOME's Mutter does not.
     pub blur: bool,
-    /// Show the status bar at the bottom of the window (`[window] status_bar`).
+    /// Show the status bar at the bottom of the window (`[window] status_bar`). Off unless asked: the reference has none.
     pub status_bar: bool,
     /// The language of the interface (`[ui] language`): the system's, English or Spanish.
     pub lang: crate::i18n::Setting,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Config { font: FontCfg::default(), input: InputCfg::default(), windows: WindowsCfg::default(), opacity: None, blur: false, status_bar: true, lang: Default::default() }
-    }
 }
 
 /// Where the file is expected, whether it exists or not.
@@ -689,7 +684,7 @@ mod tests {
                 input: InputCfg::default(),
                 windows: WindowsCfg::default(),
                 blur: false,
-                status_bar: true,
+                status_bar: false,
                 lang: Default::default(),
             }
         );
@@ -717,14 +712,14 @@ mod tests {
 
     #[test]
     fn the_status_bar_and_the_cursor_are_read() {
-        let (c, w) = parsed("[window]\nstatus_bar = false\n[input]\ncursor = \"bar\"\n");
+        let (c, w) = parsed("[window]\nstatus_bar = true\n[input]\ncursor = \"bar\"\n");
         assert!(w.is_empty(), "{w:?}");
-        assert!(!c.status_bar);
+        assert!(c.status_bar);
         assert_eq!(c.input.cursor, CursorKind::Bar);
         let (c, w) = parsed("[input]\ncursor = \"star\"\n");
         assert_eq!(c.input.cursor, CursorKind::Block, "an unknown shape keeps the default");
         assert_eq!(w.len(), 1);
-        assert!(parsed("").0.status_bar, "the status bar is on by default");
+        assert!(!parsed("").0.status_bar, "the status bar is off by default, as in the reference");
     }
 
     #[test]

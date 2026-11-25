@@ -73,12 +73,15 @@ black red green yellow blue magenta cyan white\r\n\
 /// What the shell's hook makes of the demo session: every prompt becomes a reserved line above, numbered in the
 /// colour of its concealed cell, and a bare `$` with the concealed space after it (`context::BASH_HOOK`); the
 /// last one has `typed` after it.
+/// The prompt's `$` as the shell's hook prints it: bold, in the accent colour (`context.rs`).
+const DOLLAR: &str = "\x1b[1;38;2;255;180;84m$\x1b[0m";
+
 fn with_hook(typed: &str) -> String {
     const PROMPT: &str = "\x1b[1;32muser@axon\x1b[0m:\x1b[1;34m~/lab/apps/axon\x1b[0m$ ";
     let mut out = String::new();
     for (n, part) in SHELL.split(PROMPT).enumerate() {
         if n > 0 {
-            out.push_str(&format!("\x1b[8;38;2;0;0;{n}m \x1b[0m\r\n$\x1b[8m \x1b[0m"));
+            out.push_str(&format!("\x1b[8;38;2;0;0;{n}m \x1b[0m\r\n{DOLLAR}\x1b[8m \x1b[0m"));
         }
         out.push_str(part);
     }
@@ -88,12 +91,13 @@ fn with_hook(typed: &str) -> String {
 /// What pane `i` of a split window shows: the demo session in the first, shorter ones in the others, every
 /// prompt marked the way the shell's hook marks it (so the chips go over them).
 fn pane_text(i: usize) -> String {
-    let p = |n: u32| format!("\x1b[8;38;2;0;0;{n}m \x1b[0m\r\n$\x1b[8m \x1b[0m");
+    let p = |n: u32| format!("\x1b[8;38;2;0;0;{n}m \x1b[0m\r\n{DOLLAR}\x1b[8m \x1b[0m");
     match i % 4 {
         0 => with_hook(""),
-        1 => format!("{}ls\r\n\x1b[1;34msrc\x1b[0m  \x1b[1;34mknowledge\x1b[0m  Cargo.toml\r\n{}git status\r\nOn branch main\r\nnothing to commit, working tree clean\r\n{}", p(1), p(2), p(3)),
-        2 => format!("{}cargo test\r\n\x1b[1;32m   Compiling\x1b[0m axon v0.1.0\r\ntest result: \x1b[32mok\x1b[0m. 211 passed\r\n{}\x1b[31mfailed\x1b[0m\r\n{}", p(1), p(2), p(3)),
-        _ => format!("{}htop\r\n  PID USER   %CPU %MEM\r\n 4212 alice   3.1  0.9 axon\r\n{}", p(1), p(2)),
+        // Prompts 1 and 3 ran fine, 2 failed (`demo_history`), 4 is the one being typed at.
+        1 => format!("{}ls\r\n\x1b[1;34msrc\x1b[0m  \x1b[1;34mknowledge\x1b[0m  Cargo.toml\r\n{}git status\r\nOn branch main\r\nnothing to commit, working tree clean\r\n{}", p(1), p(3), p(4)),
+        2 => format!("{}cargo test\r\n\x1b[1;32m   Compiling\x1b[0m axon v0.1.0\r\ntest result: \x1b[32mok\x1b[0m. 211 passed\r\n{}\x1b[31mfailed\x1b[0m\r\n{}", p(1), p(2), p(4)),
+        _ => format!("{}htop\r\n  PID USER   %CPU %MEM\r\n 4212 alice   3.1  0.9 axon\r\n{}", p(1), p(4)),
     }
 }
 
@@ -124,6 +128,8 @@ fn demo_history(ctx: &Context) -> History {
     h.prompt(2, 0, t + std::time::Duration::from_millis(12), ctx);
     h.start(t + std::time::Duration::from_millis(20));
     h.prompt(3, 127, t + std::time::Duration::from_millis(1520), ctx);
+    h.start(t + std::time::Duration::from_millis(1600));
+    h.prompt(4, 0, t + std::time::Duration::from_millis(54_070), ctx);
     h
 }
 
@@ -217,6 +223,8 @@ struct Scene {
     /// is at its end).
     edit: Option<(usize, &'static str, bool)>,
     list: ListScene,
+    /// The terminal line the pointer is over, in the grid: the status of the command whose block that is shows.
+    hover: Option<usize>,
 }
 
 /// What the bar says in the board's scenes: made-up values, the same on every machine.
@@ -260,6 +268,7 @@ fn scenes() -> Vec<Scene> {
         edit: None,
         list: NO_LIST,
         lang: Lang::En,
+        hover: None,
     };
     let bar = |chips: &[Chip]| Some((sample_context(), chips.to_vec()));
     let chips3 = || bar(&[Chip::Time, Chip::Dir, Chip::Branch]);
@@ -290,13 +299,14 @@ fn scenes() -> Vec<Scene> {
         Scene { prefs: prefs(Page::Font, 4, Hit::Panel).map(|p| Prefs { typing: "-1.5", ..p }), ..base("prefs-typing", "Typing a number into a box", "settings", open) },
         Scene { prefs: prefs(Page::Font, 6, Hit::Defaults), font: font(500, 1.0, 1.0), opacity: 0.80, ..base("prefs-reset", "Pointer over the reset button, other values changed", "settings", open) },
         Scene { bar: bar(&Chip::ALL), input: hooked, ..base("chips", "Every chip: the longest are cut, then the last dropped", "prompt chips", Ui::IDLE) },
+        Scene { bar: chips3(), input: hooked, hover: Some(2), ..base("chips-hover", "Pointer over a command's block: how it ended shows at the end of its line", "prompt chips", Ui::IDLE) },
         Scene { bar: bar(&[Chip::Time, Chip::Dir, Chip::Branch, Chip::Changes]), input: typing, ..base("chips-few", "Four chips, a command being typed", "prompt chips", Ui::IDLE) },
         Scene { bar: bar(&Chip::ALL), input: hooked, font: FontCfg::sized(20.0), ..base("chips-large", "At 20 px", "prompt chips", Ui::IDLE) },
         Scene { bar: bar(&[Chip::Dir, Chip::Branch]), input: typing, opacity: 0.80, ..base("chips-80", "Opacity 0.80", "prompt chips", Ui::IDLE) },
         Scene { ..base("chips-off", "Chips off: the prompt as the shell draws it", "prompt chips", Ui::IDLE) },
         Scene { input: bar_cursor, ..base("cursor-bar", "Cursor as a bar (DECSCUSR 6, or [input] cursor = \"bar\")", "window", Ui::IDLE) },
         Scene { input: underline_cursor, ..base("cursor-underline", "Cursor as an underline", "window", Ui::IDLE) },
-        base("no-status", "Status bar off ([window] status_bar = false)", "window", Ui { status: false, ..Ui::IDLE }),
+        base("status-bar", "Status bar on ([window] status_bar = true; off by default)", "window", Ui { status: true, ..Ui::IDLE }),
         Scene { prefs: prefs(Page::Font, 7, Hit::Toggle(Row::Blur)).map(|p| Prefs { blur: (true, false), ..p }), opacity: 0.80, ..base("prefs-blur", "Blur on, but the compositor (GNOME) offers none", "settings", open) },
         Scene { prefs: prefs(Page::Input, 0, Hit::Tab(Page::Input)), ..base("prefs-input", "Input page, shell prompt: the clock and the chips are inert", "settings", open) },
         Scene {
@@ -418,7 +428,8 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
             Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::new().advance(&mut term, pane_text(i).as_bytes());
             soft.select(i);
             soft.set_dim(if i == ps.focus { 255 } else { UNFOCUSED });
-            bar::Chips::default().frame(s.bar.is_some(), true, &demo_history(&ctx), &chips, &mut term, &mut View::new(), &mut soft, &mut fb, (w, h), s.ui.focused && i == ps.focus);
+            let hover = s.hover.filter(|_| i == ps.focus).and_then(|l| crate::view::fold(&term, true).row(l as i32));
+            bar::Chips::default().frame(s.bar.is_some(), true, &demo_history(&ctx), &chips, &mut term, &mut View::new(), &mut soft, &mut fb, (w, h), s.ui.focused && i == ps.focus, hover);
         }
         soft.set_dim(255);
         soft.select(0);
@@ -435,7 +446,8 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
             term.selection = Some(sel);
         }
         soft.set_status("zsh", "main", cols, rows);
-        bar::Chips::default().frame(s.bar.is_some(), true, &demo_history(&ctx), &chips, &mut term, &mut View::new(), &mut soft, &mut fb, (w, h), s.ui.focused);
+        let hover = s.hover.and_then(|l| crate::view::fold(&term, true).row(l as i32));
+        bar::Chips::default().frame(s.bar.is_some(), true, &demo_history(&ctx), &chips, &mut term, &mut View::new(), &mut soft, &mut fb, (w, h), s.ui.focused, hover);
     }
     if let Some((pos, hover)) = s.side {
         // The windows the panel lists. With a split, the group "arcton" is the split: a window for each pane (ADR 0034), then
@@ -463,10 +475,11 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
             items.push_win(title, selected, unread, 0, st);
         }
         // The reference's session: a group of three windows, one in none, and a folded group of one.
-        let group = |name: &str, color, collapsed, count, busy| crate::side::GroupItem { id: 0, name: name.to_string(), color, collapsed, count, busy };
+        let group = |name: &str, color, collapsed, count, busy| crate::side::GroupItem { id: 0, name: name.to_string(), color, collapsed, count, busy, label_w: 0 };
         // A folded group is busy while a window in it runs a command: the windows 0 to 2 are in the first, 4 in the second.
         let running = |ws: &[usize]| ws.iter().any(|&w| s.list.status[w] == Status::Running);
-        let groups = [group("arcton", 1, s.list.fold0, members, s.list.fold0 && running(&[0, 1, 2])), group("docs", 3, s.folded, 1, s.folded && running(&[4]))];
+        let mut groups = [group("arcton", 1, s.list.fold0, members, s.list.fold0 && running(&[0, 1, 2])), group("docs", 3, s.folded, 1, s.folded && running(&[4]))];
+        crate::side::measure(&mut groups, &soft);
         let folds = [s.list.fold0, s.folded];
         let (ox, oy) = soft.origin();
         let edit = s.edit.map(|(wi, text, all)| (wi, text, text.chars().count(), all.then(|| (0, text.chars().count()))));
@@ -484,7 +497,7 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
         // The drag, if any: the pointer at its place in the list, and what the real layout makes of it.
         let layout = match panel {
             Some((_, b)) if !top => crate::side::Layout::Side { x0: b.0, y0: b.1, w: b.2, entries: &entries },
-            _ => crate::side::Layout::Top { x0, x1, entries: &entries, groups: &groups, cw: crate::side::chip_cw(&soft), first: s.list.first },
+            _ => crate::side::Layout::Top { x0, x1, entries: &entries, groups: &groups, first: s.list.first },
         };
         let drag = s.list.drag.and_then(|d| {
             let r = layout.grab_box(d.grab)?;
@@ -780,12 +793,12 @@ fn chips_repaint_incrementally_like_a_full_frame() {
         if *change {
             history.set_ctx(&other);
         }
-        chips_state.frame(*on, false, &history, &chips, &mut term, &mut view, &mut soft, &mut fb, (w, h), true);
+        chips_state.frame(*on, false, &history, &chips, &mut term, &mut view, &mut soft, &mut fb, (w, h), true, None);
 
         let (mut fsoft, mut fterm) = make();
         Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::new().advance(&mut fterm, seen.as_bytes());
         let mut full = vec![0u32; w * h];
-        bar::Chips::default().frame(*on, true, &history, &chips, &mut fterm, &mut View::new(), &mut fsoft, &mut full, (w, h), true);
+        bar::Chips::default().frame(*on, true, &history, &chips, &mut fterm, &mut View::new(), &mut fsoft, &mut full, (w, h), true, None);
         let diff = fb.iter().zip(&full).filter(|(a, b)| a != b).count();
         assert_eq!(diff, 0, "step {i}: {diff} pixels differ from a full repaint");
     }
@@ -824,10 +837,13 @@ fn panes_repaint_incrementally_like_a_full_frame() {
         for (i, p) in panes.iter_mut().enumerate() {
             soft.select(i);
             soft.set_dim(if i == focus { 255 } else { UNFOCUSED });
-            p.chips.frame(false, false, &History::default(), &[], &mut p.term, &mut p.view, soft, fb, (w, h), i == focus);
+            p.chips.frame(false, false, &History::default(), &[], &mut p.term, &mut p.view, soft, fb, (w, h), i == focus, None);
         }
         soft.set_dim(255);
         soft.select(0);
+        if let Some(i) = last_cross.filter(|&i| i < n && Some(i) != cross) {
+            soft.clear_pane_close(fb, i);
+        }
         if let Some(i) = cross {
             soft.paint_pane_close(fb, i, false);
         }
@@ -1135,23 +1151,26 @@ fn png_header_and_checksums() {
 /// The status bar costs rows, draws text and a hairline in the bottom strip, and leaves the rest alone.
 #[test]
 fn the_status_bar_takes_rows_and_draws_its_text_in_the_bottom_strip() {
-    let (on, off) = (Soft::new(&FontCfg::sized(PX), OPACITY), {
-        let mut s = Soft::new(&FontCfg::sized(PX), OPACITY);
-        s.set_ui(Ui { status: false, ..Ui::IDLE });
-        s
-    });
+    let (on, off) = (
+        {
+            let mut s = Soft::new(&FontCfg::sized(PX), OPACITY);
+            s.set_ui(Ui { status: true, ..Ui::IDLE });
+            s
+        },
+        Soft::new(&FontCfg::sized(PX), OPACITY),
+    );
     let (cw, ch) = on.cell();
     let rows = |s: &Soft| session::grid_size(W, H, cw, ch, s.pad, s.top, s.bottom).1;
     assert!(rows(&on) < rows(&off), "{} rows with the bar, {} without", rows(&on), rows(&off));
-    assert_eq!(on.bottom as usize, chrome::STATUS_H + (PX * 0.45).round() as usize);
+    assert_eq!(on.bottom as usize - off.bottom as usize, chrome::STATUS_H + 16 - 14, "the bar and a margin instead of the composer's padding");
 
     let frame = |name: &str| {
         let s = scenes().into_iter().find(|s| s.name == name).unwrap();
         let (fb, w, _) = render(&s);
         (fb, w)
     };
-    let (with, w) = frame("rest");
-    let (without, _) = frame("no-status");
+    let (with, w) = frame("status-bar");
+    let (without, _) = frame("rest");
     let (_, _, mb) = chrome::margins(false);
     let h = with.len() / w;
     let strip = (h - mb - chrome::STATUS_H)..(h - mb);

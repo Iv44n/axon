@@ -1119,7 +1119,7 @@ impl Overview {
                     slab(p, chip, 8, group_color(g.color), 0.14);
                 }
                 p.disc((at + 9) as f32 + 4.0, cy as f32, 4.0, group_color(g.color), 1.0);
-                t.draw(p, at + 9 + 8 + 6, cy, &name, Ink::new(PX, if lit { fg() } else { dim() }));
+                t.draw(p, at + 9 + 8 + 6, cy, &name, Ink::new(PX, if lit { fg() } else { dim() }).medium());
                 at += chip.2;
             }
             None => {
@@ -1198,7 +1198,7 @@ fn paint_card(p: &mut Paint, t: &Text, r: Rect, c: &Card, active: bool, s: &Card
         right -= 6 + 8;
     }
     let title = t.fit(&c.title, PX, (right - (x + 35)).max(20));
-    t.draw(p, x + 35, cy, &title, Ink::new(PX, fg()));
+    t.draw(p, x + 35, cy, &title, Ink::new(PX, fg()).medium());
     if !c.meta.is_empty() {
         let meta = t.fit(&c.meta, PX_SMALL, w - 2 - 24);
         t.draw(p, x + 12, fy + FOOT_H + 8, &meta, Ink::new(PX_SMALL, dim()));

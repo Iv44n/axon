@@ -24,8 +24,9 @@ go); the last one closing quits. A shell ends with two events (`ChildExit`, `Exi
 and status bars stay full width. The panel (`side.rs`) is painted in that box, under the title bar and above the status
 bar, when a frame is full or something in it changed (`App::side_dirty`: a window opened, closed, selected, retitled,
 printed, or the pointer moved over another part). Rows are 30 px with the reference's look (selected 7.5 % white, hover
-4.5 %, a cross on hover, a dot for unread output). The text is the grid's own font at 0.85: a proportional UI font would be
-5 MB of resident outlines for a panel that is always on screen (idle RSS is the product).
+4.5 %, a cross on hover, a dot for unread output). The text was the grid's own font at 0.85 (a proportional UI font was 5 MB of
+resident outlines for a panel that is always on screen); since [0036](../interface/0036-the-reference-cleaner.md) it is the UI font,
+narrowed to ~2 MB, as the reference has it.
 
 **Input:** `Alt+N` new, `Alt+W` close, `Alt+1…9` go to, `Alt+[` / `Alt+]` previous / next, `Alt+B` panel on / off; the panel
 takes clicks (`Hit::Side`): a row goes to it, the cross closes, `+` opens one. `[windows] tabs = "left" | "right" | "top"`,

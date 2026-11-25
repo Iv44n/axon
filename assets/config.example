@@ -46,8 +46,8 @@
 # blur = false
 
 # The status bar at the bottom of the window: shell, encoding, git branch (with the chips on), key hints and the
-# size of the grid. It takes 28 px: turn it off for the last row.
-# status_bar = true
+# size of the grid. Off by default (the look has none); it takes 28 px when on.
+# status_bar = false
 
 [ui]
 # The language of the window's text (the settings panel, the status bar): "auto" follows your locale

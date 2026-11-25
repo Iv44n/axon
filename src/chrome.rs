@@ -142,7 +142,7 @@ pub struct Ui {
 }
 
 impl Ui {
-    pub const IDLE: Ui = Ui { hover: 0, down: false, focused: true, maximized: false, status: true, side: 1, prefs: false };
+    pub const IDLE: Ui = Ui { hover: 0, down: false, focused: true, maximized: false, status: false, side: 1, prefs: false };
 }
 
 fn button_center(i: u8) -> (f32, f32) {
@@ -512,7 +512,8 @@ mod tests {
 
     use super::*;
 
-    const UI: Ui = Ui::IDLE;
+    /// The idle window with the status bar on (it is off by default), so its hairline and tint are tested too.
+    const UI: Ui = Ui { status: true, ..Ui::IDLE };
 
     /// An 800 x 600 window: its buffer, and buffer pixel `(x, y)` of window pixel `(x, y)`.
     const WIN: (usize, usize) = (800, 600);
