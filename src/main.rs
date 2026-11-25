@@ -2,6 +2,7 @@
 mod bar;
 mod cell;
 mod chrome;
+mod commands;
 mod config;
 mod context;
 mod design;
@@ -20,6 +21,7 @@ mod overlay_demo;
 mod paint;
 mod panes;
 mod palette;
+mod picker;
 mod session;
 mod settings;
 mod side;

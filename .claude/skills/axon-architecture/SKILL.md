@@ -49,7 +49,9 @@ poll wakes wlapp ─► View::build ─► soft.rs rows ─► wl_shm buffer ─
 | `menu.rs` | the context menu, an `Overlay`: items with shortcut, check, dot, danger, disabled, separators; placed at the pointer and clamped | `overlay`, `icons`, `side::group_color` |
 | `toast.rs` | a toast: bottom-centre message with an action, a pure function of the moment (fades), `deadline` is the loop's only timer for it | `overlay` |
 | `icons.rs` | the outline icons of the overlays on the reference's 16-unit grid, drawn as per-pixel coverage | `paint`, `chrome` |
-| `overlay_demo.rs` | the kit's debug screens (`AXON_DEMO_OVERLAY=field\|list\|menu\|toast\|modal`) and the usage example: `Dialog`, `Picker` (palette-shaped), `window_menu` | `overlay`, `field`, `list`, `menu` |
+| `commands.rs` | what the command palette lists ([0027](../../../knowledge/decisions/0027-command-palette.md)): `Cmd` (id <-> command), `State` (the app's windows and groups at the moment it opens), `build` -> a filtered `List` (actions in the reference's order, windows, groups); pure and tested | `config` (`TabsPos`), `i18n`, `icons`, `list`, `side` (`GroupItem`) |
+| `picker.rs` | the palette's overlay (`Ctrl+K`): the input row, the list and the footer in a `Modal`; answers `Out::Run(id)`, `Ctrl+K` again closes; opened by `App::open_palette`, run by `App::run_cmd` | `overlay`, `field`, `list`, `icons`, `xkb::Key` |
+| `overlay_demo.rs` | the kit's debug screens (`AXON_DEMO_OVERLAY=field\|list\|menu\|toast\|modal`) and the usage example: `Dialog`, `picker()` (the palette over ten sample entries), `window_menu` | `overlay`, `field`, `list`, `menu`, `picker` |
 | `config.rs` | settings file (`config.toml`), own parser, `FontCfg`, env overrides; read at startup and on reload | — |
 | `mouse.rs` | mouse reports for programs (xterm 1000/1002/1003; SGR, UTF-8, classic): pure `encode`, own tests | `xkb` (`Mods`), alacritty (`TermMode`) |
 | `view.rs` | grid -> cells: `View::build(term, focused, &mut impl Backend)`, damage, cursor and selection rows | `cell`, `palette`, alacritty |

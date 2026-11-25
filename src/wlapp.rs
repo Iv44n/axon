@@ -34,11 +34,12 @@ use crate::{
     i18n::{self, Str, tr},
     cell::pack,
     chrome::{self, EDGE_BOTTOM, EDGE_LEFT, EDGE_RIGHT, EDGE_TOP, Hit, Ui},
+    commands::{self, Cmd},
     config::{self, Chip, Config, FontCfg},
     context::{self, Context, Probe},
     input, mouse,
     overlay::{self, Click, Geo, Overlay, Ran, Reply, Stack},
-    overlay_demo, palette, panes, session,
+    overlay_demo, palette, panes, picker::Picker, session,
     settings::{self, Effect, Settings},
     soft::{Dock, Slot, Soft, UNFOCUSED},
     view::View,
@@ -610,10 +611,10 @@ impl App {
         if std::env::var_os("AXON_SETTINGS").is_some() {
             app.toggle_settings();
         }
-        // Another: start with one of the overlay kit's screens open (`field`, `list`, `menu`, `toast`, `modal`).
+        // Another: start with one of the overlay kit's screens open (`field`, `list`, `menu`, `toast`, `modal`) or the palette.
         if let Ok(kind) = std::env::var("AXON_DEMO_OVERLAY") {
             if !app.demo_overlay(&kind) {
-                eprintln!("axon: AXON_DEMO_OVERLAY is one of {}", overlay_demo::KINDS.join(", "));
+                eprintln!("axon: AXON_DEMO_OVERLAY is one of {}, palette", overlay_demo::KINDS.join(", "));
             }
         }
         Ok(app)
@@ -896,7 +897,40 @@ impl App {
         side::Layout::Side { x0: bx, y0: by, w: bw, entries: &self.entries }.hit(x, y)
     }
 
+    /// Puts the windows and groups at `pos` (the palette's three entries): a side shows the panel there, as picking
+    /// it in the settings does; it is written to the file, and the panel of settings, if open, follows.
+    fn set_tabs(&mut self, pos: config::TabsPos) {
+        let mut windows = self.cfg.windows.clone();
+        windows.tabs = pos;
+        if pos != config::TabsPos::Top {
+            windows.side = true;
+        }
+        let msg = match pos {
+            config::TabsPos::Left => Str::ToastPanelLeft,
+            config::TabsPos::Right => Str::ToastPanelRight,
+            config::TabsPos::Top => Str::ToastTabsTop,
+        };
+        let saved = config::save(&[("windows.tabs", Some(format!("{:?}", pos.name()))), ("windows.side", Some(windows.side.to_string()))]);
+        self.cfg.windows = windows;
+        self.side_hover = None;
+        if let Some(p) = self.panel.as_mut() {
+            p.follow_tabs(&self.cfg.windows);
+            self.prefs_dirty = true;
+        }
+        self.relayout();
+        match saved {
+            Ok(_) => self.overlays.toast(tr(msg), None, 0, Instant::now()),
+            Err(e) => self.overlays.toast(&format!("{}{e}", tr(Str::NotSaved)), None, 0, Instant::now()),
+        }
+    }
+
     fn toggle_side(&mut self) {
+        // With the tabs at the top there is no panel to show: say so, as the reference does.
+        if self.tabs_on_top() {
+            self.overlays.toast(tr(Str::ToastNoPanel), None, 0, Instant::now());
+            self.dirty = true;
+            return;
+        }
         self.cfg.windows.side = !self.cfg.windows.side;
         self.side_hover = None;
         if let Some(p) = self.panel.as_mut() {
@@ -1375,6 +1409,18 @@ impl App {
         self.relayout();
     }
 
+    /// Opens the panel, or, when it is open, gives it the keyboard (the palette's "Settings").
+    fn open_settings(&mut self) {
+        match self.panel.as_mut() {
+            None => self.toggle_settings(),
+            Some(p) => {
+                p.focus = true;
+                self.prefs_dirty = true;
+                self.dirty = true;
+            }
+        }
+    }
+
     /// Closes the panel: what it changed last is written first, and the grid takes its room back.
     fn close_settings(&mut self) {
         self.flush_save();
@@ -1640,6 +1686,11 @@ impl App {
             self.toggle_settings();
             return true;
         }
+        // Ctrl+K: the command palette (the shell does not get it, as in the reference). Not a key that repeats.
+        if m.ctrl && !m.alt && !m.shift && matches!(k.sym, 0x6b | 0x4b) {
+            self.open_palette();
+            return false;
+        }
         // The settings panel has the keyboard (it opened, or was clicked, and the terminal was not clicked since):
         // the app's own shortcuts still work, and everything else is for the panel. Escape closes it.
         let docked = self.panel.as_ref().is_some_and(|p| p.focus);
@@ -1752,15 +1803,19 @@ impl App {
     /// Opens an overlay over the window (the palette, the overview, a dialog, a menu) under the app's `tag` for
     /// it; the settings panel is docked beside the grid and stays open under it. Its command comes back
     /// through `overlay_ran`.
-    #[allow(dead_code)]
     fn open_overlay(&mut self, tag: u32, o: Box<dyn Overlay>) {
         self.grab_input();
         self.overlays.open(tag, o);
         self.dirty = true;
     }
 
-    /// Opens one of the kit's debug screens by name (`AXON_DEMO_OVERLAY`). False if there is no such one.
+    /// Opens one of the kit's debug screens by name (`AXON_DEMO_OVERLAY`), or the real palette (`palette`). False if
+    /// there is no such one.
     fn demo_overlay(&mut self, kind: &str) -> bool {
+        if kind == "palette" {
+            self.open_palette();
+            return true;
+        }
         self.grab_input();
         let g = self.geo();
         let ok = overlay_demo::open(kind, &mut self.overlays, g, Instant::now());
@@ -1799,6 +1854,11 @@ impl App {
     /// dialogs) match on their tag here.
     fn overlay_ran(&mut self, ran: Ran) {
         match ran.tag {
+            commands::TAG => {
+                if let Some(cmd) = Cmd::from_id(ran.id) {
+                    self.run_cmd(cmd);
+                }
+            }
             overlay_demo::TAG => {
                 eprintln!("axon: demo overlay ran command {}", ran.id);
                 self.overlays.toast(tr(Str::OvToastClosed), Some(tr(Str::OvUndo)), overlay_demo::CMD_UNDO, Instant::now());
@@ -1806,6 +1866,59 @@ impl App {
             overlay::TOAST => eprintln!("axon: toast action {}", ran.id),
             _ => {}
         }
+    }
+
+    /// Opens the command palette (`Ctrl+K`) over the windows and groups there are now.
+    fn open_palette(&mut self) {
+        let wins: Vec<commands::WinInfo> = self.wins.iter().map(|w| commands::WinInfo { title: win_title(w), place: win_place(w), group: w.group }).collect();
+        let groups = group_items(&self.groups, &self.wins);
+        let w = &self.wins[self.cur];
+        // The overview is listed once the app has one (it has not yet).
+        let state = commands::State { wins: &wins, groups: &groups, cur: self.cur, panes: w.panes.len(), overview: false };
+        let list = commands::build(&state);
+        self.open_overlay(commands::TAG, Box::new(Picker::new(list)));
+    }
+
+    /// What a palette entry does: the same call the entry's shortcut makes, so the two cannot differ.
+    fn run_cmd(&mut self, cmd: Cmd) {
+        match cmd {
+            Cmd::NewWindow => self.new_win(),
+            Cmd::NewGroup => self.new_group(),
+            Cmd::NewPane => self.split(panes::Dir::Auto),
+            Cmd::SplitCols => self.split(panes::Dir::Cols),
+            Cmd::SplitRows => self.split(panes::Dir::Rows),
+            // Listed only when `open_palette` says the app has an overview: nothing to open until it does.
+            Cmd::Overview => {}
+            Cmd::TogglePanel => self.toggle_side(),
+            Cmd::Tabs(pos) => self.set_tabs(pos),
+            Cmd::HistorySearch => self.type_into_shell(b"\x12"),
+            Cmd::ClearScreen => self.type_into_shell(b"\x0c"),
+            Cmd::Settings => self.open_settings(),
+            Cmd::CloseWindow => self.close_win(self.cur),
+            Cmd::ClosePane => self.close_pane(self.cur, self.wins[self.cur].focus),
+            Cmd::Ungroup => self.ungroup(),
+            Cmd::Window(i) => self.switch_to(i),
+            Cmd::Group(g) => {
+                if let Some(i) = self.wins.iter().position(|w| w.group == Some(g)) {
+                    self.switch_to(i);
+                }
+            }
+            Cmd::Fold(g) => self.fold(g),
+        }
+    }
+
+    /// Types `bytes` into the shell of the pane with the focus, as the key would (`Ctrl+R`, `Ctrl+L`): the view
+    /// goes back to the bottom of the scrollback first.
+    fn type_into_shell(&mut self, bytes: &'static [u8]) {
+        let pane = self.wins[self.cur].pane();
+        let mut t = pane.term.lock();
+        if t.grid().display_offset() > 0 {
+            t.scroll_display(Scroll::Bottom);
+        }
+        t.selection = None;
+        drop(t);
+        pane.pty.notify(bytes);
+        self.dirty = true;
     }
 
     /// A button press or release while overlays are shown. Returns whether they took it: with one open every

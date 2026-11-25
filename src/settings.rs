@@ -778,6 +778,14 @@ impl Settings {
         self.orig.windows.side = windows.side;
     }
 
+    /// The windows' panel was moved outside the panel and already written to the file (the command palette's
+    /// "windows and groups on the left / right / top"): the position follows, and it is not a change to save.
+    pub fn follow_tabs(&mut self, windows: &WindowsCfg) {
+        self.follow_windows(windows);
+        self.draft.windows.tabs = windows.tabs;
+        self.orig.windows.tabs = windows.tabs;
+    }
+
     fn family_label(&self) -> &str {
         match self.fam {
             0 => tr(Str::DefaultFont),
@@ -2418,6 +2426,15 @@ mod tests {
         let mut t = open();
         t.follow_windows(&WindowsCfg { side: false, ..WindowsCfg::default() });
         assert!(!t.draft.windows.side && t.changes().is_empty());
+        // The palette moving the panel does the same for its position, and Alt+B leaves a position still to save alone.
+        let mut t = open();
+        t.follow_tabs(&WindowsCfg { tabs: TabsPos::Top, ..WindowsCfg::default() });
+        assert_eq!(t.draft.windows.tabs, TabsPos::Top);
+        assert!(t.changes().is_empty());
+        let mut t = open();
+        t.draft.windows.tabs = TabsPos::Right;
+        t.follow_windows(&WindowsCfg { tabs: TabsPos::Right, side: false, ..WindowsCfg::default() });
+        assert_eq!(t.changes().iter().map(|c| c.0).collect::<Vec<_>>(), ["windows.tabs"], "the position is still to be saved");
     }
 
     #[test]
