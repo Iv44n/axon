@@ -72,3 +72,12 @@
 # is skipped. Available: time, user, env (conda or venv), pyenv, host (user@host), dir, branch,
 # changes (files and lines changed in git), kube (the current kubectl context).
 # chips = ["time", "user", "env", "pyenv", "host", "dir", "branch", "changes", "kube"]
+
+[windows]
+# Where the list of windows (tabs) lives: "left" or "right" as a panel, or "top". Alt+N opens a window,
+# Alt+W closes it, Alt+1..9 goes to one, Alt+[ and Alt+] go to the previous and the next.
+# tabs = "left"
+
+# Whether the panel is shown (Alt+B toggles it), and its width in pixels (160 to 320).
+# side = true
+# side_width = 220

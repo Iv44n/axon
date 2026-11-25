@@ -115,6 +115,8 @@ struct Scene {
     /// The prompt chips: what they say, and which are listed. The last prompt of `input` is marked
     /// the way the shell's hook marks it (`prompt`).
     bar: Option<(Context, Vec<Chip>)>,
+    /// The panel of windows: on the right, and what the pointer is over. The windows are made up.
+    side: Option<(bool, Option<crate::side::Part>)>,
 }
 
 /// What the bar says in the board's scenes: made-up values, the same on every machine.
@@ -154,6 +156,7 @@ fn scenes() -> Vec<Scene> {
         input: SHELL,
         select: None,
         bar: None,
+        side: None,
         lang: Lang::En,
     };
     let bar = |chips: &[Chip]| Some((sample_context(), chips.to_vec()));
@@ -215,6 +218,9 @@ fn scenes() -> Vec<Scene> {
             hold: Some((Chip::Branch, (330, 190))),
             ..base("settings-chip-drag", "Input page: a chip held mid-drag", "settings", Ui::IDLE)
         },
+        Scene { side: Some((false, None)), ..base("side", "Panel of windows at the left (Alt+B hides it)", "windows", Ui::IDLE) },
+        Scene { side: Some((false, Some(crate::side::Part::Close(2)))), bar: bar(&[Chip::Time, Chip::Dir, Chip::Branch, Chip::Changes]), input: hooked, ..base("side-hover", "Pointer over a row's cross, chips on", "windows", Ui::IDLE) },
+        Scene { side: Some((true, Some(crate::side::Part::New))), ..base("side-right", "Panel at the right, pointer over the +", "windows", Ui::IDLE) },
         Scene { font: font(300, 0.0, 1.0), ..base("font-light", "Weight 300 (light)", "font", Ui::IDLE) },
         Scene { font: font(500, 0.0, 1.0), ..base("font-medium", "Weight 500 (medium)", "font", Ui::IDLE) },
         Scene { font: font(400, 1.0, 1.0), ..base("font-spaced", "Letter spacing +1 px", "font", Ui::IDLE) },
@@ -230,7 +236,11 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
     soft.set_title(s.title);
     soft.set_ui(s.ui);
     let (cw, ch) = soft.cell();
-    let (cols, rows) = session::grid_size(W, H, cw, ch, soft.pad, soft.top, soft.bottom);
+    let side_w = if s.side.is_some() { 220 } else { 0 };
+    if let Some((right, _)) = s.side {
+        soft.set_inset(if right { 0 } else { side_w }, if right { side_w } else { 0 });
+    }
+    let (cols, rows) = session::grid_size(W - side_w, H, cw, ch, soft.pad, soft.top, soft.bottom);
     let mut term = Term::new(Config::default(), &session::Size { cols, rows }, VoidListener);
     let mut p: Processor = Processor::new();
     p.advance(&mut term, s.input.as_bytes());
@@ -245,6 +255,14 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
     soft.set_status("zsh", "main", cols, rows);
     let (ctx, chips) = s.bar.clone().unwrap_or_default();
     bar::Chips::default().frame(s.bar.is_some(), true, &demo_history(&ctx), &chips, &mut term, &mut View::new(), &mut soft, &mut fb, (w, h), s.ui.focused);
+    if let (Some((right, hover)), Some(rect)) = (s.side, soft.side_rect()) {
+        let (ox, oy) = soft.origin();
+        let b = ((rect.0 - ox) as i32, (rect.1 - oy) as i32, (rect.2 - rect.0) as i32, (rect.3 - rect.1) as i32);
+        let item = |title: &str, selected, unread| crate::side::Item { title: title.to_string(), selected, unread };
+        let items = [item("arcton", true, false), item("servidor", false, false), item("pruebas", false, true), item("~", false, false)];
+        soft.clear_rect(&mut fb, rect);
+        crate::side::paint(&soft, &mut fb, b, !right, &i18n::tr(i18n::Str::Windows), &items, hover, &mut Vec::new());
+    }
     if let Some((sel, hover, typing)) = s.settings {
         // Fixed fonts, not whatever is installed: the board must look the same on every machine.
         let families = vec![("DejaVu Sans Mono".to_string(), "/x/a.ttf".into()), ("JetBrains Mono".to_string(), "/x/b.ttf".into())];

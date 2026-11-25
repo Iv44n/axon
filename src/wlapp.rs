@@ -29,6 +29,7 @@ use rustix::{
 
 use crate::{
     bar,
+    side,
     history::{self, History, Hook},
     i18n::{self, Str, tr},
     cell::pack,
@@ -81,7 +82,7 @@ fn cursor_for(hit: Hit) -> u32 {
             e if e == EDGE_BOTTOM | EDGE_LEFT => cursor::SW_RESIZE,
             _ => cursor::SE_RESIZE,
         },
-        Hit::Title => cursor::DEFAULT,
+        Hit::Title | Hit::Side => cursor::DEFAULT,
         Hit::Client => cursor::TEXT,
     }
 }
@@ -145,13 +146,52 @@ struct Repeat {
     at: Instant,
 }
 
-struct App {
-    wl: Wl,
-    soft: Soft,
-    view: View,
+/// One window (a tab): its terminal session and everything that belongs to that shell. The app draws
+/// and types into one at a time (`App::cur`); the others keep running and are listed in the side panel.
+struct Win {
     term: Arc<FairMutex<Term<Proxy>>>,
     pty: Notifier,
     proxy: Proxy,
+    view: View,
+    /// What the prompt chips say now, whether that changed since the last frame, and what each prompt said.
+    ctx: Context,
+    history: History,
+    ctx_dirty: bool,
+    chips: bar::Chips,
+    /// The shell's process id, the file it reports to, the flag that turns the chips on, the refresh in progress.
+    shell: u32,
+    report: Option<PathBuf>,
+    flag: Option<PathBuf>,
+    refresh: Refresh,
+    /// The title the program set (empty: the directory's name is used) and whether it printed while hidden.
+    title: String,
+    unread: bool,
+}
+
+impl Drop for Win {
+    /// The files the shell and this window talk through belong to this window; the shell is told to end.
+    fn drop(&mut self) {
+        for f in [&self.report, &self.flag].into_iter().flatten() {
+            let _ = std::fs::remove_file(f);
+        }
+        let _ = self.pty.0.send(alacritty_terminal::event_loop::Msg::Shutdown);
+    }
+}
+
+struct App {
+    wl: Wl,
+    soft: Soft,
+    /// The windows, in the order of the side panel, and the one on screen.
+    wins: Vec<Win>,
+    cur: usize,
+    /// What wakes `poll`: the PTY threads write to it.
+    wake: Arc<OwnedFd>,
+    /// The number the next window gets (for its report file and its PTY).
+    next_win: u64,
+    /// What the pointer is over in the panel of windows, and whether the panel has to be painted again.
+    side_hover: Option<side::Part>,
+    side_dirty: bool,
+    side_scratch: Vec<u8>,
     xkb: Option<Xkb>,
     ui: Ui,
     hover: Hit,
@@ -172,18 +212,6 @@ struct App {
     waiting: Option<Instant>,
     /// The settings screen, while it is open.
     panel: Option<Box<Settings>>,
-    /// The prompt chips: what they say now, whether that changed since the last frame, the row they
-    /// are on, the shell they read (process id, the file it reports to, the flag that turns them on)
-    /// and the refresh in progress.
-    ctx: Context,
-    /// What each prompt said and how its command ended (the chips' status).
-    history: History,
-    ctx_dirty: bool,
-    chips: bar::Chips,
-    shell: u32,
-    report: Option<PathBuf>,
-    flag: Option<PathBuf>,
-    refresh: Refresh,
     dirty: bool,
     quit: bool,
     mouse: (f32, f32),
@@ -201,13 +229,31 @@ struct App {
     delay: i32,
 }
 
-impl Drop for App {
-    /// The files the shell and this window talk through belong to this window.
-    fn drop(&mut self) {
-        for f in [&self.report, &self.flag].into_iter().flatten() {
-            let _ = std::fs::remove_file(f);
-        }
+/// The panel's box `(x, y, w, h)` in window pixels, when there is one.
+fn side_box(soft: &Soft) -> Option<(i32, i32, i32, i32)> {
+    let (x0, y0, x1, y1) = soft.side_rect()?;
+    let (ox, oy) = soft.origin();
+    Some((x0 as i32 - ox as i32, y0 as i32 - oy as i32, (x1 - x0) as i32, (y1 - y0) as i32))
+}
+
+/// The title of a window: what its program set, else the name of its directory.
+fn win_title(w: &Win) -> String {
+    if !w.title.is_empty() {
+        return w.title.clone();
     }
+    let cwd = std::fs::read_link(format!("/proc/{}/cwd", w.shell)).unwrap_or_default();
+    if std::env::var_os("HOME").map(PathBuf::from).as_deref() == Some(cwd.as_path()) {
+        return "~".into();
+    }
+    cwd.file_name().map_or_else(|| "/".into(), |n| n.to_string_lossy().into_owned())
+}
+
+/// Paints the panel of windows over its cleared box.
+fn paint_side(soft: &Soft, fb: &mut [u32], wins: &[Win], cur: usize, right: bool, hover: Option<side::Part>, scratch: &mut Vec<u8>) {
+    let (Some(rect), Some(b)) = (soft.side_rect(), side_box(soft)) else { return };
+    soft.clear_rect(fb, rect);
+    let items: Vec<side::Item> = wins.iter().enumerate().map(|(i, w)| side::Item { title: win_title(w), selected: i == cur, unread: w.unread }).collect();
+    side::paint(soft, fb, b, !right, &tr(Str::Windows), &items, hover, scratch);
 }
 
 /// Runs the app. Returns false, with nothing shown, if this backend cannot start here (no Wayland
@@ -225,6 +271,36 @@ pub fn run() -> bool {
         std::process::exit(1);
     }
     true
+}
+
+impl Win {
+    /// A new window with its own shell. `n` numbers it for the files it reports through.
+    fn spawn(wake: &Arc<OwnedFd>, n: u64, (cols, rows, cw, ch): (usize, usize, u32, u32), cursor: config::CursorKind, chips: bool) -> Win {
+        let proxy = Proxy { wake: wake.clone(), pending: Arc::new(AtomicBool::new(false)), queue: Arc::default(), hooks: Arc::default() };
+        // The files the shell and axon talk through (`context.rs`): what the shell reports, and the flag
+        // that says the prompt chips are on.
+        let (report, flag) = (context::report_path(std::process::id(), n), context::flag_path(std::process::id(), n));
+        let shell_path = std::env::var("SHELL").unwrap_or_default();
+        let inherited = std::env::var("PROMPT_COMMAND").ok();
+        let env = context::shell_env(&shell_path, report.as_deref(), flag.as_deref(), inherited.as_deref()).into_iter().collect();
+        let (term, pty, shell) = session::spawn(proxy.clone(), cols, rows, cw, ch, n, env, cursor);
+        Win {
+            term,
+            pty,
+            proxy,
+            view: View::new(),
+            ctx: Context::default(),
+            history: History::default(),
+            ctx_dirty: true,
+            chips: bar::Chips::default(),
+            shell,
+            report,
+            flag,
+            refresh: Refresh { due: chips.then(Instant::now), last: Instant::now(), running: Arc::new(AtomicBool::new(false)), done: Arc::default(), clock_at: None },
+            title: String::new(),
+            unread: false,
+        }
+    }
 }
 
 impl App {
@@ -270,26 +346,24 @@ impl App {
         }
 
         let wake = Arc::new(eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)?);
-        let proxy = Proxy { wake, pending: Arc::new(AtomicBool::new(false)), queue: Arc::default(), hooks: Arc::default() };
-        let (cols, rows) = session::grid_size(w, h, cw, ch, soft.pad, soft.top, soft.bottom);
-        // The files the shell and axon talk through (`context.rs`): what the shell reports, and the flag
-        // that says the prompt chips are on.
-        let (report, flag) = (context::report_path(std::process::id()), context::flag_path(std::process::id()));
-        if let Some(dir) = report.as_deref().and_then(std::path::Path::parent) {
+        let side = if cfg.windows.side && cfg.windows.tabs != config::TabsPos::Top { cfg.windows.side_w } else { 0 };
+        soft.set_inset(if cfg.windows.tabs == config::TabsPos::Right { 0 } else { side }, if cfg.windows.tabs == config::TabsPos::Right { side } else { 0 });
+        let (cols, rows) = session::grid_size(w.saturating_sub(side), h, cw, ch, soft.pad, soft.top, soft.bottom);
+        if let Some(dir) = context::report_path(std::process::id(), 0).as_deref().and_then(std::path::Path::parent) {
             context::remove_stale_reports(dir);
         }
-        let shell_path = std::env::var("SHELL").unwrap_or_default();
-        let inherited = std::env::var("PROMPT_COMMAND").ok();
-        let env = context::shell_env(&shell_path, report.as_deref(), flag.as_deref(), inherited.as_deref()).into_iter().collect();
-        let (term, pty, shell) = session::spawn(proxy.clone(), cols, rows, cw, ch, 0, env, cfg.input.cursor);
         let cfg_chips = cfg.input.inline && !cfg.input.chips.is_empty();
+        let first = Win::spawn(&wake, 0, (cols, rows, cw, ch), cfg.input.cursor, cfg_chips);
         let mut app = App {
             wl,
             soft,
-            view: View::new(),
-            term,
-            pty,
-            proxy,
+            wins: vec![first],
+            cur: 0,
+            wake,
+            next_win: 1,
+            side_hover: None,
+            side_dirty: true,
+            side_scratch: Vec::new(),
             xkb,
             ui,
             hover: Hit::Client,
@@ -304,20 +378,6 @@ impl App {
             cfg,
             opacity,
             panel: None,
-            ctx: Context::default(),
-            history: History::default(),
-            ctx_dirty: true,
-            chips: bar::Chips::default(),
-            shell,
-            report,
-            flag,
-            refresh: Refresh {
-                due: cfg_chips.then(Instant::now),
-                last: Instant::now(),
-                running: Arc::new(AtomicBool::new(false)),
-                done: Arc::default(),
-                clock_at: None,
-            },
             dirty: true,
             waiting: None,
             quit: false,
@@ -334,6 +394,11 @@ impl App {
         };
         app.set_geometry();
         app.sync_flag();
+        // A debugging aid: start with this many windows (screenshots, memory measurements).
+        for _ in 1..std::env::var("AXON_WINDOWS").ok().and_then(|n| n.parse::<usize>().ok()).unwrap_or(1).min(9) {
+            app.new_win();
+        }
+        app.switch_to(0);
         // A debugging aid: start with the settings screen open (screenshots, memory measurements).
         if std::env::var_os("AXON_SETTINGS").is_some() {
             app.toggle_settings();
@@ -349,7 +414,7 @@ impl App {
             // Block until the compositor, the PTY thread or a held key needs us; and, when a redraw is
             // stuck waiting for the compositor, only until it is clear that it will not answer.
             let now = Instant::now();
-            let timeout = [self.repeat.as_ref().map(|r| r.at), self.waiting.map(|t| t + STALL), self.refresh.due, self.refresh.clock_at]
+            let timeout = [self.repeat.as_ref().map(|r| r.at), self.waiting.map(|t| t + STALL), self.wins[self.cur].refresh.due, self.wins[self.cur].refresh.clock_at]
                 .into_iter()
                 .flatten()
                 .min()
@@ -357,7 +422,7 @@ impl App {
                     let left = at.saturating_duration_since(now);
                     Timespec { tv_sec: left.as_secs() as i64, tv_nsec: left.subsec_nanos() as i64 }
                 });
-            let wake = self.proxy.wake.clone();
+            let wake = self.wake.clone();
             let wl_fd = self.wl.fd();
             let mut fds = [PollFd::new(&wl_fd, PollFlags::IN), PollFd::new(wake.as_ref(), PollFlags::IN)];
             match poll(&mut fds, timeout.as_ref()) {
@@ -369,7 +434,7 @@ impl App {
                 let _ = read(wake.as_fd(), &mut [0u8; 8]);
                 self.dirty = true;
                 // The terminal printed something: the directory or the branch may have changed.
-                if self.proxy.pending.load(Ordering::Acquire) {
+                if self.wins[self.cur].proxy.pending.load(Ordering::Acquire) {
                     self.context_due(Instant::now());
                 }
             }
@@ -409,8 +474,8 @@ impl App {
             return;
         };
         self.waiting = None;
-        self.proxy.pending.store(false, Ordering::Release);
-        let branch = if chips_on { self.ctx.get(Chip::Branch) } else { "" };
+        self.wins[self.cur].proxy.pending.store(false, Ordering::Release);
+        let branch = if chips_on { self.wins[self.cur].ctx.get(Chip::Branch) } else { "" };
         let shell = std::env::var("SHELL").ok();
         let shell = shell.as_deref().and_then(|s| s.rsplit('/').next()).unwrap_or("shell");
         self.soft.set_status(shell, branch, self.cols, self.rows);
@@ -418,66 +483,180 @@ impl App {
         if self.panel.is_some() {
             self.soft.invalidate(); // the panel is painted over a complete grid, every time
         }
-        let mut t = self.term.lock();
+        let win = &mut self.wins[self.cur];
+        let mut t = win.term.lock();
         let chips = &self.cfg.input.chips;
-        self.chips.frame(chips_on, self.ctx_dirty, &self.history, chips, &mut t, &mut self.view, &mut self.soft, fb, (w, h), self.ui.focused);
+        win.chips.frame(chips_on, win.ctx_dirty, &win.history, chips, &mut t, &mut win.view, &mut self.soft, fb, (w, h), self.ui.focused);
         drop(t);
-        self.ctx_dirty = false;
+        win.ctx_dirty = false;
+        if self.soft.last_full || self.side_dirty {
+            let right = self.cfg.windows.tabs == config::TabsPos::Right;
+            paint_side(&self.soft, fb, &self.wins, self.cur, right, self.side_hover, &mut self.side_scratch);
+            self.side_dirty = false;
+        }
         let mut animating = false;
         if let Some(p) = self.panel.as_mut() {
             animating = p.step(Instant::now());
             p.draw(fb, w, h, (ml, mt), (self.w, self.h), self.ui.maximized);
-            p.draw_preview(&self.soft, &self.ctx, fb, (self.w, self.h));
+            p.draw_preview(&self.soft, &self.wins[self.cur].ctx, fb, (self.w, self.h));
         }
         self.wl.present();
         // A fade in progress asks for the next frame itself; at rest nothing does (idle is 0 % CPU).
         self.dirty = animating;
     }
 
-    /// Events from the terminal thread. The queue lock is not held while one is handled: the PTY
-    /// thread sends events while holding the terminal lock, and handling may take it.
+    /// Events from the terminals' threads, window by window. The queue lock is not held while one is
+    /// handled: the PTY thread sends events while holding the terminal lock, and handling may take it.
     fn term_events(&mut self) {
-        loop {
-            let Some((at, hook)) = self.proxy.hooks.lock().unwrap().pop_front() else { break };
-            match hook {
-                Hook::Start => self.history.start(at),
-                Hook::Prompt { n, status } => {
-                    self.history.prompt(n, status, at, &self.ctx);
+        let mut gone = Vec::new();
+        for i in 0..self.wins.len() {
+            if i != self.cur && self.wins[i].proxy.pending.swap(false, Ordering::AcqRel) {
+                // A window out of sight printed: say so in the panel; the grid is read when it comes back.
+                if !self.wins[i].unread {
+                    self.wins[i].unread = true;
+                    self.side_dirty = true;
                     self.dirty = true;
                 }
             }
-        }
-        loop {
-            let Some(e) = self.proxy.queue.lock().unwrap().pop_front() else { break };
-            match e {
-                TermEvent::Title(t) => self.set_title(&t),
-                TermEvent::ResetTitle => self.set_title("axon"),
-                TermEvent::PtyWrite(t) => self.pty.notify(t.into_bytes()),
-                TermEvent::ClipboardStore(_, t) => self.wl.set_clipboard(&t),
-                // OSC 52 reads are refused (`session::term_config`): output must not read the clipboard.
-                TermEvent::ClipboardLoad(..) => {}
-                TermEvent::ColorRequest(i, f) => {
-                    let rgb = self.term.lock().colors()[i].unwrap_or_else(|| palette::by_index(i));
-                    self.pty.notify(f(rgb).into_bytes());
+            loop {
+                let Some((at, hook)) = self.wins[i].proxy.hooks.lock().unwrap().pop_front() else { break };
+                let w = &mut self.wins[i];
+                match hook {
+                    Hook::Start => w.history.start(at),
+                    Hook::Prompt { n, status } => {
+                        w.history.prompt(n, status, at, &w.ctx);
+                        self.dirty = true;
+                    }
                 }
-                TermEvent::TextAreaSizeRequest(f) => {
-                    let ws = WindowSize {
-                        num_lines: self.rows as u16,
-                        num_cols: self.cols as u16,
-                        cell_width: self.cw as u16,
-                        cell_height: self.ch as u16,
-                    };
-                    self.pty.notify(f(ws).into_bytes());
-                }
-                TermEvent::Exit | TermEvent::ChildExit(_) => self.quit = true,
-                _ => {}
             }
+            loop {
+                let Some(e) = self.wins[i].proxy.queue.lock().unwrap().pop_front() else { break };
+                match e {
+                    TermEvent::Title(t) => {
+                        self.wins[i].title = t;
+                        self.titled(i);
+                    }
+                    TermEvent::ResetTitle => {
+                        self.wins[i].title.clear();
+                        self.titled(i);
+                    }
+                    TermEvent::PtyWrite(t) => self.wins[i].pty.notify(t.into_bytes()),
+                    TermEvent::ClipboardStore(_, t) => self.wl.set_clipboard(&t),
+                    // OSC 52 reads are refused (`session::term_config`): output must not read the clipboard.
+                    TermEvent::ClipboardLoad(..) => {}
+                    TermEvent::ColorRequest(c, f) => {
+                        let rgb = self.wins[i].term.lock().colors()[c].unwrap_or_else(|| palette::by_index(c));
+                        self.wins[i].pty.notify(f(rgb).into_bytes());
+                    }
+                    TermEvent::TextAreaSizeRequest(f) => {
+                        let ws = WindowSize {
+                            num_lines: self.rows as u16,
+                            num_cols: self.cols as u16,
+                            cell_width: self.cw as u16,
+                            cell_height: self.ch as u16,
+                        };
+                        self.wins[i].pty.notify(f(ws).into_bytes());
+                    }
+                    TermEvent::Exit | TermEvent::ChildExit(_) => gone.push(i),
+                    _ => {}
+                }
+            }
+        }
+        // A shell that ends says so twice (`ChildExit` and `Exit`): one close each.
+        gone.sort_unstable();
+        gone.dedup();
+        for i in gone.into_iter().rev() {
+            self.close_win(i);
         }
     }
 
-    fn set_title(&mut self, title: &str) {
-        self.wl.set_title(title);
-        self.soft.set_title(title);
+    /// The window `i` got a new title: the compositor's title is the one on screen.
+    fn titled(&mut self, i: usize) {
+        if i == self.cur {
+            let t = if self.wins[i].title.is_empty() { "axon" } else { self.wins[i].title.as_str() };
+            self.wl.set_title(t);
+            self.soft.set_title(t);
+        }
+        self.side_dirty = true;
+        self.dirty = true;
+    }
+
+    // --------------------------------------------------------- side panel --
+
+    /// Width of the panel of windows in pixels: 0 when it is hidden or the tabs are at the top.
+    fn side_w(&self) -> u32 {
+        let c = &self.cfg.windows;
+        if c.side && c.tabs != config::TabsPos::Top { c.side_w } else { 0 }
+    }
+
+    /// Leaves the panel's room beside the grid, at the side the settings say.
+    fn apply_inset(&mut self) {
+        let w = self.side_w();
+        let (l, r) = if self.cfg.windows.tabs == config::TabsPos::Right { (0, w) } else { (w, 0) };
+        self.soft.set_inset(l, r);
+    }
+
+    fn side_box(&self) -> Option<(i32, i32, i32, i32)> {
+        side_box(&self.soft)
+    }
+
+    fn side_part_at(&self, x: f32, y: f32) -> Option<side::Part> {
+        let (bx, by, bw, bh) = self.side_box()?;
+        if x < bx as f32 || x >= (bx + bw) as f32 || y < by as f32 || y >= (by + bh) as f32 {
+            return None;
+        }
+        side::hit(bx, by, bw, self.wins.len(), x, y)
+    }
+
+    fn toggle_side(&mut self) {
+        self.cfg.windows.side = !self.cfg.windows.side;
+        self.side_hover = None;
+        self.relayout();
+    }
+
+    // ------------------------------------------------------------ windows --
+
+    /// Opens a window with a shell of its own and goes to it.
+    fn new_win(&mut self) {
+        let n = self.next_win;
+        self.next_win += 1;
+        let cfg_chips = self.chips_on();
+        let win = Win::spawn(&self.wake, n, (self.cols, self.rows, self.cw, self.ch), self.cfg.input.cursor, cfg_chips);
+        self.wins.push(win);
+        self.switch_to(self.wins.len() - 1);
+        self.sync_flag();
+    }
+
+    /// Closes window `i` (its shell is told to end); the last one closing quits.
+    fn close_win(&mut self, i: usize) {
+        if i >= self.wins.len() {
+            return;
+        }
+        if self.wins.len() == 1 {
+            // The last one: the app ends (its files and shell are cleaned up when it drops).
+            self.quit = true;
+            return;
+        }
+        self.wins.remove(i);
+        if i < self.cur || self.cur >= self.wins.len() {
+            self.cur = self.cur.saturating_sub(1).min(self.wins.len() - 1);
+        }
+        self.switch_to(self.cur);
+    }
+
+    /// Shows window `i`: what was in the middle of a pointer gesture or a key repeat is dropped, and the
+    /// whole frame is painted again from the other terminal.
+    fn switch_to(&mut self, i: usize) {
+        let i = i.min(self.wins.len() - 1);
+        (self.selecting, self.held, self.repeat) = (false, None, None);
+        self.cur = i;
+        let w = &mut self.wins[i];
+        w.unread = false;
+        w.ctx_dirty = true;
+        w.refresh.due = Some(Instant::now());
+        self.titled(i);
+        self.soft.invalidate();
+        self.side_dirty = true;
         self.dirty = true;
     }
 
@@ -500,8 +679,8 @@ impl App {
                 if !f {
                     self.repeat = None;
                 }
-                if self.term.lock().mode().contains(TermMode::FOCUS_IN_OUT) {
-                    self.pty.notify(if f { &b"\x1b[I"[..] } else { &b"\x1b[O"[..] });
+                if self.wins[self.cur].term.lock().mode().contains(TermMode::FOCUS_IN_OUT) {
+                    self.wins[self.cur].pty.notify(if f { &b"\x1b[I"[..] } else { &b"\x1b[O"[..] });
                 }
                 self.dirty = true;
             }
@@ -524,6 +703,10 @@ impl App {
             Event::PointerMove { x, y } => self.on_pointer_move(x, y),
             Event::PointerLeave => {
                 self.hover = Hit::Client;
+                if self.side_hover.take().is_some() {
+                    self.side_dirty = true;
+                    self.dirty = true;
+                }
                 if self.ui.hover != 0 || self.ui.down {
                     (self.ui.hover, self.ui.down) = (0, false);
                     self.dirty = true;
@@ -570,12 +753,19 @@ impl App {
 
     /// Grid size for the window size, after a resize or a new font size.
     fn relayout(&mut self) {
-        let (c, r) = session::grid_size(self.w, self.h, self.cw, self.ch, self.soft.pad, self.soft.top, self.soft.bottom);
+        self.apply_inset();
+        let (il, ir) = self.soft.inset();
+        let (c, r) = session::grid_size(self.w.saturating_sub(il + ir), self.h, self.cw, self.ch, self.soft.pad, self.soft.top, self.soft.bottom);
         if (c, r) != (self.cols, self.rows) {
             (self.cols, self.rows) = (c, r);
-            session::resize(&self.term, &self.pty, c, r, self.cw, self.ch);
+            for w in &self.wins {
+                session::resize(&w.term, &w.pty, c, r, self.cw, self.ch);
+            }
         }
-        self.ctx_dirty = true;
+        for w in &mut self.wins {
+            w.ctx_dirty = true;
+        }
+        self.side_dirty = true;
         self.dirty = true;
     }
 
@@ -588,11 +778,13 @@ impl App {
 
     /// Puts the flag file where the shell's hook looks: it exists while the chips are on.
     fn sync_flag(&self) {
-        let Some(f) = &self.flag else { return };
-        if self.chips_on() {
-            let _ = std::fs::write(f, b"");
-        } else {
-            let _ = std::fs::remove_file(f);
+        let on = self.chips_on();
+        for f in self.wins.iter().filter_map(|w| w.flag.as_ref()) {
+            if on {
+                let _ = std::fs::write(f, b"");
+            } else {
+                let _ = std::fs::remove_file(f);
+            }
         }
     }
 
@@ -601,44 +793,46 @@ impl App {
         if !self.chips_on() {
             return;
         }
-        let at = now.max(self.refresh.last + CONTEXT_EVERY);
-        self.refresh.due = Some(self.refresh.due.map_or(at, |d| d.min(at)));
+        let at = now.max(self.wins[self.cur].refresh.last + CONTEXT_EVERY);
+        self.wins[self.cur].refresh.due = Some(self.wins[self.cur].refresh.due.map_or(at, |d| d.min(at)));
     }
 
     /// Takes in a finished refresh, starts one that is due, and keeps the minute timer.
     fn tick_context(&mut self) {
-        if let Some(c) = self.refresh.done.lock().unwrap().take() {
-            if c != self.ctx {
-                self.ctx = c;
-                self.history.set_ctx(&self.ctx);
-                self.ctx_dirty = true;
+        let win = &mut self.wins[self.cur];
+        let done = win.refresh.done.lock().unwrap().take();
+        if let Some(c) = done {
+            if c != win.ctx {
+                win.ctx = c;
+                win.history.set_ctx(&win.ctx);
+                win.ctx_dirty = true;
                 self.dirty = true;
             }
         }
         if !self.chips_on() {
-            (self.refresh.due, self.refresh.clock_at) = (None, None);
+            (self.wins[self.cur].refresh.due, self.wins[self.cur].refresh.clock_at) = (None, None);
             return;
         }
         let now = Instant::now();
-        if self.refresh.clock_at.is_none_or(|t| now >= t) && self.cfg.input.chips.contains(&Chip::Time) {
-            if self.refresh.clock_at.is_some() {
+        if self.wins[self.cur].refresh.clock_at.is_none_or(|t| now >= t) && self.cfg.input.chips.contains(&Chip::Time) {
+            if self.wins[self.cur].refresh.clock_at.is_some() {
                 self.context_due(now);
             }
-            self.refresh.clock_at = Some(now + context::until_next_minute());
+            self.wins[self.cur].refresh.clock_at = Some(now + context::until_next_minute());
         }
-        if self.refresh.due.is_some_and(|d| now >= d) {
-            if self.refresh.running.swap(true, Ordering::AcqRel) {
-                self.refresh.due = Some(now + Duration::from_millis(200)); // one at a time
+        if self.wins[self.cur].refresh.due.is_some_and(|d| now >= d) {
+            if self.wins[self.cur].refresh.running.swap(true, Ordering::AcqRel) {
+                self.wins[self.cur].refresh.due = Some(now + Duration::from_millis(200)); // one at a time
                 return;
             }
-            self.refresh.due = None;
-            self.refresh.last = now;
+            self.wins[self.cur].refresh.due = None;
+            self.wins[self.cur].refresh.last = now;
             let probe = Probe {
-                pid: self.shell,
-                report: self.report.clone(),
+                pid: self.wins[self.cur].shell,
+                report: self.wins[self.cur].report.clone(),
                 clock24: self.cfg.input.clock24,
             };
-            let (done, running, proxy) = (self.refresh.done.clone(), self.refresh.running.clone(), self.proxy.clone());
+            let (done, running, proxy) = (self.wins[self.cur].refresh.done.clone(), self.wins[self.cur].refresh.running.clone(), self.wins[self.cur].proxy.clone());
             let spawned = std::thread::Builder::new().name("context".into()).spawn(move || {
                 let c = context::gather(&probe);
                 *done.lock().unwrap() = Some(c);
@@ -646,7 +840,7 @@ impl App {
                 proxy.wake();
             });
             if spawned.is_err() {
-                self.refresh.running.store(false, Ordering::Release);
+                self.wins[self.cur].refresh.running.store(false, Ordering::Release);
             }
         }
     }
@@ -658,7 +852,7 @@ impl App {
             self.close_settings(true);
         } else {
             self.selecting = false;
-            self.term.lock().selection = None;
+            self.wins[self.cur].term.lock().selection = None;
             let font = FontCfg { size: self.base_px, ..self.cfg.font.clone() };
             let mut s = Settings::open(&font, self.opacity, &self.cfg.input).with_blur(self.cfg.blur, self.wl.blur_supported()).with_lang(self.cfg.lang);
             s.start_faded();
@@ -705,18 +899,21 @@ impl App {
         }
         let clock_changed = input.clock24 != self.cfg.input.clock24;
         if input.cursor != self.cfg.input.cursor {
-            session::set_cursor(&self.term, input.cursor);
-        }
-        self.cfg.input = input.clone();
-        self.refresh.clock_at = None;
-        if self.chips_on() {
-            self.refresh.due = Some(Instant::now());
-            if clock_changed {
-                self.ctx = Context::default(); // the clock text is rebuilt by the refresh
-                self.history.set_ctx(&self.ctx);
+            for w in &self.wins {
+                session::set_cursor(&w.term, input.cursor);
             }
         }
-        self.ctx_dirty = true;
+        self.cfg.input = input.clone();
+        self.wins[self.cur].refresh.clock_at = None;
+        if self.chips_on() {
+            self.wins[self.cur].refresh.due = Some(Instant::now());
+            if clock_changed {
+                let win = &mut self.wins[self.cur];
+                win.ctx = Context::default(); // the clock text is rebuilt by the refresh
+                win.history.set_ctx(&win.ctx);
+            }
+        }
+        self.wins[self.cur].ctx_dirty = true;
         self.sync_flag();
     }
 
@@ -784,7 +981,9 @@ impl App {
     fn reload(&mut self) -> bool {
         let cfg = config::load();
         i18n::set(cfg.lang.resolve_here());
-        session::set_cursor(&self.term, cfg.input.cursor);
+        for w in &self.wins {
+            session::set_cursor(&w.term, cfg.input.cursor);
+        }
         self.cfg = cfg.clone();
         self.ui.status = cfg.status_bar;
         self.soft.set_ui(self.ui);
@@ -795,9 +994,11 @@ impl App {
         self.soft.set_fonts(&cfg.font);
         self.soft.set_opacity(cfg.opacity.unwrap_or(chrome::OPACITY));
         (self.cw, self.ch) = self.soft.cell();
-        self.refresh.clock_at = None;
+        for w in &mut self.wins {
+            w.refresh.clock_at = None;
+        }
         if self.chips_on() {
-            self.refresh.due = Some(Instant::now());
+            self.wins[self.cur].refresh.due = Some(Instant::now());
         }
         self.sync_flag();
         self.relayout();
@@ -850,6 +1051,19 @@ impl App {
             return true;
         }
         let letter = char::from_u32(k.sym).map(|c| c.to_ascii_lowercase());
+        if m.alt && !m.ctrl {
+            let last = self.wins.len() - 1;
+            match (letter, k.sym) {
+                (Some('n'), _) => self.new_win(),
+                (Some('w'), _) => self.close_win(self.cur),
+                (Some('b'), _) => self.toggle_side(),
+                (_, 0x5b) => self.switch_to(if self.cur == 0 { last } else { self.cur - 1 }),
+                (_, 0x5d) => self.switch_to(if self.cur == last { 0 } else { self.cur + 1 }),
+                (_, d @ 0x31..=0x39) if ((d - 0x31) as usize) < self.wins.len() => self.switch_to((d - 0x31) as usize),
+                _ => return false,
+            }
+            return true;
+        }
         if m.ctrl && m.shift {
             match letter {
                 Some('c') => return self.copy(),
@@ -879,20 +1093,20 @@ impl App {
                 _ => None,
             };
             if let Some(s) = scroll {
-                self.term.lock().scroll_display(s);
+                self.wins[self.cur].term.lock().scroll_display(s);
                 self.dirty = true;
                 return true;
             }
         }
-        let mode = *self.term.lock().mode();
+        let mode = *self.wins[self.cur].term.lock().mode();
         let Some(bytes) = input::encode_key(k, mode) else { return false };
-        let mut t = self.term.lock();
+        let mut t = self.wins[self.cur].term.lock();
         if t.grid().display_offset() > 0 {
             t.scroll_display(Scroll::Bottom);
         }
         t.selection = None;
         drop(t);
-        self.pty.notify(bytes);
+        self.wins[self.cur].pty.notify(bytes);
         self.dirty = true;
         true
     }
@@ -902,17 +1116,17 @@ impl App {
     fn paste(&mut self) -> bool {
         let Some(text) = self.wl.clipboard_text() else { return true };
         let text = text.replace('\x1b', "");
-        let bracketed = self.term.lock().mode().contains(TermMode::BRACKETED_PASTE);
+        let bracketed = self.wins[self.cur].term.lock().mode().contains(TermMode::BRACKETED_PASTE);
         if bracketed {
-            self.pty.notify(format!("\x1b[200~{text}\x1b[201~").into_bytes());
+            self.wins[self.cur].pty.notify(format!("\x1b[200~{text}\x1b[201~").into_bytes());
         } else {
-            self.pty.notify(text.replace("\r\n", "\r").replace('\n', "\r").into_bytes());
+            self.wins[self.cur].pty.notify(text.replace("\r\n", "\r").replace('\n', "\r").into_bytes());
         }
         true
     }
 
     fn copy(&mut self) -> bool {
-        let text = self.term.lock().selection_to_string();
+        let text = self.wins[self.cur].term.lock().selection_to_string();
         if let Some(t) = text {
             self.wl.set_clipboard(&t);
         }
@@ -924,7 +1138,7 @@ impl App {
     /// The viewport cell under the pointer `(col, row)`, and which half of it.
     fn viewport_cell(&self) -> (usize, usize, Side) {
         let (cw, ch) = (self.cw as f32, self.ch as f32);
-        let fx = ((self.mouse.0 - self.soft.pad as f32) / cw).max(0.0);
+        let fx = ((self.mouse.0 - (self.soft.pad + self.soft.inset().0) as f32) / cw).max(0.0);
         let fy = ((self.mouse.1 - self.soft.top as f32) / ch).max(0.0);
         let col = (fx as usize).min(self.cols - 1);
         let row = (fy as usize).min(self.rows - 1);
@@ -934,7 +1148,7 @@ impl App {
     /// The terminal point under the pointer, and which half of its cell.
     fn cell_at(&self) -> (Point, Side) {
         let (col, row, side) = self.viewport_cell();
-        let off = self.term.lock().grid().display_offset();
+        let off = self.wins[self.cur].term.lock().grid().display_offset();
         (viewport_to_point(off, Point::new(row, Column(col))), side)
     }
 
@@ -942,17 +1156,17 @@ impl App {
     /// (the usual way out, to select text anyway) is not held.
     fn reporting(&mut self) -> bool {
         let shift = self.xkb.as_ref().is_some_and(|x| x.mods().shift);
-        !shift && self.panel.is_none() && mouse::reporting(*self.term.lock().mode())
+        !shift && self.panel.is_none() && mouse::reporting(*self.wins[self.cur].term.lock().mode())
     }
 
     /// Sends `ev` at the cell under the pointer. Returns whether a report went out.
     fn report(&mut self, ev: mouse::Event) -> bool {
         let (col, row, _) = self.viewport_cell();
         let mods = self.xkb.as_ref().map(|x| x.mods()).unwrap_or_default();
-        let mode = *self.term.lock().mode();
+        let mode = *self.wins[self.cur].term.lock().mode();
         let Some(r) = mouse::encode(mode, ev, mods, col, row) else { return false };
         self.reported = (col, row);
-        self.pty.notify(r.bytes().to_vec());
+        self.wins[self.cur].pty.notify(r.bytes().to_vec());
         true
     }
 
@@ -963,7 +1177,7 @@ impl App {
                 return false;
             }
             self.held = Some(b);
-            self.term.lock().selection = None;
+            self.wins[self.cur].term.lock().selection = None;
             self.dirty = true;
             self.report(mouse::Event::Press(b));
             true
@@ -1009,13 +1223,23 @@ impl App {
         }
         if self.selecting {
             let (p, side) = self.cell_at();
-            if let Some(sel) = self.term.lock().selection.as_mut() {
+            if let Some(sel) = self.wins[self.cur].term.lock().selection.as_mut() {
                 sel.update(p, side);
             }
             self.dirty = true;
             return;
         }
-        let now = chrome::hit(x, y, self.w, self.h, self.ui.maximized);
+        let mut now = chrome::hit(x, y, self.w, self.h, self.ui.maximized);
+        let part = self.side_part_at(x, y);
+        if now == Hit::Client && self.side_box().is_some_and(|(bx, by, bw, bh)| x >= bx as f32 && x < (bx + bw) as f32 && y >= by as f32 && y < (by + bh) as f32) {
+            now = Hit::Side;
+        }
+        if part != self.side_hover {
+            self.side_hover = part;
+            self.side_dirty = true;
+            self.dirty = true;
+            self.wl.set_cursor(if part.is_some() { cursor::POINTER } else { cursor_for(now) });
+        }
         if now != self.hover {
             self.hover = now;
             self.wl.set_cursor(cursor_for(now));
@@ -1056,6 +1280,12 @@ impl App {
                 self.wl.begin_move();
             }
             Hit::Edge(edges) => self.wl.begin_resize(edges),
+            Hit::Side => match self.side_hover {
+                Some(side::Part::Row(i)) => self.switch_to(i),
+                Some(side::Part::Close(i)) => self.close_win(i),
+                Some(side::Part::New) => self.new_win(),
+                None => {}
+            },
             Hit::Client => {
                 let n = if self.grid_click.0 != 0 && time.wrapping_sub(self.grid_click.0) < MULTI_CLICK_MS {
                     self.grid_click.1 % 3 + 1
@@ -1069,7 +1299,7 @@ impl App {
                     _ => SelectionType::Simple,
                 };
                 let (p, side) = self.cell_at();
-                self.term.lock().selection = Some(Selection::new(ty, p, side));
+                self.wins[self.cur].term.lock().selection = Some(Selection::new(ty, p, side));
                 self.selecting = true;
                 self.dirty = true;
             }
@@ -1093,7 +1323,7 @@ impl App {
             }
             return;
         }
-        let mode = *self.term.lock().mode();
+        let mode = *self.wins[self.cur].term.lock().mode();
         if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
             let k = match (lines > 0, mode.contains(TermMode::APP_CURSOR)) {
                 (true, true) => &b"\x1bOA"[..],
@@ -1102,10 +1332,10 @@ impl App {
                 (false, false) => &b"\x1b[B"[..],
             };
             for _ in 0..lines.unsigned_abs() {
-                self.pty.notify(k);
+                self.wins[self.cur].pty.notify(k);
             }
         } else {
-            self.term.lock().scroll_display(Scroll::Delta(lines));
+            self.wins[self.cur].term.lock().scroll_display(Scroll::Delta(lines));
             self.dirty = true;
         }
     }

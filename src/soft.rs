@@ -32,6 +32,10 @@ pub struct Soft {
     pub top: u32,
     /// Space below the grid: a margin, or the status bar and a margin.
     pub bottom: u32,
+    /// Width of the panel of windows beside the grid, at the left and at the right (one of them is 0).
+    inset: (u32, u32),
+    /// The last frame repainted everything: whatever is drawn beside the grid has to be drawn again.
+    pub last_full: bool,
     ui: Ui,
     title: String,
     /// What the status bar says: the shell, the git branch (may be empty) and the grid size.
@@ -68,6 +72,8 @@ impl Soft {
             pad: (font_px * 0.9).round() as u32,
             top: 0,
             bottom: 0,
+            inset: (0, 0),
+            last_full: true,
             ui: Ui::IDLE,
             title: String::new(),
             status: Status::default(),
@@ -85,6 +91,39 @@ impl Soft {
         s.set_metrics(font_px);
         s.bake_specials();
         s
+    }
+
+    /// Leaves `left` and `right` pixels beside the grid for the panel of windows.
+    pub fn set_inset(&mut self, left: u32, right: u32) {
+        if (left, right) != self.inset {
+            self.inset = (left, right);
+            self.stale = true;
+        }
+    }
+
+    pub fn inset(&self) -> (u32, u32) {
+        self.inset
+    }
+
+    /// The panel's box in framebuffer pixels (`x0, y0, x1, y1`): beside the grid, under the title bar and
+    /// above the status bar. None when there is no panel.
+    pub fn side_rect(&self) -> Option<(usize, usize, usize, usize)> {
+        let (il, ir) = (self.inset.0 as usize, self.inset.1 as usize);
+        if il + ir == 0 {
+            return None;
+        }
+        let (ox, oy) = self.origin();
+        let (ww, wh) = self.window();
+        let (y0, y1) = (oy + TITLE_H, oy + wh - if self.ui.status { STATUS_H } else { 0 });
+        let x0 = if il > 0 { ox } else { ox + ww - ir };
+        Some((x0, y0, x0 + il + ir, y1))
+    }
+
+    /// Paints the glass frame's background over `rect` (`side_rect`): the panel starts from a clean slate.
+    pub fn clear_rect(&self, fb: &mut [u32], (x0, y0, x1, y1): (usize, usize, usize, usize)) {
+        if fb.len() >= self.w * self.h {
+            self.paint_bg(fb, y0, y1, x0, x1);
+        }
     }
 
     pub fn cell(&self) -> (u32, u32) {
@@ -222,6 +261,7 @@ impl Soft {
         }
         self.chrome_dirty = false;
         self.status_dirty = false;
+        self.last_full = full;
         full
     }
 
@@ -237,7 +277,7 @@ impl Soft {
                 *t = true;
             }
             let y0 = top + (first + n) * ch;
-            self.paint_bg(fb, y0, y0 + ch, ox, self.w - ox);
+            self.paint_bg(fb, y0, y0 + ch, ox + self.inset.0 as usize, self.w - ox - self.inset.1 as usize);
             self.paint_cells(fb, y0, cells);
         }
     }
@@ -251,7 +291,7 @@ impl Soft {
     }
 
     fn paint_cells(&self, fb: &mut [u32], y0: usize, cells: &[Cell]) {
-        self.paint_cells_at(fb, self.origin().0 + self.pad as usize, y0, cells);
+        self.paint_cells_at(fb, self.origin().0 + self.inset.0 as usize + self.pad as usize, y0, cells);
     }
 
     /// Cells in a row starting at pixel `(left, y0)` of the framebuffer, not tied to the grid's columns.
@@ -338,7 +378,7 @@ impl Soft {
     /// Where the grid starts, in framebuffer pixels: its left edge (after the padding) and the top of row 0.
     pub fn grid_origin(&self) -> (usize, usize) {
         let (ox, oy) = self.origin();
-        (ox + self.pad as usize, oy + self.top as usize)
+        (ox + self.inset.0 as usize + self.pad as usize, oy + self.top as usize)
     }
 
     /// The framebuffer size of the last frame.

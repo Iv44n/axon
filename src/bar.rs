@@ -133,8 +133,9 @@ pub fn paint(soft: &Soft, fb: &mut [u32], ctx: &Context, chips: &[Chip], row: us
     let (_, ch) = soft.cell();
     let (ww, _) = soft.window();
     let pad = soft.pad as usize;
+    let (il, ir) = (soft.inset().0 as usize, soft.inset().1 as usize);
     let wy = soft.top as usize + row * ch as usize; // the row's top, in window pixels
-    paint_line(soft, fb, ctx, chips, run, (wy, ch as usize), (pad, ww.saturating_sub(pad)), (1.0, 1.0), scratch);
+    paint_line(soft, fb, ctx, chips, run, (wy, ch as usize), (il + pad, ww.saturating_sub(ir + pad)), (1.0, 1.0), scratch);
 }
 
 /// Draws the chips on a line `ch` pixels tall whose top is window pixel row `wy`, between the columns

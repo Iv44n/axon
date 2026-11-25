@@ -84,6 +84,8 @@ pub enum Hit {
     /// The gear at the right end of the title bar: the settings screen.
     Settings,
     Title,
+    /// The panel of windows (the app finds out what in it; `side.rs`).
+    Side,
     /// A resize edge or corner: `EDGE_*` bits.
     Edge(u32),
 }

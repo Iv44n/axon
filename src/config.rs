@@ -146,10 +146,51 @@ impl CursorKind {
     }
 }
 
+/// Where the list of windows lives: a panel at the left or the right, or tabs at the top.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TabsPos {
+    #[default]
+    Left,
+    Right,
+    Top,
+}
+
+impl TabsPos {
+    pub const ALL: [TabsPos; 3] = [TabsPos::Left, TabsPos::Right, TabsPos::Top];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            TabsPos::Left => "left",
+            TabsPos::Right => "right",
+            TabsPos::Top => "top",
+        }
+    }
+}
+
+/// The windows (tabs) and their panel (`[windows]`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct WindowsCfg {
+    pub tabs: TabsPos,
+    /// The panel is shown (`Alt+B` toggles it); with the tabs at the top it does not exist.
+    pub side: bool,
+    /// The panel's width in pixels.
+    pub side_w: u32,
+}
+
+impl Default for WindowsCfg {
+    fn default() -> Self {
+        WindowsCfg { tabs: TabsPos::Left, side: true, side_w: 220 }
+    }
+}
+
+/// The side panel's width limits, in pixels.
+const SIDE_W: (f32, f32) = (160.0, 320.0);
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
     pub font: FontCfg,
     pub input: InputCfg,
+    pub windows: WindowsCfg,
     /// Alpha of the glass body, 0.3 to 1; `None` keeps the backend's default.
     pub opacity: Option<f32>,
     /// Ask the compositor to blur what is behind the glass (`[window] blur`). Only compositors that offer
@@ -163,7 +204,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { font: FontCfg::default(), input: InputCfg::default(), opacity: None, blur: false, status_bar: true, lang: Default::default() }
+        Config { font: FontCfg::default(), input: InputCfg::default(), windows: WindowsCfg::default(), opacity: None, blur: false, status_bar: true, lang: Default::default() }
     }
 }
 
@@ -590,6 +631,12 @@ fn apply(cfg: &mut Config, key: &str, v: &str) -> Result<(), String> {
             other => return Err(format!("expected \"12h\" or \"24h\", got {other:?}")),
         },
         "input.chips" => cfg.input.chips = chip_list(v)?,
+        "windows.tabs" => {
+            let name = string(v)?;
+            cfg.windows.tabs = TabsPos::ALL.into_iter().find(|t| t.name() == name).ok_or_else(|| format!("tabs is \"left\", \"right\" or \"top\", not {name:?}"))?
+        }
+        "windows.side" => cfg.windows.side = boolean(v)?,
+        "windows.side_width" => cfg.windows.side_w = number(v, SIDE_W)?.round() as u32,
         _ => return Err("unknown setting".into()),
     }
     Ok(())
@@ -631,6 +678,7 @@ mod tests {
                 },
                 opacity: Some(0.9),
                 input: InputCfg::default(),
+                windows: WindowsCfg::default(),
                 blur: false,
                 status_bar: true,
                 lang: Default::default(),
@@ -645,6 +693,17 @@ mod tests {
         let (c, w) = parsed("[ui]\nlanguage = \"fr\"\n");
         assert_eq!(c.lang, crate::i18n::Setting::Auto);
         assert_eq!(w.len(), 1);
+    }
+
+    #[test]
+    fn the_windows_panel_is_read_and_clamped() {
+        assert_eq!(parsed("").0.windows, WindowsCfg { tabs: TabsPos::Left, side: true, side_w: 220 });
+        let (c, w) = parsed("[windows]\ntabs = \"right\"\nside = false\nside_width = 999\n");
+        assert_eq!(c.windows, WindowsCfg { tabs: TabsPos::Right, side: false, side_w: 320 });
+        assert!(w.is_empty(), "{w:?}");
+        let (c, w) = parsed("[windows]\ntabs = \"bottom\"\nside_width = 10\n");
+        assert_eq!((c.windows.tabs, c.windows.side_w), (TabsPos::Left, 160));
+        assert_eq!(w.len(), 1, "{w:?}");
     }
 
     #[test]
@@ -828,6 +887,7 @@ mod tests {
                 font: FontCfg { family: Some("Fira Code".into()), size: 20.0, weight: 700, bold: false, letter_spacing: 1.5, line_height: 1.25, smoothing: Smoothing::Bgr, hinting: false, ..FontCfg::default() },
                 opacity: Some(0.7),
                 input: InputCfg { inline: true, chips: vec![Chip::Dir, Chip::Time], clock24: true, cursor: CursorKind::Bar, ..InputCfg::default() },
+                windows: WindowsCfg::default(),
                 blur: true,
                 status_bar: false,
                 lang: crate::i18n::Setting::Es,

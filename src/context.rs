@@ -108,10 +108,11 @@ pub fn gather(p: &Probe) -> Context {
     c
 }
 
-/// The file a window's shell reports to: `$XDG_RUNTIME_DIR/axon-<pid>.ctx`, `pid` being axon's own.
-pub fn report_path(pid: u32) -> Option<PathBuf> {
+/// The file a window's shell reports to: `$XDG_RUNTIME_DIR/axon-<pid>-<n>.ctx`, `pid` being axon's own and
+/// `n` the window's number.
+pub fn report_path(pid: u32, n: u64) -> Option<PathBuf> {
     let dir = std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty())?;
-    Some(PathBuf::from(dir).join(format!("axon-{pid}.ctx")))
+    Some(PathBuf::from(dir).join(format!("axon-{pid}-{n}.ctx")))
 }
 
 /// Removes the report files of windows that are gone (killed, so their `Drop` never ran).
@@ -119,7 +120,7 @@ pub fn remove_stale_reports(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for e in entries.flatten() {
         let name = e.file_name();
-        let pid = name.to_str().and_then(|n| n.strip_prefix("axon-")).and_then(|n| n.strip_suffix(".ctx").or_else(|| n.strip_suffix(".chips"))).and_then(|n| n.parse::<u32>().ok());
+        let pid = name.to_str().and_then(|n| n.strip_prefix("axon-")).and_then(|n| n.strip_suffix(".ctx").or_else(|| n.strip_suffix(".chips"))).and_then(|n| n.split('-').next()).and_then(|n| n.parse::<u32>().ok());
         if pid.is_some_and(|p| !Path::new(&format!("/proc/{p}")).exists()) {
             let _ = std::fs::remove_file(e.path());
         }
@@ -262,8 +263,8 @@ pub fn shell_init_script(shell: &str) -> Option<String> {
 }
 
 /// The flag file next to the report: its existence is the chips being on.
-pub fn flag_path(pid: u32) -> Option<PathBuf> {
-    report_path(pid).map(|p| p.with_extension("chips"))
+pub fn flag_path(pid: u32, n: u64) -> Option<PathBuf> {
+    report_path(pid, n).map(|p| p.with_extension("chips"))
 }
 
 /// The variables for the shell axon starts: where to report to, the flag, and, for bash, the hook itself
@@ -581,13 +582,13 @@ mod tests {
     fn reports_of_dead_windows_are_removed_and_live_ones_kept() {
         let d = scratch("stale");
         let me = std::process::id();
-        for name in [format!("axon-{me}.ctx"), "axon-4000000000.ctx".to_string(), "axon-x.ctx".to_string(), "other.ctx".to_string()] {
+        for name in [format!("axon-{me}-0.ctx"), format!("axon-{me}-3.chips"), "axon-4000000000-0.ctx".to_string(), "axon-4000000000-2.chips".to_string(), "axon-x.ctx".to_string(), "other.ctx".to_string()] {
             std::fs::write(d.join(name), "x").unwrap();
         }
         remove_stale_reports(&d);
         let mut left: Vec<String> = std::fs::read_dir(&d).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         left.sort();
-        assert_eq!(left, [format!("axon-{me}.ctx"), "axon-x.ctx".to_string(), "other.ctx".to_string()]);
+        assert_eq!(left, [format!("axon-{me}-0.ctx"), format!("axon-{me}-3.chips"), "axon-x.ctx".to_string(), "other.ctx".to_string()]);
         let _ = std::fs::remove_dir_all(&d);
     }
 

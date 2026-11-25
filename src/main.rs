@@ -15,6 +15,7 @@ mod paint;
 mod palette;
 mod session;
 mod settings;
+mod side;
 mod soft;
 mod view;
 mod wl;
