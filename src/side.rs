@@ -975,7 +975,7 @@ fn paint_mark(p: &mut Paint, m: Mark, groups: &[GroupItem], r: f32) {
 
 /// The glass behind a ghost, so the rows it passes over do not show through its text.
 fn ghost_backing(p: &mut Paint, (x, y, w, h): Rect) {
-    p.rrect(x, y, w, h, 8.0, palette::unit(palette::BG), 0.9);
+    p.rrect(x, y, w, h, 8.0, palette::unit(palette::BG), 0.96);
 }
 
 /// Turns the spinners a step without painting the list again: each ring is wiped back to the glass and what lay on it
@@ -1573,6 +1573,36 @@ mod tests {
         assert_eq!(top.mark(Target::Beside { group: 0, after: false }), Some(Mark::Line((c.1.0 - MARK, c.1.1, MARK, c.1.3))));
         // A window that is not listed has no mark.
         assert_eq!(top.mark(Target::Near { win: 9, after: true }), None);
+    }
+
+    #[test]
+    fn a_drag_from_a_press_to_a_drop_does_what_its_mark_promised() {
+        // Group 0 holds windows 0 and 1; 2 and 3 are loose. Drag window 3 over group 0's header: a ring, and
+        // the drop puts it first in the group.
+        let wg = [Some(0), Some(0), None, None];
+        let e = entries(&wg, &[false], &[1; 4], None);
+        let lay = Layout::Side { x0: 0, y0: 42, w: 220, entries: &e };
+        let head = lay.rect(0);
+        let to = lay.target(Grab::Win(3), (head.0 + 30) as f32, (head.1 + 5) as f32).unwrap();
+        assert_eq!(lay.mark(to), Some(Mark::Ring(head, 0)));
+        let a = crate::dnd::arrange(&wg, 1, Grab::Win(3), to).unwrap();
+        assert_eq!((a.order.as_slice(), a.group.as_slice()), (&[3, 0, 1, 2][..], &[Some(0), Some(0), Some(0), None][..]));
+        // What the panel lists after it: the new order, the window now under its header.
+        let wg2 = a.group;
+        let e2 = entries(&wg2, &[false], &[1; 4], None);
+        assert_eq!(e2, [Entry::Head(0), Entry::Row { win: 0, grouped: true }, Entry::Row { win: 1, grouped: true }, Entry::Row { win: 2, grouped: true }, Entry::Row { win: 3, grouped: false }]);
+
+        // At the top: drag the last tab before the second one; the mark is the line before it, and the window
+        // takes its group.
+        let te = top_entries(&wg, &[false], 0);
+        let groups = [group("g", 2)];
+        let top = Layout::Top { x0: 118, x1: 900, entries: &te, groups: &groups, cw: 8 };
+        let tab = top.rect(2);
+        let to = top.target(Grab::Win(3), (tab.0 + 5) as f32, (tab.1 + 5) as f32).unwrap();
+        assert_eq!(to, Target::Near { win: 1, after: false });
+        assert_eq!(top.mark(to), Some(Mark::Line((tab.0 - MARK, tab.1, MARK, tab.3))));
+        let a = crate::dnd::arrange(&wg, 1, Grab::Win(3), to).unwrap();
+        assert_eq!((a.order.as_slice(), a.group.as_slice()), (&[0, 3, 1, 2][..], &[Some(0), Some(0), Some(0), None][..]));
     }
 
     #[test]

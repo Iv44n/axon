@@ -45,8 +45,8 @@ the reference's `renderTabs`); going to a window of a folded group unfolds it (`
 the window on screen, so `relist` runs when it changes and a group is folded.
 
 **Status.** A window's icon is the busiest of its panes (`Status::of`: running, then failed, then idle), a pane's row has
-its own; both come from `History::running` / `failed` (the shell's hook, so only with `axon shell-init`; Ctrl+C, status 130,
-is not a failure). The icons are the prompt (idle), a 11 px ring with a bright quarter that turns once in 800 ms (running)
+its own; both come from `History::running` / `failed` (the shell's hook: bash gets it from axon, zsh and fish through
+`axon shell-init`; Ctrl+C, status 130, is not a failure). The icons are the prompt (idle), a 11 px ring with a bright quarter that turns once in 800 ms (running)
 and a 7 px red dot (failed); a folded group's dot turns while a window in it runs (`GroupItem::busy`). The spinner is the
 only animation the list has: `App::spin_at` is set when the list is painted with something running in view and
 `side::SPIN_EVERY_MS` (40 ms, 25 frames a second) ahead, cleared when nothing runs, and is one more deadline of the loop's

@@ -56,7 +56,7 @@ Always use `--release`: debug mode is much slower.
 | `Alt+\` / `Alt+-` | Split the focused pane in columns / in rows (mixing the two gives the grid) |
 | `Alt+,` / `Alt+.` | Focus the previous / the next pane (a click on a pane focuses it too) |
 | `Alt+Shift+W` | Close the focused pane (a shell that exits closes its pane; the window closes with its last one); the cross at a pane's corner and the cross of its row in the panel do the same |
-| Drag a row or a tab | Reorder windows: drop it before or after another (it takes that window's group), on a group's header or chip to put it into the group, on the empty part of the list to take it out of its group. Drag a group's header or chip to move the group. `Esc` cancels. A status icon says what the shell is doing: the prompt, a turning ring while a command runs (needs `axon shell-init`), a red dot when the last one failed |
+| Drag a row or a tab | Reorder windows: drop it before or after another (it takes that window's group), on a group's header or chip to put it into the group, on the empty part of the list to take it out of its group. Drag a group's header or chip to move the group. `Esc` cancels. A status icon says what the shell is doing: the prompt, a turning ring while a command runs, a red dot when the last one failed (both need the shell's hook: `axon shell-init`; bash gets it from axon) |
 | `Alt+B` | Show or hide the panel of windows (`[windows] tabs = "left" \| "right" \| "top"`, `side`, `side_width`); the button right of the window buttons does the same |
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copy / paste |
 | `Ctrl+Shift+Q` | Quit |
