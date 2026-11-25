@@ -1,6 +1,8 @@
 # A tag vX.Y.Z (equal to Cargo.toml's version) builds the release bundles and publishes them as a GitHub release:
-# axon-<arch>-linux.tar.gz and .sha256 per architecture (scripts/package.sh), which scripts/get.sh installs.
-# Built on Ubuntu 22.04 so the binaries need glibc 2.35, not the newest one.
+# axon-<arch>-linux.tar.gz and .sha256 per architecture (scripts/package.sh), which scripts/get.sh installs, and
+# axon-x86_64-windows.zip and .sha256 (scripts/package.ps1), which scripts/get.ps1 installs.
+# Built on Ubuntu 22.04 so the Linux binaries need glibc 2.35, not the newest one. The Windows exe is built on
+# Windows and must pass its own self-test (scripts/selftest.ps1) before it is published.
 name: Release
 
 on:
@@ -58,8 +60,53 @@ jobs:
           path: target/dist/axon-${{ matrix.arch }}-linux.tar.gz*
           if-no-files-found: error
 
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: The tag is Cargo.toml's version
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          if ($env:GITHUB_REF_NAME -ne "v$version") {
+            Write-Host "::error::tag $env:GITHUB_REF_NAME does not match Cargo.toml's version $version"
+            exit 1
+          }
+
+      - name: Rust stable
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Self-test
+        shell: pwsh
+        run: scripts/selftest.ps1 -Out selftest-out
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: selftest-windows
+          path: selftest-out
+          if-no-files-found: warn
+
+      - name: Pack
+        shell: pwsh
+        run: scripts/package.ps1 -NoBuild
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: axon-x86_64-windows
+          path: target/dist/axon-x86_64-windows.zip*
+          if-no-files-found: error
+
   publish:
-    needs: build
+    needs: [build, build-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -76,8 +123,8 @@ jobs:
         run: |
           sha256sum -c ./*.sha256
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber ./*.tar.gz ./*.sha256
+            gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber ./*.tar.gz ./*.zip ./*.sha256
           else
             gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "axon $GITHUB_REF_NAME" \
-              --generate-notes ./*.tar.gz ./*.sha256
+              --generate-notes ./*.tar.gz ./*.zip ./*.sha256
           fi

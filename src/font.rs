@@ -934,8 +934,10 @@ mod tests {
             assert!(m >= last - 1e-4, "map goes down at {y}");
             last = m;
         }
-        // The rows of a hinted size land on whole pixels: the baseline, the x-height, the cap height.
-        for y in [0.0, 8.37, 10.95] {
+        // The rows of a hinted size land on whole pixels: the baseline, the x-height, the cap height (the edges of the
+        // zones the font's own letters made: they differ from font to font).
+        assert!(v.n >= 4, "a size with hinting has zones");
+        for &y in &v.from[..v.n] {
             let m = v.map(y);
             assert!((m - m.round()).abs() < 1e-3, "{y} maps to {m}");
         }

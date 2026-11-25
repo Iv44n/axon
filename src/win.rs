@@ -60,6 +60,8 @@ const WHEEL_DELTA: i32 = 120;
 /// Window-class name and the application identity the taskbar groups windows by.
 const CLASS: &str = "axon_window";
 const APP_ID: &str = "axon.terminal";
+/// The window's icon: `assets/axon.ico`, PNG images from 16 to 256 px.
+const ICON: &[u8] = include_bytes!("../assets/axon.ico");
 /// `edges` bits (`chrome::EDGE_*`).
 const EDGE_TOP: u32 = chrome::EDGE_TOP;
 const EDGE_BOTTOM: u32 = chrome::EDGE_BOTTOM;
@@ -68,6 +70,29 @@ const EDGE_RIGHT: u32 = chrome::EDGE_RIGHT;
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// The PNG of the icon file's smallest image that is at least `px` wide.
+fn ico_png(ico: &[u8], px: u32) -> Option<&[u8]> {
+    let count = u16::from_le_bytes(ico.get(4..6)?.try_into().ok()?) as usize;
+    let mut best: Option<(u32, &[u8])> = None;
+    for i in 0..count {
+        let e = ico.get(6 + 16 * i..22 + 16 * i)?;
+        let w = if e[0] == 0 { 256 } else { e[0] as u32 };
+        let len = u32::from_le_bytes(e[8..12].try_into().ok()?) as usize;
+        let off = u32::from_le_bytes(e[12..16].try_into().ok()?) as usize;
+        if w >= px && best.is_none_or(|(b, _)| w < b) {
+            best = Some((w, ico.get(off..off + len)?));
+        }
+    }
+    best.map(|(_, png)| png)
+}
+
+/// An icon `px` wide from the embedded file, or null (the window then has the system's default).
+fn load_icon(px: i32) -> HICON {
+    let Some(png) = ico_png(ICON, px as u32) else { return null_mut() };
+    // SAFETY: `png` is a valid slice for the call; the icon lives as long as the process, which uses it for its window.
+    unsafe { CreateIconFromResourceEx(png.as_ptr(), png.len() as u32, 1, 0x0003_0000, px, px, 0) }
 }
 
 fn loword(v: isize) -> i32 {
@@ -237,12 +262,12 @@ impl Win {
                 cbClsExtra: 0,
                 cbWndExtra: 0,
                 hInstance: inst,
-                hIcon: null_mut(),
+                hIcon: load_icon(GetSystemMetrics(SM_CXICON)),
                 hCursor: LoadCursorW(null_mut(), IDC_ARROW),
                 hbrBackground: null_mut(),
                 lpszMenuName: null(),
                 lpszClassName: class.as_ptr(),
-                hIconSm: null_mut(),
+                hIconSm: load_icon(GetSystemMetrics(SM_CXSMICON)),
             };
             if RegisterClassExW(&wc) == 0 {
                 return Err(io::Error::last_os_error());
@@ -1006,6 +1031,29 @@ pub fn attach_console() {
                     SetStdHandle(which, con);
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_icon_file_has_a_png_for_every_size_the_system_asks() {
+        for px in [16, 24, 32, 48, 64, 128, 256] {
+            let png = ico_png(ICON, px).unwrap_or_else(|| panic!("no image for {px} px"));
+            assert!(png.starts_with(b"\x89PNG"), "{px} px is not a PNG");
+        }
+        // An odd size takes the next bigger image; bigger than all has none.
+        assert_eq!(ico_png(ICON, 20).map(<[u8]>::len), ico_png(ICON, 24).map(<[u8]>::len));
+        assert!(ico_png(ICON, 257).is_none());
+    }
+
+    #[test]
+    fn the_system_makes_icons_of_them() {
+        for px in [16, 32] {
+            assert!(!load_icon(px).is_null(), "CreateIconFromResourceEx refused the {px} px PNG");
         }
     }
 }

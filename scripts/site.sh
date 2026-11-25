@@ -1,7 +1,7 @@
 #!/bin/bash
 # Builds the website (GitHub Pages, .github/workflows/pages.yml) into target/site:
 #
-#   scripts/site.sh            site/, the icon, and scripts/get.sh served as install.sh
+#   scripts/site.sh            site/, the icon, scripts/get.sh served as install.sh and scripts/get.ps1 as install.ps1
 #   scripts/site.sh --serve    the same, then serve it on http://localhost:8000 (python3)
 #   scripts/site.sh --shots    refresh site/shots/ from design/frames (run scripts/design.sh first), then build
 #
@@ -37,6 +37,7 @@ mkdir -p "$out"
 cp -r site/. "$out/"
 cp assets/axon.svg "$out/axon.svg"
 cp scripts/get.sh "$out/install.sh"
+cp scripts/get.ps1 "$out/install.ps1"
 echo "built $out ($(du -sh "$out" | cut -f1))"
 
 if [ "$SERVE" = 1 ]; then

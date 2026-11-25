@@ -1803,7 +1803,12 @@ mod tests {
         assert!(differs(&sample().shown().state("", None, Some(1), 0)) > 100, "the pointer lifts and lights a card");
         assert!(differs(&sample().shown().over_close(1)) > 50);
         assert!(differs(&sample().shown().over_button(0)) > 50);
-        assert!(differs(&sample().shown().over_button(3)) == 0, "the tile is below the fold unscrolled");
+        let tile_hover = differs(&sample().shown().over_button(3));
+        assert!(tile_hover == 0, "the tile is below the fold unscrolled: {tile_hover} pixels differ, the tile is at {:?}, the viewport {} tall", {
+            let mut at = None;
+            sample().layout(|it| if let Item::Tile(r) = it { at = Some(r) });
+            at
+        }, sample().view_h());
         let max = sample().max_scroll();
         assert!(differs(&sample().shown().state("", None, None, max)) > 20_000);
         assert!(differs(&sample().shown().state("", None, None, max).over_button(3)) > 20_000);

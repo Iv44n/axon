@@ -9,7 +9,9 @@ on:
     paths:
       - "src/**"
       - "Cargo.*"
+      - "scripts/*.ps1"
       - "scripts/argb2png.py"
+      - "assets/axon.ico"
       - ".github/workflows/windows.yml"
   pull_request:
   workflow_dispatch:
@@ -35,21 +37,7 @@ jobs:
 
       - name: Self-test
         shell: pwsh
-        run: |
-          $out = Join-Path $env:RUNNER_TEMP 'selftest'
-          New-Item -ItemType Directory -Force $out | Out-Null
-          $env:AXON_SELFTEST = $out
-          $p = Start-Process -FilePath target\release\axon.exe -PassThru
-          if (-not $p.WaitForExit(120000)) {
-            $p.Kill()
-            "axon did not exit in 120 s" | Out-File -Append (Join-Path $out 'selftest.txt')
-          }
-          $code = $p.ExitCode
-          Write-Host "exit code: $code"
-          if (Test-Path (Join-Path $out 'selftest.txt')) { Get-Content (Join-Path $out 'selftest.txt') } else { Write-Host 'no report written' }
-          if (Test-Path (Join-Path $out 'frame.argb')) { python scripts/argb2png.py (Join-Path $out 'frame.argb') (Join-Path $out 'frame.png') }
-          Copy-Item -Recurse $out selftest-out
-          if ($code -ne 0) { exit 1 }
+        run: scripts/selftest.ps1 -Out selftest-out
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -61,3 +49,30 @@ jobs:
       - name: Tests
         if: always()
         run: cargo test --release --locked
+
+      # The release bundle and its installers, in a throwaway folder, from a local "release" (AXON_RELEASES).
+      - name: Package and install
+        if: always()
+        shell: pwsh
+        run: |
+          scripts/package.ps1 -NoBuild
+          $dist = (Resolve-Path target\dist).Path
+          Get-ChildItem $dist
+          $env:AXON_RELEASES = ([Uri]$dist).AbsoluteUri
+          # The release URLs are <base>/latest/download/<name>: lay the bundle out that way.
+          New-Item -ItemType Directory -Force "$dist\latest\download" | Out-Null
+          Copy-Item "$dist\axon-x86_64-windows.zip*" "$dist\latest\download"
+          $prefix = Join-Path $env:RUNNER_TEMP 'axon-prefix'
+          $env:AXON_PREFIX = $prefix
+          scripts/get.ps1
+          if (-not (Test-Path "$prefix\axon.exe")) { throw 'axon.exe was not installed' }
+          if (-not (Test-Path "$prefix\axon.ico")) { throw 'axon.ico was not installed' }
+          & "$prefix\axon.exe" --version | Out-String
+          if (-not ([Environment]::GetEnvironmentVariable('Path', 'User') -split ';' | Where-Object { $_ -ieq $prefix })) { throw 'the prefix is not on the user PATH' }
+          if (-not (Test-Path (Join-Path ([Environment]::GetFolderPath('Programs')) 'axon.lnk'))) { throw 'no Start menu shortcut' }
+          if (-not (Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\axon')) { throw 'no Apps entry' }
+          scripts/get.ps1 -Uninstall
+          Start-Sleep 4
+          if (Test-Path "$prefix\axon.exe") { throw 'axon.exe is still there after the uninstall' }
+          if (Test-Path (Join-Path ([Environment]::GetFolderPath('Programs')) 'axon.lnk')) { throw 'the shortcut is still there' }
+          Write-Host 'install and uninstall: ok'

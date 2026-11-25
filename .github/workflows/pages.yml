@@ -1,5 +1,5 @@
 # Publishes the website (site/, built by scripts/site.sh) on GitHub Pages: https://iv44n.github.io/axon/,
-# with the release installer (scripts/get.sh) at /install.sh. Repository settings → Pages → Source: GitHub Actions.
+# with the release installers (scripts/get.sh at /install.sh, scripts/get.ps1 at /install.ps1). Repository settings → Pages → Source: GitHub Actions.
 name: Pages
 
 on:
@@ -9,6 +9,7 @@ on:
       - "site/**"
       - "assets/axon.svg"
       - "scripts/get.sh"
+      - "scripts/get.ps1"
       - "scripts/site.sh"
       - ".github/workflows/pages.yml"
   workflow_dispatch:

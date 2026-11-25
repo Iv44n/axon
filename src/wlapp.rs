@@ -391,16 +391,22 @@ fn side_box(soft: &Soft) -> Option<(i32, i32, i32, i32)> {
     Some((x0 as i32 - ox as i32, y0 as i32 - oy as i32, (x1 - x0) as i32, (y1 - y0) as i32))
 }
 
-/// Whether a program set a title of its own: the one a shell sets by default says `user@host: path`, which
-/// the window's directory says better.
+/// Whether a program set a title of its own: the one a shell sets by default says `user@host: path` (bash) or is the
+/// shell's own path (a Windows console, `C:\...\pwsh.exe`, with `Administrator: ` before it when elevated), which the
+/// window's directory says better.
 fn own_title(t: &str) -> bool {
-    !t.is_empty() && !t.split_once(':').is_some_and(|(host, _)| host.contains('@') && !host.contains(' '))
+    if t.is_empty() || t.split_once(':').is_some_and(|(host, _)| host.contains('@') && !host.contains(' ')) {
+        return false;
+    }
+    let t = t.strip_prefix("Administrator: ").unwrap_or(t).to_ascii_lowercase();
+    !(t.ends_with(".exe") || t == "windows powershell")
 }
 
-/// The last part of a directory in short form (`~/lab/axon`, `…/a/b/c`, `/`): `axon`, `c`, `/`.
+/// The last part of a directory in short form (`~/lab/axon`, `~\code\axon`, `…/a/b/c`, `/`, `C:\`): `axon`, `c`, the
+/// root itself.
 fn dir_name(dir: &str) -> &str {
-    match dir.rsplit('/').next() {
-        Some("") | None => "/",
+    match dir.rsplit(['/', '\\']).next() {
+        Some("") | None => if dir.is_empty() || dir.starts_with('/') { "/" } else { dir },
         Some(name) => name,
     }
 }
@@ -3010,6 +3016,23 @@ impl App {
 mod tests {
     use super::*;
     use config::{TabsPos, WindowsCfg};
+
+    #[test]
+    fn a_shells_default_title_is_not_a_title_of_its_own() {
+        for default in ["", "ana@pc: ~/code", "ana@pc:~", "C:\\Program Files\\PowerShell\\7\\pwsh.exe", "Administrator: C:\\Windows\\System32\\cmd.exe", "Windows PowerShell"] {
+            assert!(!own_title(default), "{default:?}");
+        }
+        for own in ["vim main.rs", "htop", "Deploy: step 2", "build.exe is running"] {
+            assert!(own_title(own), "{own:?}");
+        }
+    }
+
+    #[test]
+    fn a_directorys_name_is_its_last_part_on_either_system() {
+        for (dir, name) in [("~/lab/axon", "axon"), ("…/a/b/c", "c"), ("/", "/"), ("", "/"), ("~", "~"), ("~\\code\\axon", "axon"), ("C:\\Users\\Ana", "Ana"), ("C:\\", "C:\\")] {
+            assert_eq!(dir_name(dir), name, "{dir:?}");
+        }
+    }
 
     #[test]
     fn the_settings_are_at_the_edge_opposite_the_windows_panel() {

@@ -69,13 +69,26 @@ impl Setting {
 
 static CURRENT: AtomicU8 = AtomicU8::new(0);
 
+// Tests run in parallel and some paint the Spanish board: the language is each test's own, not one all of them share.
+#[cfg(test)]
+thread_local! {
+    static TEST_LANG: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
 /// Makes `l` the language of every string from now on.
 pub fn set(l: Lang) {
+    #[cfg(test)]
+    TEST_LANG.with(|t| t.set(l as u8));
+    #[cfg(not(test))]
     CURRENT.store(l as u8, Ordering::Relaxed);
 }
 
 pub fn current() -> Lang {
-    if CURRENT.load(Ordering::Relaxed) == 1 { Lang::Es } else { Lang::En }
+    #[cfg(test)]
+    let n = TEST_LANG.with(std::cell::Cell::get);
+    #[cfg(not(test))]
+    let n = CURRENT.load(Ordering::Relaxed);
+    if n == 1 { Lang::Es } else { Lang::En }
 }
 
 macro_rules! strings {
