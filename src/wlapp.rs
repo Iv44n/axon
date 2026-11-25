@@ -40,7 +40,7 @@ use crate::{
     overlay::{self, Click, Geo, Overlay, Ran, Reply, Stack},
     overlay_demo, palette, panes, session,
     settings::{self, Effect, Settings},
-    soft::{Slot, Soft, UNFOCUSED},
+    soft::{Dock, Slot, Soft, UNFOCUSED},
     view::View,
     wl::{Event, Wl, cursor},
     xkb::{Key, Xkb},
@@ -84,7 +84,7 @@ fn cursor_for(hit: Hit) -> u32 {
             e if e == EDGE_BOTTOM | EDGE_LEFT => cursor::SW_RESIZE,
             _ => cursor::SE_RESIZE,
         },
-        Hit::Title | Hit::Side => cursor::DEFAULT,
+        Hit::Title | Hit::Side | Hit::Prefs => cursor::DEFAULT,
         Hit::Client => cursor::TEXT,
     }
 }
@@ -263,17 +263,23 @@ struct App {
     /// Current font size (zoomed) and the configured one, which Ctrl+0 returns to.
     base_px: f32,
     cfg_px: f32,
+    /// The font settings the renderer has now (the file's, the settings panel's draft or the zoom): rebuilding the
+    /// glyphs only when they differ keeps a click on a switch from dropping every tile.
+    shown_font: FontCfg,
     /// The settings as loaded (file and environment), and the glass opacity on screen.
     cfg: Config,
     opacity: f32,
     /// Since when a redraw has been waiting for the compositor (a frame callback or a free buffer).
     waiting: Option<Instant>,
-    /// The settings screen, while it is open.
+    /// The settings panel, while it is open (docked beside the grid), whether it has to be painted again, and
+    /// when what it changed is written to the file (a moment after the last change, or at once when a gesture ends).
     panel: Option<Box<Settings>>,
     /// The overlays (palette, dialogs, menus) and the toast: the first to get the keyboard and the pointer
     /// (`overlay.rs`), and the pointer image they asked for last.
     overlays: Stack,
     overlay_cursor: Option<overlay::Cursor>,
+    prefs_dirty: bool,
+    save_at: Option<Instant>,
     dirty: bool,
     quit: bool,
     mouse: (f32, f32),
@@ -360,6 +366,16 @@ fn report_focus(p: &Pane, on: bool) {
 /// The title bar between the window buttons and the settings button, where the tabs go (window pixels).
 fn tabs_span(w: u32) -> (i32, i32) {
     (chrome::TITLE_CLEAR as i32 - 8, w as i32 - 50)
+}
+
+/// The two panels beside the grid: the windows' (as wide as the settings say, none when it is hidden or the windows
+/// are tabs at the top) and the settings' (`prefs_w` wide, 0 when closed). The reference puts the settings on the
+/// edge opposite the windows' panel: `.main` is a row of windows, workspace, settings, and with the windows at the
+/// right the settings go to the left. They never share an edge, so nothing has to say how they would stack.
+fn docks(w: &config::WindowsCfg, prefs_w: u32) -> (Dock, Dock) {
+    let right = w.tabs == config::TabsPos::Right;
+    let side = if w.side && w.tabs != config::TabsPos::Top { w.side_w } else { 0 };
+    (Dock { w: side, left: !right }, Dock { w: prefs_w, left: right })
 }
 
 /// The list of windows as the panel and the tabs show it. A tab at the top says how many panes its window has
@@ -465,6 +481,7 @@ impl App {
         let cfg = config::load();
         i18n::set(cfg.lang.resolve_here());
         let base_px = cfg.font.size;
+        let shown_font = cfg.font.clone();
         let opacity = cfg.opacity.unwrap_or(chrome::OPACITY);
         let mut soft = Soft::new(&cfg.font, opacity);
         soft.cursor_color = pack(palette::CURSOR.r, palette::CURSOR.g, palette::CURSOR.b, 255);
@@ -503,8 +520,8 @@ impl App {
         }
 
         let wake = Arc::new(eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)?);
-        let side = if cfg.windows.side && cfg.windows.tabs != config::TabsPos::Top { cfg.windows.side_w } else { 0 };
-        soft.set_inset(if cfg.windows.tabs == config::TabsPos::Right { 0 } else { side }, if cfg.windows.tabs == config::TabsPos::Right { side } else { 0 });
+        let (side_dock, prefs_dock) = docks(&cfg.windows, 0);
+        soft.set_docks(side_dock, prefs_dock);
         ui.side = match (cfg.windows.tabs, cfg.windows.side) {
             (config::TabsPos::Top, _) => 0,
             (_, true) => 2,
@@ -549,11 +566,14 @@ impl App {
             drag: 0,
             base_px,
             cfg_px: base_px,
+            shown_font,
             cfg,
             opacity,
             panel: None,
             overlays: Stack::default(),
             overlay_cursor: None,
+            prefs_dirty: false,
+            save_at: None,
             dirty: true,
             waiting: None,
             quit: false,
@@ -586,13 +606,13 @@ impl App {
         for _ in 1..std::env::var("AXON_PANES").ok().and_then(|n| n.parse::<usize>().ok()).unwrap_or(1).min(12) {
             app.split(panes::Dir::Auto);
         }
-        // A debugging aid: start with the settings screen open (screenshots, memory measurements).
+        // A debugging aid: start with the settings panel open (screenshots, memory measurements).
         if std::env::var_os("AXON_SETTINGS").is_some() {
             app.toggle_settings();
         }
         // Another: start with one of the overlay kit's screens open (`field`, `list`, `menu`, `toast`, `modal`).
         if let Ok(kind) = std::env::var("AXON_DEMO_OVERLAY") {
-            if app.panel.is_none() && !app.demo_overlay(&kind) {
+            if !app.demo_overlay(&kind) {
                 eprintln!("axon: AXON_DEMO_OVERLAY is one of {}", overlay_demo::KINDS.join(", "));
             }
         }
@@ -607,7 +627,7 @@ impl App {
             // Block until the compositor, the PTY thread or a held key needs us; and, when a redraw is
             // stuck waiting for the compositor, only until it is clear that it will not answer.
             let now = Instant::now();
-            let timeout = [self.repeat.as_ref().map(|r| r.at), self.waiting.map(|t| t + STALL), self.overlays.deadline(now)]
+            let timeout = [self.repeat.as_ref().map(|r| r.at), self.waiting.map(|t| t + STALL), self.save_at, self.overlays.deadline(now)]
                 .into_iter()
                 .chain(self.wins[self.cur].panes.iter().flat_map(|p| [p.refresh.due, p.refresh.clock_at]))
                 .flatten()
@@ -653,11 +673,14 @@ impl App {
                 overlay::Tick::Repaint => self.dirty = true,
                 overlay::Tick::Rest => {}
             }
+            self.tick_save();
             if self.waiting.is_some_and(|t| t.elapsed() >= STALL) {
                 self.wl.give_up_waiting();
                 self.waiting = None;
             }
         }
+        // What the panel changed last is written even if the window closes a moment later.
+        self.flush_save();
         Ok(())
     }
 
@@ -684,7 +707,7 @@ impl App {
         self.slots.clear();
         self.slots.extend((0..n).map(|i| Slot { rect: panes::rect(kind, n, i, ws), focus: i == focus, framed: n > 1 }));
         self.soft.set_layout(&self.slots);
-        let cross = if n > 1 && self.panel.is_none() { self.pane_hover.filter(|&i| i < n) } else { None };
+        let cross = if n > 1 { self.pane_hover.filter(|&i| i < n) } else { None };
         for i in [self.close_shown, cross].into_iter().flatten().filter(|&i| i < n) {
             for r in self.soft.close_rows(i) {
                 self.wins[cur].panes[i].view.invalidate_row(r);
@@ -702,8 +725,8 @@ impl App {
         let (cols, rows) = win.pane().size;
         self.soft.set_status(shell, branch, cols, rows);
         self.soft.set_ui(self.ui);
-        if self.panel.is_some() || !self.overlays.is_empty() {
-            self.soft.invalidate(); // the panel and the overlays are painted over a complete grid, every time
+        if !self.overlays.is_empty() {
+            self.soft.invalidate(); // the overlays are painted over a complete grid, every time
         }
         // Every pane in turn, pane 0 first (it begins the frame); one without the focus is drawn dimmer and
         // with a hollow cursor.
@@ -733,12 +756,18 @@ impl App {
             }
             self.side_dirty = false;
         }
+        // The settings panel is painted in its own box (cleared first) when the frame is whole again or something
+        // in it changed, a fade included: the grid beside it is repainted row by row as usual.
         let mut animating = false;
-        if let Some(p) = self.panel.as_mut() {
+        if let (Some(p), Some(rect)) = (self.panel.as_mut(), self.soft.prefs_rect()) {
+            let was = p.animating();
             animating = p.step(Instant::now());
-            p.draw(fb, w, h, (ml, mt), (self.w, self.h), self.ui.maximized);
-            p.draw_preview(&self.soft, &self.wins[self.cur].pane().ctx, fb, (self.w, self.h));
+            if self.soft.last_full || self.prefs_dirty || was || animating {
+                self.soft.clear_rect(fb, rect);
+                p.draw(fb, w, h, (ml, mt));
+            }
         }
+        self.prefs_dirty = false;
         animating |= self.overlays.draw(fb, (w, h), (ml, mt), geo, Instant::now());
         self.wl.present();
         // A fade in progress asks for the next frame itself; at rest nothing does (idle is 0 % CPU).
@@ -825,18 +854,18 @@ impl App {
 
     // --------------------------------------------------------- side panel --
 
-    /// Width of the panel of windows in pixels: 0 when it is hidden or the tabs are at the top.
-    fn side_w(&self) -> u32 {
-        let c = &self.cfg.windows;
-        if c.side && c.tabs != config::TabsPos::Top { c.side_w } else { 0 }
-    }
-
-    /// Leaves the panel's room beside the grid, at the side the settings say.
+    /// Leaves the panels' room beside the grid, at the sides the settings say, and tells the settings panel where
+    /// its box is.
     fn apply_inset(&mut self) {
-        let w = self.side_w();
-        let (l, r) = if self.cfg.windows.tabs == config::TabsPos::Right { (0, w) } else { (w, 0) };
-        self.soft.set_inset(l, r);
+        let prefs_w = if self.panel.is_some() { settings::panel_width(self.w) } else { 0 };
+        let (side, prefs) = docks(&self.cfg.windows, prefs_w);
+        self.soft.set_ui(self.ui);
+        self.soft.set_docks(side, prefs);
         self.soft.set_tabs_top(self.cfg.windows.tabs == config::TabsPos::Top);
+        if let (Some(p), Some(b)) = (self.panel.as_mut(), self.soft.prefs_box((self.w, self.h))) {
+            p.place(b, prefs.left);
+            self.prefs_dirty = true;
+        }
         self.ui.side = match (self.cfg.windows.tabs, self.cfg.windows.side) {
             (config::TabsPos::Top, _) => 0,
             (_, true) => 2,
@@ -870,6 +899,10 @@ impl App {
     fn toggle_side(&mut self) {
         self.cfg.windows.side = !self.cfg.windows.side;
         self.side_hover = None;
+        if let Some(p) = self.panel.as_mut() {
+            p.follow_windows(&self.cfg.windows);
+            self.prefs_dirty = true;
+        }
         self.relayout();
     }
 
@@ -1138,6 +1171,10 @@ impl App {
                     self.overlay_reply(Reply { cursor: None, ..r });
                 }
                 self.hover = Hit::Client;
+                if let Some(p) = self.panel.as_mut() {
+                    let e = p.pointer(-1.0, -1.0);
+                    self.panel_effect(e);
+                }
                 if self.side_hover.take().is_some() {
                     self.side_dirty = true;
                     self.dirty = true;
@@ -1167,7 +1204,6 @@ impl App {
                 // A press on a pane gives it the focus, whatever the program does with the click.
                 if pressed
                     && self.hover == Hit::Client
-                    && self.panel.is_none()
                     && let Some(pi) = self.pane_under(self.mouse.0, self.mouse.1)
                 {
                     self.set_focus(pi);
@@ -1312,36 +1348,48 @@ impl App {
 
     // ----------------------------------------------------------- settings --
 
+    /// How long after the last change (a key held down on a slider, a click) the settings are written. A
+    /// gesture that ends (a slider let go, a number typed) writes at once.
+    const SAVE_DELAY: Duration = Duration::from_millis(300);
+
+    /// A settings panel on what is in effect now.
+    fn make_settings(&self) -> Settings {
+        Settings::open(&self.shown_font, self.opacity)
+            .with_input(&self.cfg.input)
+            .with_windows(&self.cfg.windows)
+            .with_blur(self.cfg.blur, self.wl.blur_supported())
+            .with_lang(self.cfg.lang)
+    }
+
+    /// Opens the panel beside the grid (the grid gets narrower) or closes it. It starts with the keyboard.
     fn toggle_settings(&mut self) {
         if self.panel.is_some() {
-            self.close_settings(true);
-        } else {
-            self.selecting = false;
-            for p in &self.wins[self.cur].panes {
-                p.term.lock().selection = None;
-            }
-            let font = FontCfg { size: self.base_px, ..self.cfg.font.clone() };
-            let mut s = Settings::open(&font, self.opacity, &self.cfg.input).with_blur(self.cfg.blur, self.wl.blur_supported()).with_lang(self.cfg.lang);
-            s.start_faded();
-            self.panel = Some(Box::new(s));
-            self.repeat = None;
-            self.dirty = true;
+            self.close_settings();
+            return;
         }
+        let mut s = self.make_settings();
+        s.start_faded();
+        self.panel = Some(Box::new(s));
+        self.ui.prefs = true;
+        self.repeat = None;
+        self.relayout();
     }
 
-    /// Closes the screen; `restore` puts back what it opened with (Cancel, the gear, Ctrl+,).
-    fn close_settings(&mut self, restore: bool) {
-        let Some(p) = self.panel.take() else { return };
-        if restore {
-            self.apply(p.original());
+    /// Closes the panel: what it changed last is written first, and the grid takes its room back.
+    fn close_settings(&mut self) {
+        self.flush_save();
+        if self.panel.take().is_none() {
+            return;
         }
-        self.soft.invalidate();
-        self.dirty = true;
+        self.ui.prefs = false;
+        if self.hover == Hit::Prefs {
+            self.hover = Hit::Client; // the grid is under the pointer now
+        }
+        self.relayout();
     }
 
-    /// Shows a draft on the window: fonts, spacing and opacity change in place.
+    /// Shows a draft on the window: fonts, spacing, opacity, the windows' panel and the chips change in place.
     fn apply(&mut self, d: &settings::Draft) {
-        self.base_px = d.font.size;
         self.opacity = d.opacity;
         if self.cfg.lang != d.lang {
             self.cfg.lang = d.lang;
@@ -1351,9 +1399,17 @@ impl App {
             self.cfg.blur = d.blur;
             self.set_blur();
         }
-        self.soft.update_fonts(&d.font);
+        if self.cfg.windows != d.windows {
+            self.cfg.windows = d.windows.clone();
+            self.side_hover = None;
+        }
+        if d.font != self.shown_font {
+            self.base_px = d.font.size;
+            self.soft.update_fonts(&d.font);
+            self.shown_font = d.font.clone();
+            (self.cw, self.ch) = self.soft.cell();
+        }
         self.soft.set_opacity(d.opacity);
-        (self.cw, self.ch) = self.soft.cell();
         self.set_input(&d.input);
         self.relayout();
     }
@@ -1386,62 +1442,111 @@ impl App {
         self.sync_flag();
     }
 
+    /// What an input to the panel asks of the app. Changes apply at once and are saved when they settle.
     fn panel_effect(&mut self, e: Effect) {
+        if e == Effect::None {
+            return;
+        }
+        self.prefs_dirty = true;
+        self.dirty = true;
         match e {
-            Effect::None => {}
-            Effect::Redraw => self.dirty = true,
+            Effect::None | Effect::Redraw => {}
             Effect::Apply => {
-                if let Some(d) = self.panel.as_ref().map(|p| p.draft.clone()) {
-                    self.apply(&d);
-                }
+                let Some(d) = self.panel.as_ref().map(|p| p.draft.clone()) else { return };
+                self.apply(&d);
+                // Not while a slider is being dragged or a number typed: the write waits for the gesture's end.
+                let settled = self.panel.as_ref().is_some_and(|p| p.settled());
+                self.save_at = settled.then(|| Instant::now() + Self::SAVE_DELAY);
             }
-            Effect::Save | Effect::Cancel => {
+            Effect::Settled => self.save_at = Some(Instant::now()),
+            Effect::Close => {
                 // The key that did this may still be held: it must not go on to the shell.
                 self.repeat = None;
-                if e == Effect::Save {
-                    self.save_settings();
-                } else {
-                    self.close_settings(true);
-                }
+                self.close_settings();
             }
         }
     }
 
-    fn save_settings(&mut self) {
-        let Some(d) = self.panel.as_mut().map(|p| p.commit().clone()) else { return };
-        self.apply(&d); // a number typed just before Save is on the window too
+    /// Writes what the panel changed when its moment has come.
+    fn tick_save(&mut self) {
+        if self.save_at.is_none_or(|t| Instant::now() < t) {
+            return;
+        }
+        // A slider held or a number being typed: the end of the gesture writes, not this timer.
+        if self.panel.as_ref().is_some_and(|p| !p.settled()) {
+            self.save_at = None;
+            return;
+        }
+        self.flush_save();
+    }
+
+    /// Writes what the panel changed now, if anything (and a number still being typed counts).
+    fn flush_save(&mut self) {
+        self.save_at = None;
         let Some(p) = self.panel.as_mut() else { return };
-        match config::save(&p.changes()) {
+        let d = p.commit().clone();
+        let changes = p.changes();
+        if changes.is_empty() {
+            return;
+        }
+        // What was just typed is on the window too (a number committed by closing the panel).
+        self.apply(&d);
+        let Some(p) = self.panel.as_mut() else { return };
+        match config::save(&changes) {
             Ok(_) => {
                 p.saved();
-                self.cfg.font = p.draft.font.clone();
-                self.cfg.input = p.draft.input.clone();
-                self.cfg.opacity = Some(p.draft.opacity);
-                self.cfg.blur = p.draft.blur;
-                self.cfg.lang = p.draft.lang;
-                self.cfg_px = p.draft.font.size;
-                self.close_settings(false);
+                self.cfg.font = d.font.clone();
+                self.cfg.opacity = Some(d.opacity);
+                self.cfg_px = d.font.size;
             }
             Err(e) => {
                 p.notice = Some(format!("{}{e}", tr(Str::NotSaved)));
+                self.prefs_dirty = true;
                 self.dirty = true;
             }
         }
     }
 
-    /// A primary-button press or release while the screen is open. Returns whether the screen took
-    /// it: presses over the grid always do; the title bar and the window edges keep working.
+    /// The settings panel's box in window pixels, when it is open.
+    fn prefs_box(&self) -> Option<(i32, i32, i32, i32)> {
+        self.panel.as_ref()?;
+        self.soft.prefs_box((self.w, self.h))
+    }
+
+    fn in_prefs(&self, x: f32, y: f32) -> bool {
+        self.prefs_box().is_some_and(|(bx, by, bw, bh)| x >= bx as f32 && x < (bx + bw) as f32 && y >= by as f32 && y < (by + bh) as f32)
+    }
+
+    /// The pointer's shape over the panel: the I-beam on a number's box, a hand on what takes a click.
+    fn prefs_cursor(&self) -> u32 {
+        match self.panel.as_ref().map(|p| p.hover) {
+            Some(settings::Hit::Value(_)) => cursor::TEXT,
+            Some(settings::Hit::Panel | settings::Hit::Outside | settings::Hit::Row(_)) | None => cursor::DEFAULT,
+            Some(_) => cursor::POINTER,
+        }
+    }
+
+    /// A primary-button press or release while the panel is open. Returns whether the panel took it: a press on
+    /// the panel is its own (and gives it the keyboard); a press anywhere else takes the keyboard away and goes
+    /// on to the terminal or the window, which stay usable beside the panel.
     fn panel_button(&mut self, pressed: bool) -> bool {
+        let over = self.in_prefs(self.mouse.0, self.mouse.1);
         let Some(p) = self.panel.as_mut() else { return false };
         if !pressed {
             let e = p.release();
             self.panel_effect(e);
             return false;
         }
-        if self.hover != Hit::Client {
+        if !over {
+            if p.focus {
+                p.focus = false;
+                self.prefs_dirty = true;
+                self.dirty = true;
+            }
             return false;
         }
-        let e = p.press(self.mouse.0, self.mouse.1, self.w, self.h);
+        let e = p.press(self.mouse.0, self.mouse.1);
+        self.prefs_dirty = true;
         self.panel_effect(e);
         true
     }
@@ -1461,6 +1566,7 @@ impl App {
         self.base_px = cfg.font.size;
         self.cfg_px = cfg.font.size;
         self.soft.set_fonts(&cfg.font);
+        self.shown_font = cfg.font.clone();
         self.soft.set_opacity(cfg.opacity.unwrap_or(chrome::OPACITY));
         (self.cw, self.ch) = self.soft.cell();
         for p in self.wins.iter_mut().flat_map(|w| &mut w.panes) {
@@ -1472,12 +1578,21 @@ impl App {
             }
         }
         self.sync_flag();
+        if self.panel.is_some() {
+            let mut s = self.make_settings();
+            if let Some(old) = self.panel.as_ref() {
+                (s.page, s.focus) = (old.page, old.focus);
+            }
+            self.panel = Some(Box::new(s));
+            self.save_at = None;
+        }
         self.relayout();
         true
     }
 
     fn zoom(&mut self, px: f32) -> bool {
         self.base_px = px.clamp(8.0, 48.0);
+        self.shown_font.size = self.base_px;
         self.soft.set_font_px(self.base_px);
         (self.cw, self.ch) = self.soft.cell();
         self.relayout();
@@ -1525,11 +1640,9 @@ impl App {
             self.toggle_settings();
             return true;
         }
-        if let Some(p) = self.panel.as_mut() {
-            let e = p.key(k);
-            self.panel_effect(e);
-            return true;
-        }
+        // The settings panel has the keyboard (it opened, or was clicked, and the terminal was not clicked since):
+        // the app's own shortcuts still work, and everything else is for the panel. Escape closes it.
+        let docked = self.panel.as_ref().is_some_and(|p| p.focus);
         // Ctrl+Space: one more pane in this window (the reference takes it from the shell too).
         if m.ctrl && !m.alt && !m.shift && k.sym == 0x20 {
             self.split(panes::Dir::Auto);
@@ -1561,6 +1674,8 @@ impl App {
                 (_, 0x5b) => self.switch_to(if self.cur == 0 { last } else { self.cur - 1 }),
                 (_, 0x5d) => self.switch_to(if self.cur == last { 0 } else { self.cur + 1 }),
                 (_, d @ 0x31..=0x39) if ((d - 0x31) as usize) < self.wins.len() => self.switch_to((d - 0x31) as usize),
+                // Alt with the arrows moves a chip in the panel.
+                _ if docked => return self.panel_key(k),
                 _ => return false,
             }
             return true;
@@ -1576,6 +1691,9 @@ impl App {
                 Some('r') => return self.reload(),
                 _ => {}
             }
+        }
+        if docked {
+            return self.panel_key(k);
         }
         if m.ctrl && !m.alt {
             match k.sym {
@@ -1624,16 +1742,18 @@ impl App {
     fn grab_input(&mut self) {
         (self.selecting, self.held, self.repeat) = (false, None, None);
         self.wins[self.cur].pane().term.lock().selection = None;
+        // A slider being dragged in the settings panel lets go: the overlay has the pointer now.
+        if let Some(p) = self.panel.as_mut() {
+            let e = p.release();
+            self.panel_effect(e);
+        }
     }
 
-    /// Opens an overlay over the grid (the palette, the overview, a dialog, a menu) under the app's `tag` for
-    /// it; the settings screen has the window while it is open and keeps it. Its command comes back through
-    /// `overlay_ran`.
+    /// Opens an overlay over the window (the palette, the overview, a dialog, a menu) under the app's `tag` for
+    /// it; the settings panel is docked beside the grid and stays open under it. Its command comes back
+    /// through `overlay_ran`.
     #[allow(dead_code)]
     fn open_overlay(&mut self, tag: u32, o: Box<dyn Overlay>) {
-        if self.panel.is_some() {
-            return;
-        }
         self.grab_input();
         self.overlays.open(tag, o);
         self.dirty = true;
@@ -1717,11 +1837,19 @@ impl App {
             return false;
         }
         match chrome::hit(x, y, self.w, self.h, self.ui.maximized, self.ui.side != 0) {
-            Hit::Client | Hit::Side | Hit::Settings | Hit::SideBtn => true,
+            Hit::Client | Hit::Side | Hit::Prefs | Hit::Settings | Hit::SideBtn => true,
             // The tabs in the title bar are part of what is dimmed; the bar itself still moves the window.
             Hit::Title => self.side_part_at(x, y).is_some(),
             Hit::Close | Hit::Minimize | Hit::Maximize | Hit::Edge(_) => false,
         }
+    }
+
+    /// A key for the settings panel; it never reaches the shell.
+    fn panel_key(&mut self, k: &Key) -> bool {
+        let Some(p) = self.panel.as_mut() else { return false };
+        let e = p.key(k);
+        self.panel_effect(e);
+        true
     }
 
     // ---------------------------------------------------------- clipboard --
@@ -1779,7 +1907,7 @@ impl App {
     /// (the usual way out, to select text anyway) is not held.
     fn reporting(&self, pi: usize) -> bool {
         let shift = self.xkb.as_ref().is_some_and(|x| x.mods().shift);
-        !shift && self.panel.is_none() && mouse::reporting(*self.wins[self.cur].panes[pi].term.lock().mode())
+        !shift && mouse::reporting(*self.wins[self.cur].panes[pi].term.lock().mode())
     }
 
     /// Sends `ev` to pane `pi` at the cell under the pointer. Returns whether a report went out.
@@ -1825,11 +1953,15 @@ impl App {
             let r = self.overlays.pointer(x, y, g);
             if self.overlay_owns(x, y) {
                 self.overlay_reply(r);
-                // The window's own hover lights (title buttons, the panel's rows) go dark under an overlay.
+                // The window's own hover lights (title buttons, the panels' rows) go dark under an overlay.
                 if self.hover != Hit::Client || self.ui.hover != 0 || self.side_hover.is_some() {
                     (self.hover, self.ui.hover, self.side_hover) = (Hit::Client, 0, None);
                     self.side_dirty = true;
                     self.dirty = true;
+                }
+                if let Some(p) = self.panel.as_mut() {
+                    let e = p.pointer(-1.0, -1.0);
+                    self.panel_effect(e);
                 }
                 return;
             }
@@ -1838,20 +1970,8 @@ impl App {
             self.overlay_reply(Reply { cursor: None, ..r });
         }
         if let Some(p) = self.panel.as_mut() {
-            let was = p.hover;
-            let e = p.pointer(x, y, self.w, self.h);
-            if e != Effect::None {
-                self.panel_effect(e);
-            }
-            let p = self.panel.as_ref().map(|p| p.hover);
-            if p != Some(was) {
-                let shape = match p {
-                    Some(settings::Hit::Value(_)) => cursor::TEXT,
-                    Some(settings::Hit::Panel | settings::Hit::Outside) | None => cursor_for(self.hover),
-                    Some(_) => cursor::POINTER,
-                };
-                self.wl.set_cursor(shape);
-            }
+            let e = p.pointer(x, y);
+            self.panel_effect(e);
         }
         // A gesture goes on in the pane it began in; a plain move is the business of the pane under the pointer.
         let target = if self.held.is_some() || self.selecting {
@@ -1886,31 +2006,40 @@ impl App {
         if (now == Hit::Client && in_panel) || (now == Hit::Title && part.is_some()) {
             now = Hit::Side;
         }
+        // Over the settings panel the grid is not under the pointer: no selection, no reports to a program.
+        if now == Hit::Client && self.in_prefs(x, y) {
+            now = Hit::Prefs;
+        }
         if part != self.side_hover {
             self.side_hover = part;
             self.side_dirty = true;
             self.dirty = true;
-            self.wl.set_cursor(if part.is_some() { cursor::POINTER } else { cursor_for(now) });
         }
         if now != self.hover {
             self.hover = now;
-            self.wl.set_cursor(cursor_for(now));
             if now.button() != self.ui.hover {
                 self.ui.hover = now.button();
                 self.dirty = true;
             }
         }
         // Over a pane of several: its cross shows at the corner, and the pointer is a hand on it.
-        let hp = if now == Hit::Client && self.panel.is_none() && self.wins[self.cur].panes.len() > 1 { self.pane_under(x, y) } else { None };
+        let hp = if now == Hit::Client && self.wins[self.cur].panes.len() > 1 { self.pane_under(x, y) } else { None };
         let hot = hp.is_some_and(|pi| panes::close_box(self.pane_box(pi).0).contains(x, y));
         if (hp, hot) != (self.pane_hover, self.close_hot) {
-            let was_hot = self.close_hot;
             (self.pane_hover, self.close_hot) = (hp, hot);
             self.dirty = true;
-            if hot != was_hot {
-                self.wl.set_cursor(if hot { cursor::POINTER } else { cursor_for(now) });
-            }
         }
+        // One shape for what is under the pointer (the call is a no-op when it is the one already set).
+        let shape = if hot {
+            cursor::POINTER
+        } else if now == Hit::Prefs {
+            self.prefs_cursor()
+        } else if part.is_some() {
+            cursor::POINTER
+        } else {
+            cursor_for(now)
+        };
+        self.wl.set_cursor(shape);
     }
 
     fn on_button(&mut self, pressed: bool, time: u32) {
@@ -1950,6 +2079,7 @@ impl App {
                 self.wl.begin_move();
             }
             Hit::Edge(edges) => self.wl.begin_resize(edges),
+            Hit::Prefs => {}
             Hit::Side => match self.side_hover {
                 Some(side::Part::Row(i)) => self.switch_to(i),
                 Some(side::Part::Close(i)) => self.close_win(i),
@@ -1989,7 +2119,11 @@ impl App {
     }
 
     fn on_scroll(&mut self, pixels: f32, clicks: i32) {
-        if self.panel.is_some() {
+        // Over the settings panel the wheel scrolls its body (a notch is `WHEEL_PX`); elsewhere the terminal.
+        if self.in_prefs(self.mouse.0, self.mouse.1) {
+            let px = if clicks != 0 { clicks * settings::WHEEL_PX } else { pixels.round() as i32 };
+            let e = self.panel.as_mut().map_or(Effect::None, |p| p.scroll_by(px));
+            self.panel_effect(e);
             return;
         }
         if self.overlays.is_open() {
@@ -2030,6 +2164,31 @@ impl App {
         } else {
             pane.term.lock().scroll_display(Scroll::Delta(lines));
             self.dirty = true;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use config::{TabsPos, WindowsCfg};
+
+    #[test]
+    fn the_settings_are_at_the_edge_opposite_the_windows_panel() {
+        let cfg = |tabs, side| WindowsCfg { tabs, side, side_w: 240 };
+        // Windows at the left: settings at the right.
+        assert_eq!(docks(&cfg(TabsPos::Left, true), 372), (Dock { w: 240, left: true }, Dock { w: 372, left: false }));
+        // Windows at the right: settings at the left, as the reference orders them (`.prefs` is `order: -1`).
+        assert_eq!(docks(&cfg(TabsPos::Right, true), 372), (Dock { w: 240, left: false }, Dock { w: 372, left: true }));
+        // The panel hidden, or the windows as tabs at the top: only the settings take room, at the right.
+        assert_eq!(docks(&cfg(TabsPos::Left, false), 372), (Dock { w: 0, left: true }, Dock { w: 372, left: false }));
+        assert_eq!(docks(&cfg(TabsPos::Top, true), 372), (Dock { w: 0, left: true }, Dock { w: 372, left: false }));
+        // Closed: no room; they never share an edge, so the grid is the window minus both.
+        let (a, b) = docks(&cfg(TabsPos::Right, true), 0);
+        assert_eq!((a.w, b.w), (240, 0));
+        for tabs in TabsPos::ALL {
+            let (a, b) = docks(&cfg(tabs, true), 372);
+            assert!(a.w == 0 || a.left != b.left, "{tabs:?}");
         }
     }
 }

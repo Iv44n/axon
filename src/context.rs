@@ -34,28 +34,6 @@ impl Context {
     pub fn get(&self, c: Chip) -> &str {
         &self.text[c as usize]
     }
-
-    /// This context with an example for every chip that has nothing to say: what the settings screen's
-    /// preview shows, so a chip can be judged before the machine has anything for it.
-    pub fn with_examples(&self) -> Context {
-        let mut c = self.clone();
-        for (chip, t) in [
-            (Chip::Time, "03:48 pm"),
-            (Chip::User, "you"),
-            (Chip::Env, "condaenv"),
-            (Chip::Pyenv, "3.12.1"),
-            (Chip::Host, "you@axon"),
-            (Chip::Dir, "~/lab/axon"),
-            (Chip::Branch, "main"),
-            (Chip::Changes, "3 \u{2022} +10 -2"),
-            (Chip::Kube, "kind-dev"),
-        ] {
-            if c.text[chip as usize].is_empty() {
-                c.text[chip as usize] = t.to_string();
-            }
-        }
-        c
-    }
 }
 
 /// What a refresh needs to know, owned so it can move to a thread.

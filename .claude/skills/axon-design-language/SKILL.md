@@ -42,14 +42,16 @@ from the real renderer.
   the grid font in the hue. Hues: time red, user green, env cyan, pyenv amber, host grey `#a1a1aa`, dir magenta, branch yellow, changes
   `#ff8a4c`, kube blue. The chips are 90% of the grid font size and 8 px apart (at 14 px); cut with `…` then dropped from the end. The shell's
   own `$` is bold amber (hook). Chips stay on every prompt (history ring) and, once its command ran, the right end of the line shows a green check or a red cross with the exit status when not 0, then the duration in `FAINT` (`12ms`, `1.4s`, `2m 5s`), at 80% of the chip font. Judge it on the `chips*` scenes.
-- Settings screen (`settings.rs`, ADR 0017/0021): a modal panel 500 px wide, `#141416`, radius 16, 9% white outline, its own shadow, over the
-  grid dimmed by 50%; the title bar is not dimmed. Top to bottom: title and hint; the **live preview** (black 40%, 7% outline: chips and a
-  prompt line in the font being edited); tabs in a rounded 5% container with a 10% marker that slides (0.22 s); rows of 40 px (label in
-  `DIM`, text colour when hovered or selected; hover 4% white); sliders with a 4 px `#2c2c31` track, amber fill and a 14 px `#f4f4f5`
-  knob; amber pill switches; radios with a `#5a5a62` ring that turns amber with a dot; the font picker as two buttons around a name box;
-  the chip grid (on = hue at 12% with a 45% outline and a dot; off = grey, hollow dot); a quiet 3% note box; a footer under a hairline:
-  Reset, "Unsaved changes" in amber, Cancel (7% white), Save (`#f4f4f5`, dark text). The clock and chips rows are 38% and inert with the shell's
-  own prompt. Controls fade (`Paint.fade`, 0.12-0.16 s). Judge it on the `settings*` scenes.
+- Settings panel (`settings.rs`, ADR 0026 after the reference's `.prefs`): not modal, docked beside the grid, 372 px (62% of a narrow window at
+  most), no background of its own (the glass shows), a 7% hairline on the grid's side; at the edge opposite the windows' panel. Header: the title
+  (15 px, bold) and a 28 px close cross; tabs in a rounded 5% container with a 10% marker that slides (0.22 s); a body of 40 px rows (label
+  112 px in `DIM`, the text colour when hovered or selected; hover 4% white; the control column is 213 px) that scrolls under a thin
+  `#2a2a2e` bar; sliders with a 4 px `#2c2c31` track, amber fill, a 14 px `#f4f4f5` knob and a 58 px number box; amber pill switches with their
+  "on"/"off" word; radios (`#5a5a62` ring, amber with a dot when chosen) that wrap onto a second line; the font picker as two 30 px buttons around
+  a name box; the chip grid in two columns (on = hue at 12% with a 45% outline and a dot; off = grey, hollow dot); a quiet 3% note with
+  keycaps and code; a footer under a hairline with one 7% button, *Reset to defaults*. The clock and chips rows are 38% and inert with the shell's
+  own prompt; the windows' panel rows are inert with the tabs at the top. While it is open the title bar's sliders icon stays lit.
+  Controls fade (`Paint.fade`, 0.12-0.16 s). Judge it on the `prefs*` scenes.
 - Overlays (`overlay.rs` and the kit, ADR 0025; judge them on the `overlays` group of the board): a scrim `rgba(6,6,7,.5)` under the title bar (the title bar stays live); a card `#141416` radius 16, 10% white outline, the settings' soft shadow, rising 6 px while it fades in over 0.14 s; a menu or toast `#17171a` (radius 12 / 11, tighter shadow). Text in the desktop's proportional font at the reference's sizes (13 base, 12.5 menu and toast, 11.5 small, 11 headings, 10.5 key caps, 14.5 the palette's input, 15 a dialog's title). Fields: 36 px box (black 35%, 7% outline; focused: amber 60% outline and a 3 px amber 16% glow), 30 px search box, the palette's bare row with a hairline; a solid 1 px caret, amber 30% selection, placeholder `FAINT`. Lists: rows 40 px (51 with a description), headings 11 px `FAINT`, 24 px icon box at 5%, selected row 9% white, matched characters amber, shortcuts as one key cap per key, a thin scrollbar thumb. Menus: 29 px rows (a heading 23, a separator 11), a 14 px column for the amber check, danger `#ff8d8d`, disabled at 40%. Toast: 37 px high (39 with an action, whose button has 6 px of padding), 6.5 s, 40 px above the window's bottom edge. Footer of the palette 35 px. Never a blinking caret.
 - Grid padding: 0.9 x font size on the sides, title bar + 0.45 x font size above, status bar + 0.45 x font size below.
 
@@ -63,7 +65,7 @@ from the real renderer.
 7. Minimum 4.5:1 contrast for the main text and for `ANSI[8]` (gray) on the glass body.
 8. Sharpness: `chrome::pixel` samples at `x + 0.5`, so anything that should be crisp (button discs, 1 px strokes) is centred on `n + 0.5`, never on an integer. Text is plain source-over; glyph coverage is raised to 0.70 when a tile is baked (`font.rs`). Squaring coverage, or centring on a pixel border, is what made the first version look soft.
 9. Text sharpness (ADR 0020): glyphs are supersampled 6x, vertically hinted (`Vmap`: baseline, x-height, cap height snapped to whole rows) and drawn with LCD sub-pixel coverage (`[font] smoothing`, `hinting`). Never go back to grey, unhinted `fontdue` coverage for the grid; check `text-plain`, `text-gray` and `text-unhinted` in the design board after touching `font.rs`.
-10. The settings screen uses one proportional UI font (`UiFont`) at 13.5 px; the grid and the title bar stay monospaced. Controls fade (`Paint.fade`, 0.12-0.16 s) and frames are requested only while a fade runs.
+10. The settings panel uses one proportional UI font (`UiFont`) at 13 px (12 in the notes); the grid and the title bar stay monospaced. Controls fade (`Paint.fade`, 0.12-0.16 s) and frames are requested only while a fade runs.
 
 ## What NOT to do
 - Lighter panes or opaque blocks (hairlines and faint tints are the only dividers), anything on the edge that is brighter in one

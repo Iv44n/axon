@@ -20,7 +20,7 @@ poll wakes wlapp ─► View::build ─► soft.rs rows ─► wl_shm buffer ─
 - The PTY thread belongs to `alacritty_terminal::EventLoop`; the UI thread only locks the `FairMutex`
   during `build()` (walking the visible cells) and `resize/selection`.
 - Overlays ([0025](../../../knowledge/decisions/0025-overlay-kit.md)): in `wlapp.rs` every key, pointer move, button and wheel event goes to `overlay::Stack` first; only
-  what it does not take continues to the settings screen, `input.rs` and the selection. An overlay is a pure function of its state and the window size, painted over a complete grid.
+  what it does not take continues to the settings panel ([0026](../../../knowledge/decisions/0026-docked-settings-panel.md); not modal, so an overlay opens over it), `input.rs` and the selection. An overlay is a pure function of its state and the window size, painted over a complete grid.
 - One direction: UI -> session (bytes, resize); session -> UI (`Ev` events). Never cross calls
   from the PTY thread into the UI except `Proxy::send_event`.
 
@@ -32,11 +32,11 @@ poll wakes wlapp ─► View::build ─► soft.rs rows ─► wl_shm buffer ─
 | `cell.rs` | `Cell`, `F_*` flags, `T_*` special tiles, `pack`, the `Glyphs` trait | bytemuck |
 | `font.rs` | `Fonts` (fallbacks, rasterizing), `GlyphTable`, special tile bitmaps | fontdue |
 | `gpu.rs` | wgpu, atlas, pipelines, `render()` (to be deleted: [0011](../../../knowledge/decisions/0011-software-render-wl-shm.md)) | winit (`Window` only), `cell`, `font` |
-| `soft.rs` | CPU renderer into an `Argb8888` framebuffer (grid, title, status bar); one `Slot` per pane (`set_layout`, `select`, border and ring on full frames, `set_dim` for panes without focus, the pane's cross); the replacement for `gpu.rs` | `cell`, `chrome`, `font`, `palette`, `paint`, `panes` (`Rect`), `bar` (icons), `view` (trait only) |
+| `soft.rs` | CPU renderer into an `Argb8888` framebuffer (grid, title, status bar, the `Dock`s beside the grid for the windows' panel and the settings panel); one `Slot` per pane (`set_layout`, `select`, border and ring on full frames, `set_dim` for panes without focus, the pane's cross); the replacement for `gpu.rs` | `cell`, `chrome`, `font`, `palette`, `paint`, `panes` (`Rect`), `bar` (icons), `view` (trait only) |
 | `chrome.rs` | window frame on the CPU: glass look, rounded corners, title bar and status bar hairlines, buttons, settings icon and shadow per pixel (buffer = window + `margins`), `hit` testing in window pixels, `Ui` state | — |
 | `design.rs` | tests only: design board frames and tokens (`scripts/design.sh` → `design/board.html`), own PNG encoder, the incremental-equals-full repaint check | `soft`, `view`, `session`, `chrome`, `palette` |
-| `settings.rs` | the settings screen (Font and Input tabs): modal glass panel (state, layout, hit testing, keys, painting over a finished frame); own 13 px `Fonts` only while open | `chrome`, `config` (types), `bar` (chip colours), `paint`, `font`, `input::sym`, `xkb::Key` |
-| `paint.rs` | antialiased shapes (`Paint`: put, shape, rrect, disc, chevron) composited into the framebuffer; shared by the overlays | `chrome` |
+| `settings.rs` | the settings panel (Font, Input and Windows pages), docked beside the grid and non-modal ([0026](../../../knowledge/decisions/0026-docked-settings-panel.md)): state, layout computed on demand, hit testing, keys, scrolling, painting into its cleared box; the desktop's proportional `UiFont` only while open | `chrome`, `config` (types), `bar` (chip colours), `paint`, `font`, `input::sym`, `xkb::Key` |
+| `paint.rs` | antialiased shapes (`Paint`: put, shape, rrect, outline, disc, ring, chevron) composited into the framebuffer; shared by the overlays and panels | `chrome` |
 | `i18n.rs` | every string the window draws in English and Spanish (`strings!` builds the key enum and both tables), `tr`, the `Setting`/`Lang` of `[ui] language`; no dependencies | — |
 | `history.rs` | the prompt chips' memory: the hook's title escapes (`parse`), a ring of records (chips as they were, exit status, duration) found again by the prompt number in the reserved line | `context` |
 | `bar.rs` | the prompt chips: pure `layout` (which chips fit, cutting and dropping), icons, `paint` with the grid's own font via `Soft::paint_cells_at`, and `Chips::frame` (grid plus chips on the shell's reserved prompt line, repainted like a full frame) | `config` (`Chip`), `context`, `paint`, `soft`, `view`, `chrome` |

@@ -22,14 +22,14 @@ use alacritty_terminal::{
 use crate::{
     bar,
     chrome::{self, Ui},
-    config::{Chip, FontCfg, Smoothing, TabsPos},
+    config::{Chip, FontCfg, Smoothing, TabsPos, WindowsCfg},
     context::Context,
     history::History,
     i18n::{self, Lang},
     palette, panes, session,
     settings::{self, Settings},
     side::Status,
-    soft::{Slot, Soft, Target, UNFOCUSED},
+    soft::{Dock, Slot, Soft, Target, UNFOCUSED},
     view::View,
 };
 
@@ -125,6 +125,30 @@ fn demo_history(ctx: &Context) -> History {
     h
 }
 
+/// The settings panel in a scene: the page shown, the row the keyboard is on, what is under the pointer, what
+/// has been typed into a number's box, and so on. The panel's data (fonts installed, values) is fixed so the
+/// board looks the same on every machine.
+struct Prefs {
+    page: settings::Page,
+    sel: usize,
+    hover: settings::Hit,
+    typing: &'static str,
+    /// A chip held mid-drag, and where the pointer is in the body's content.
+    hold: Option<(Chip, (i32, i32))>,
+    /// The blur switch: on, and whether the compositor offers blur.
+    blur: (bool, bool),
+    windows: WindowsCfg,
+    /// Pixels the body is scrolled by the wheel.
+    scroll: i32,
+    /// The keyboard is on the panel (its selected row is lit), or on its tab bar (a ring round the active tab).
+    focus: bool,
+    tabs: bool,
+}
+
+fn prefs(page: settings::Page, sel: usize, hover: settings::Hit) -> Option<Prefs> {
+    Some(Prefs { page, sel, hover, typing: "", hold: None, blur: (false, true), windows: WindowsCfg::default(), scroll: 0, focus: true, tabs: false })
+}
+
 struct Scene {
     name: &'static str,
     label: &'static str,
@@ -132,14 +156,8 @@ struct Scene {
     ui: Ui,
     opacity: f32,
     font: FontCfg,
-    /// Open the settings screen over the grid, with this row selected and this under the pointer.
-    settings: Option<(usize, settings::Hit, &'static str)>,
-    /// The settings page shown.
-    page: settings::Page,
-    /// A chip held mid-drag in the settings screen, and where the pointer is on the panel.
-    hold: Option<(Chip, (i32, i32))>,
-    /// The blur switch: on, and whether the compositor offers blur.
-    blur: (bool, bool),
+    /// The settings panel docked beside the grid.
+    prefs: Option<Prefs>,
     title: &'static str,
     input: &'static str,
     /// The language of the interface texts.
@@ -187,10 +205,7 @@ fn scenes() -> Vec<Scene> {
         ui,
         opacity: OPACITY,
         font: FontCfg::sized(PX),
-        settings: None,
-        page: settings::Page::Font,
-        blur: (false, true),
-        hold: None,
+        prefs: None,
         title: TITLE,
         input: SHELL,
         select: None,
@@ -209,6 +224,9 @@ fn scenes() -> Vec<Scene> {
     let bar_cursor: &'static str = Box::leak(format!("{SHELL}\x1b[6 q").into_boxed_str());
     let underline_cursor: &'static str = Box::leak(format!("{SHELL}\x1b[4 q").into_boxed_str());
     let font = |weight, letter_spacing, line_height| FontCfg { weight, letter_spacing, line_height, ..FontCfg::sized(PX) };
+    // The settings panel is open: the gear in the title bar is lit.
+    let open = Ui { prefs: true, ..Ui::IDLE };
+    use settings::{Hit, Page, Row};
     vec![
         base("rest", "Focused, at rest", "window", Ui::IDLE),
         base("hover", "Pointer over the buttons (close)", "states", Ui { hover: 1, ..Ui::IDLE }),
@@ -220,10 +238,11 @@ fn scenes() -> Vec<Scene> {
         Scene { opacity: 0.88, ..base("opacity-88", "Opacity 0.88 (default)", "opacity", Ui::IDLE) },
         Scene { opacity: 0.94, ..base("opacity-94", "Opacity 0.94", "opacity", Ui::IDLE) },
         base("gear-hover", "Pointer over the settings gear", "states", Ui { hover: 4, ..Ui::IDLE }),
-        Scene { settings: Some((0, settings::Hit::Panel, "")), font: FontCfg { family: Some("JetBrains Mono".into()), ..FontCfg::sized(PX) }, ..base("settings", "Settings screen", "settings", Ui::IDLE) },
-        Scene { settings: Some((2, settings::Hit::Slider(settings::Row::Weight, 0.4), "")), ..base("settings-slider", "Dragging the weight slider", "settings", Ui::IDLE) },
-        Scene { settings: Some((4, settings::Hit::Panel, "-1.5")), ..base("settings-typing", "Typing a number into a box", "settings", Ui::IDLE) },
-        Scene { settings: Some((6, settings::Hit::Save, "")), font: font(500, 1.0, 1.0), opacity: 0.80, ..base("settings-save", "Pointer over Save, other values changed", "settings", Ui::IDLE) },
+        Scene { prefs: prefs(Page::Font, 0, Hit::Panel).map(|p| Prefs { tabs: true, ..p }), font: FontCfg { family: Some("JetBrains Mono".into()), ..FontCfg::sized(PX) }, ..base("prefs", "Settings panel docked beside the grid: Font page, the keyboard on the active tab (as it opens)", "settings", open) },
+        Scene { prefs: prefs(Page::Font, 0, Hit::Panel), ..base("prefs-row", "The keyboard on the first row", "settings", open) },
+        Scene { prefs: prefs(Page::Font, 2, Hit::Slider(Row::Weight, 0.4)), ..base("prefs-slider", "Dragging the weight slider", "settings", open) },
+        Scene { prefs: prefs(Page::Font, 4, Hit::Panel).map(|p| Prefs { typing: "-1.5", ..p }), ..base("prefs-typing", "Typing a number into a box", "settings", open) },
+        Scene { prefs: prefs(Page::Font, 6, Hit::Defaults), font: font(500, 1.0, 1.0), opacity: 0.80, ..base("prefs-reset", "Pointer over the reset button, other values changed", "settings", open) },
         Scene { bar: bar(&Chip::ALL), input: hooked, ..base("chips", "Every chip: the longest are cut, then the last dropped", "prompt chips", Ui::IDLE) },
         Scene { bar: bar(&[Chip::Time, Chip::Dir, Chip::Branch, Chip::Changes]), input: typing, ..base("chips-few", "Four chips, a command being typed", "prompt chips", Ui::IDLE) },
         Scene { bar: bar(&Chip::ALL), input: hooked, font: FontCfg::sized(20.0), ..base("chips-large", "At 20 px", "prompt chips", Ui::IDLE) },
@@ -232,35 +251,56 @@ fn scenes() -> Vec<Scene> {
         Scene { input: bar_cursor, ..base("cursor-bar", "Cursor as a bar (DECSCUSR 6, or [input] cursor = \"bar\")", "window", Ui::IDLE) },
         Scene { input: underline_cursor, ..base("cursor-underline", "Cursor as an underline", "window", Ui::IDLE) },
         base("no-status", "Status bar off ([window] status_bar = false)", "window", Ui { status: false, ..Ui::IDLE }),
-        Scene { settings: Some((7, settings::Hit::Toggle(settings::Row::Blur), "")), blur: (true, false), opacity: 0.80, ..base("settings-blur", "Blur on, but the compositor (GNOME) offers none", "settings", Ui::IDLE) },
-        Scene { settings: Some((0, settings::Hit::Tab(settings::Page::Input), "")), page: settings::Page::Input, ..base("settings-input", "Settings, Input page (bar off)", "settings", Ui::IDLE) },
+        Scene { prefs: prefs(Page::Font, 7, Hit::Toggle(Row::Blur)).map(|p| Prefs { blur: (true, false), ..p }), opacity: 0.80, ..base("prefs-blur", "Blur on, but the compositor (GNOME) offers none", "settings", open) },
+        Scene { prefs: prefs(Page::Input, 0, Hit::Tab(Page::Input)), ..base("prefs-input", "Input page, shell prompt: the clock and the chips are inert", "settings", open) },
         Scene {
-            settings: Some((2, settings::Hit::Chip(Chip::Dir), "")),
-            page: settings::Page::Input,
+            prefs: prefs(Page::Input, 3, Hit::Chip(Chip::Dir)),
             bar: bar(&[Chip::Time, Chip::Dir, Chip::Branch, Chip::Changes]),
             input: hooked,
-            ..base("settings-chips", "Input page: bar on, four chips, pointer over dir", "settings", Ui::IDLE)
+            ..base("prefs-chips", "Input page, chips on: four chips, pointer over dir, the terminal beside it narrower", "settings", open)
         },
-        Scene { lang: Lang::Es, settings: Some((0, settings::Hit::Panel, "")), ..base("settings-es", "Settings in Spanish: Font page", "language", Ui::IDLE) },
+        Scene {
+            prefs: prefs(Page::Input, 4, Hit::Panel).map(|p| Prefs { scroll: 999, ..p }),
+            bar: bar(&[Chip::Time, Chip::Dir, Chip::Branch, Chip::Changes]),
+            input: hooked,
+            ..base("prefs-note", "Input page scrolled to its end: the note with its keycaps, the scrollbar", "settings", open)
+        },
+        Scene { prefs: prefs(Page::Windows, 0, Hit::Choice(Row::Tabs, 1)), ..base("prefs-windows", "Windows page: position, panel visible, width, the note", "settings", open) },
+        Scene { prefs: prefs(Page::Font, 0, Hit::Close), ..base("prefs-close", "Pointer over the close cross", "settings", open) },
+        Scene { prefs: prefs(Page::Font, 1, Hit::Panel).map(|p| Prefs { focus: false, ..p }), ..base("prefs-unfocused", "The keyboard is on the terminal: no row is lit", "settings", open) },
+        Scene {
+            prefs: prefs(Page::Windows, 0, Hit::Panel),
+            side: Some((TabsPos::Left, None)),
+            ..base("prefs-with-side", "Panel of windows at the left and the settings at the right: both beside one narrow grid", "settings", Ui { side: 2, ..open })
+        },
+        Scene {
+            prefs: prefs(Page::Windows, 0, Hit::Choice(Row::Tabs, 0)).map(|p| Prefs { windows: WindowsCfg { tabs: TabsPos::Right, ..WindowsCfg::default() }, ..p }),
+            side: Some((TabsPos::Right, None)),
+            ..base("prefs-side-right", "Windows at the right: the settings go to the left, as the reference does", "settings", Ui { side: 2, ..open })
+        },
+        Scene {
+            prefs: prefs(Page::Windows, 0, Hit::Panel).map(|p| Prefs { windows: WindowsCfg { tabs: TabsPos::Top, ..WindowsCfg::default() }, ..p }),
+            side: Some((TabsPos::Top, None)),
+            ..base("prefs-tabs-top", "Tabs at the top: the panel's rows (visible, width) are inert", "settings", Ui { side: 0, ..open })
+        },
+        Scene { lang: Lang::Es, prefs: prefs(Page::Font, 0, Hit::Panel), ..base("prefs-es", "Settings in Spanish: Font page", "language", open) },
         Scene {
             lang: Lang::Es,
-            settings: Some((2, settings::Hit::Chip(Chip::Dir), "")),
-            page: settings::Page::Input,
+            prefs: prefs(Page::Input, 3, Hit::Chip(Chip::Dir)),
             bar: bar(&[Chip::Time, Chip::Dir, Chip::Branch, Chip::Changes]),
             input: hooked,
-            ..base("settings-es-input", "Settings in Spanish: Input page", "language", Ui::IDLE)
+            ..base("prefs-es-input", "Settings in Spanish: Input page", "language", open)
         },
+        Scene { lang: Lang::Es, prefs: prefs(Page::Windows, 0, Hit::Panel), ..base("prefs-es-windows", "Settings in Spanish: Windows page", "language", open) },
         Scene { lang: Lang::Es, bar: bar(&Chip::ALL), input: hooked, ..base("chips-es", "Status bar hints in Spanish", "language", Ui::IDLE) },
         Scene { font: FontCfg { smoothing: Smoothing::Gray, ..FontCfg::sized(PX) }, ..base("text-gray", "Grey smoothing, hinted", "font", Ui::IDLE) },
         Scene { font: FontCfg { hinting: false, ..FontCfg::sized(PX) }, ..base("text-unhinted", "LCD smoothing, no hinting", "font", Ui::IDLE) },
         Scene { font: FontCfg { smoothing: Smoothing::Gray, hinting: false, ..FontCfg::sized(PX) }, ..base("text-plain", "Grey smoothing, no hinting (how it was)", "font", Ui::IDLE) },
         Scene {
-            settings: Some((2, settings::Hit::Panel, "")),
-            page: settings::Page::Input,
+            prefs: prefs(Page::Input, 3, Hit::Panel).map(|p| Prefs { hold: Some((Chip::Branch, (262, 262))), ..p }),
             bar: bar(&[Chip::Time, Chip::Dir, Chip::Branch, Chip::Changes]),
             input: hooked,
-            hold: Some((Chip::Branch, (330, 190))),
-            ..base("settings-chip-drag", "Input page: a chip held mid-drag", "settings", Ui::IDLE)
+            ..base("prefs-chip-drag", "Input page: a chip held mid-drag", "settings", open)
         },
         Scene { side: Some((TabsPos::Left, None)), ..base("side", "Panel of windows at the left (Alt+B hides it)", "windows", Ui { side: 2, ..Ui::IDLE }) },
         Scene { side: Some((TabsPos::Left, Some(crate::side::Part::Head(0)))), folded: true, ..base("side-groups", "Groups: a header with its count and chevron, a folded group, pointer over a header", "windows", Ui { side: 2, ..Ui::IDLE }) },
@@ -295,11 +335,14 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
     soft.set_ui(s.ui);
     let (cw, ch) = soft.cell();
     let side_w = if matches!(s.side, Some((TabsPos::Left | TabsPos::Right, _))) { 220 } else { 0 };
-    if let Some((pos, _)) = s.side {
-        soft.set_inset(if pos == TabsPos::Right { 0 } else { side_w }, if pos == TabsPos::Right { side_w } else { 0 });
-        soft.set_tabs_top(pos == TabsPos::Top);
+    let tabs = s.side.map_or(TabsPos::Left, |(pos, _)| pos);
+    let prefs_w = if s.prefs.is_some() { settings::panel_width(W) } else { 0 };
+    // The settings are at the edge opposite the windows' panel (`wlapp::docks`).
+    soft.set_docks(Dock { w: side_w, left: tabs != TabsPos::Right }, Dock { w: prefs_w, left: tabs == TabsPos::Right });
+    if s.side.is_some() {
+        soft.set_tabs_top(tabs == TabsPos::Top);
     }
-    let (cols, rows) = session::grid_size(W - side_w, H, cw, ch, soft.pad, soft.top, soft.bottom);
+    let (cols, rows) = session::grid_size(W - side_w - prefs_w, H, cw, ch, soft.pad, soft.top, soft.bottom);
     let (ml, mt, mb) = chrome::margins(s.ui.maximized);
     let (w, h) = (W as usize + 2 * ml, H as usize + mt + mb);
     let mut fb = vec![0u32; w * h];
@@ -359,24 +402,28 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
             crate::side::paint(&soft, &mut fb, b, pos == TabsPos::Left, &i18n::tr(i18n::Str::Windows), &entries, &groups, &items, hover, &mut Vec::new());
         }
     }
-    if let Some((sel, hover, typing)) = s.settings {
+    if let (Some(pf), Some(rect), Some(b)) = (&s.prefs, soft.prefs_rect(), soft.prefs_box((W, H))) {
         // Fixed fonts, not whatever is installed: the board must look the same on every machine.
         let families = vec![("DejaVu Sans Mono".to_string(), "/x/a.ttf".into()), ("JetBrains Mono".to_string(), "/x/b.ttf".into())];
         let input = match &s.bar {
             Some((_, chips)) => crate::config::InputCfg { inline: true, chips: chips.clone(), clock24: false, ..Default::default() },
             None => crate::config::InputCfg::default(),
         };
-        let mut panel = Settings::new(&s.font, s.opacity, families).with_input(&input).with_blur(s.blur.0, s.blur.1).with_ui_font();
-        panel.page = s.page;
-        if let Some((chip, at)) = s.hold {
+        let mut panel = Settings::new(&s.font, s.opacity, families).with_input(&input).with_windows(&pf.windows).with_blur(pf.blur.0, pf.blur.1).with_ui_font();
+        panel.place(b, tabs == TabsPos::Right);
+        panel.page = pf.page;
+        panel.focus = pf.focus;
+        panel.tabs_focus = pf.tabs;
+        if let Some((chip, at)) = pf.hold {
             panel.hold(chip, at);
         }
-        (panel.sel, panel.hover) = (sel, hover);
-        for c in typing.chars() {
+        (panel.sel, panel.hover) = (pf.sel, pf.hover);
+        for c in pf.typing.chars() {
             panel.key(&crate::xkb::Key { text: c.to_string(), ..Default::default() });
         }
-        panel.draw(&mut fb, w, h, (ml, mt), (W, H), s.ui.maximized);
-        panel.draw_preview(&soft, &ctx, &mut fb, (W, H));
+        panel.scroll_by(pf.scroll);
+        soft.clear_rect(&mut fb, rect);
+        panel.draw(&mut fb, w, h, (ml, mt));
     }
     i18n::set(Lang::En);
     (fb, w, h)
@@ -424,6 +471,61 @@ fn incremental_repaint_matches_a_full_one() {
         fresh.set_ui(ui);
         let mut full = vec![0u32; w * h];
         View::new().build(&mut fresh_term, ui.focused, &mut Target { soft: &mut fresh, fb: &mut full, w, h });
+        let diff = fb.iter().zip(&full).filter(|(a, b)| a != b).count();
+        assert_eq!(diff, 0, "step {n}: {diff} pixels differ from a full repaint");
+    }
+}
+
+/// The settings panel is painted in its own box when the frame is whole or when it changed, over a grid
+/// that is repainted row by row: whatever the order, the frame is the one painted from scratch.
+#[test]
+fn the_docked_panel_survives_the_grid_repainting_beside_it() {
+    use crate::settings::{Page, panel_width};
+    // (what the terminal prints, the page the panel shows, whether the panel changed in this step)
+    let steps: [(&str, Page, bool); 6] = [
+        (SHELL, Page::Font, true),
+        ("\r\nmore output\r\n$ ", Page::Font, false),
+        ("x", Page::Font, false),
+        ("\x1b[2J\x1b[H$ ", Page::Input, true),
+        ("\r\nls\r\n", Page::Input, false),
+        ("\x1b[31mred\x1b[0m", Page::Windows, true),
+    ];
+    let pw = panel_width(W);
+    let make = || {
+        let mut soft = Soft::new(&FontCfg::sized(PX), OPACITY);
+        let (cw, ch) = soft.cell();
+        soft.set_docks(Dock::default(), Dock { w: pw, left: false });
+        let (cols, rows) = session::grid_size(W - pw, H, cw, ch, soft.pad, soft.top, soft.bottom);
+        let term = Term::new(Config::default(), &session::Size { cols, rows }, VoidListener);
+        (soft, term)
+    };
+    let (ml, mt, mb) = chrome::margins(false);
+    let (w, h) = (W as usize + 2 * ml, H as usize + mt + mb);
+    let panel = |soft: &Soft, page| {
+        let mut p = Settings::new(&FontCfg::sized(PX), OPACITY, Vec::new());
+        p.place(soft.prefs_box((W, H)).unwrap(), false);
+        p.page = page;
+        p
+    };
+    let (mut soft, mut term) = make();
+    let (mut view, mut fb, mut seen) = (View::new(), vec![0xdead_beefu32; w * h], String::new());
+    for (n, (out, page, changed)) in steps.into_iter().enumerate() {
+        seen.push_str(out);
+        Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::new().advance(&mut term, out.as_bytes());
+        soft.set_ui(Ui { prefs: true, ..Ui::IDLE });
+        view.build(&mut term, true, &mut Target { soft: &mut soft, fb: &mut fb, w, h });
+        if soft.last_full || changed {
+            soft.clear_rect(&mut fb, soft.prefs_rect().unwrap());
+            panel(&soft, page).draw(&mut fb, w, h, (ml, mt));
+        }
+
+        let (mut fresh, mut fterm) = make();
+        Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::new().advance(&mut fterm, seen.as_bytes());
+        fresh.set_ui(Ui { prefs: true, ..Ui::IDLE });
+        let mut full = vec![0u32; w * h];
+        View::new().build(&mut fterm, true, &mut Target { soft: &mut fresh, fb: &mut full, w, h });
+        fresh.clear_rect(&mut full, fresh.prefs_rect().unwrap());
+        panel(&fresh, page).draw(&mut full, w, h, (ml, mt));
         let diff = fb.iter().zip(&full).filter(|(a, b)| a != b).count();
         assert_eq!(diff, 0, "step {n}: {diff} pixels differ from a full repaint");
     }
@@ -497,7 +599,7 @@ fn panes_repaint_incrementally_like_a_full_frame() {
     }
     let make_soft = || {
         let mut soft = Soft::new(&FontCfg::sized(PX), OPACITY);
-        soft.set_inset(220, 0);
+        soft.set_docks(Dock { w: 220, left: true }, Dock::default());
         soft
     };
     let (ml, mt, mb) = chrome::margins(false);

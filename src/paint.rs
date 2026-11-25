@@ -1,4 +1,4 @@
-//! Pixel painting for the overlays drawn over the finished grid (the settings screen, the input bar):
+//! Pixel painting for the overlays and panels drawn over the finished grid (the settings panel, the input bar):
 //! antialiased shapes composited by hand into the `wl_shm` framebuffer, which holds premultiplied
 //! `Argb8888`. Coordinates are window pixels; `ox`, `oy` is where the window starts in the buffer.
 use crate::chrome;
@@ -64,6 +64,12 @@ impl Paint<'_> {
     pub fn disc(&mut self, cx: f32, cy: f32, r: f32, c: [f32; 3], a: f32) {
         let (x0, y0, x1, y1) = ((cx - r - 1.0) as i32, (cy - r - 1.0) as i32, (cx + r + 2.0) as i32, (cy + r + 2.0) as i32);
         self.shape(x0, y0, x1, y1, c, a, &|px, py| (0.5 - ((px - cx).hypot(py - cy) - r)).clamp(0.0, 1.0));
+    }
+
+    /// A ring around `(cx, cy)`: radius `r` to the middle of the stroke, `t` thick (an unchosen radio, a hollow dot).
+    pub fn ring(&mut self, cx: f32, cy: f32, r: f32, t: f32, c: [f32; 3], a: f32) {
+        let o = r + t / 2.0 + 1.0;
+        self.shape((cx - o) as i32 - 1, (cy - o) as i32 - 1, (cx + o) as i32 + 2, (cy + o) as i32 + 2, c, a, &|px, py| (t / 2.0 + 0.5 - ((px - cx).hypot(py - cy) - r).abs()).clamp(0.0, 1.0));
     }
 
     /// A `<` (`dir` -1) or `>` (+1) about 10 px tall, 1.4 px stroke, centred on `(cx, cy)`.

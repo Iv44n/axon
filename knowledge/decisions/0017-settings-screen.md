@@ -1,10 +1,14 @@
 ---
 type: decision
-status: accepted
-updated: 2026-11-23
-related: [0016-config-file-font-settings.md, 0015-continuous-glass.md, 0014-client-shadow-design-board.md, 0009-data-oriented-no-caches.md]
+status: superseded-by-0026
+updated: 2026-11-24
+related: [0026-docked-settings-panel.md, 0016-config-file-font-settings.md, 0015-continuous-glass.md, 0014-client-shadow-design-board.md, 0009-data-oriented-no-caches.md]
 ---
 # 0017 · A settings screen inside the window, drawn by the CPU renderer
+
+> Superseded in part by [0026](0026-docked-settings-panel.md): the panel is docked beside the terminal, not modal, and applies
+> and saves at once (no Save, no Cancel, no live preview box). What is below about state, the own text rasterizer, the file
+> that keeps the user's words and the font list still holds.
 
 **Decision:** a gear at the right end of the title bar (or `Ctrl+,`) opens a modal glass panel over the dimmed grid
 (`src/settings.rs`). It edits the [0016](0016-config-file-font-settings.md) settings: font family (a picker over the
