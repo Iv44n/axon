@@ -1,7 +1,7 @@
 # axon
 
 Native terminal emulator: minimalist, Wayland/X11, Rust. On Wayland it runs on an own client and a CPU renderer into `wl_shm`
-(`knowledge/decisions/core/0011`, `0013`; idle RSS 14 MB); the `winit` + `wgpu` path remains only for X11 and as fallback until stage E.
+(`knowledge/decisions/core/0011`, `0013`; idle RSS 15 MB); the `winit` + `wgpu` path remains only for X11 and as fallback until stage E.
 VT emulation: `alacritty_terminal`. Window: own `wl.rs` (`winit` fallback). Keyboard layouts: `libxkbcommon` via `dlopen` (`xkb.rs`). Glyphs: `fontdue` + tiles.
 Direction: data-oriented, no caches, own implementations instead of dependencies (`knowledge/decisions/core/0009`, `0010`, `0011`);
 `alacritty_terminal`, `fontdue`, `winit` and `wgpu` are scaffolding.

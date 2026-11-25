@@ -7,7 +7,7 @@ Written in Rust, for Wayland (own client, CPU-rendered into `wl_shm`, no GPU sta
 
 <sub>A frame from the real renderer (`scripts/design.sh`), with alpha: what you see behind it is this page.</sub>
 
-- **Own Wayland client and CPU renderer**: the grid is painted straight into a shared-memory buffer, only the damaged rows. ~14 MB idle, no Vulkan or GL loaded.
+- **Own Wayland client and CPU renderer**: the grid is painted straight into a shared-memory buffer, only the damaged rows. ~15 MB idle, no Vulkan or GL loaded.
 - **Zero idle usage**: no continuous redraw; it only paints when there are events (the one timer is the time chip's clock, once a minute, and only while that chip is shown).
 - **Full VT emulation** thanks to [`alacritty_terminal`](https://crates.io/crates/alacritty_terminal).
 - **Dark glass look** (after the `terminal.html` reference, ADR 0021): one rounded translucent pane with a soft shadow; a title bar and a status bar divided from the grid by hairlines, grey window buttons that turn red/yellow/green on hover, one amber accent and six clear hues (also the ANSI colours), outline chip icons and a settings panel docked beside the terminal. The frame is computed per pixel (`src/chrome.rs`), no images. On the default backend; the `winit` fallback only has the black-and-white colours.
@@ -15,7 +15,7 @@ Written in Rust, for Wayland (own client, CPU-rendered into `wl_shm`, no GPU sta
 - **Command palette and overview**: `Ctrl+K` lists actions, windows and groups (ranked as you type, each with its shortcut); `Alt+O` shows every window as a card with the last rows of its terminal, in a section per group, with a filter and drag and drop between groups.
 - **Prompt chips** (opt-in): a row of context chips on the line above your prompt (time, user, directory, git branch and changes, conda/venv, pyenv, Kubernetes), chosen and ordered by you. See [Prompt chips](#prompt-chips).
 - **Design board**: `design/board.html` shows frames of every screen (the window, the settings panel, the panes, the palette, the overview, the group dialog and menus, in English and Spanish) from the real renderer over different desktops, zoomed to the pixel and compared with a baseline (see [Design](#design)).
-- **Small binary** (7.3 MiB, see [Benchmarks](#benchmarks)) with LTO, `panic=abort` and `strip`.
+- **Small binary** (7.9 MiB, see [Benchmarks](#benchmarks)) with LTO, `panic=abort` and `strip`.
 
 ## Requirements
 
@@ -219,7 +219,7 @@ axis of a font like `JetBrainsMono[wght].ttf`; the own font reader (task 12) wil
 | `AXON_FONT_SIZE` | `15` | Font size in logical pixels |
 | `AXON_OPACITY` | `0.93` (`winit`), `0.88` (`wl`) | Opacity of the glass body (if the compositor supports transparency) |
 | `AXON_DECORATIONS` | off | `1` to use the system title bar (`winit` fallback only) |
-| `AXON_BACKEND` | `wl` on Wayland, else `winit` | `wl`: own Wayland client + CPU renderer (~14 MB idle). `winit`: `winit` + `wgpu` (~150 MB idle), also the automatic fallback if `wl` cannot start |
+| `AXON_BACKEND` | `wl` on Wayland, else `winit` | `wl`: own Wayland client + CPU renderer (~15 MB idle). `winit`: `winit` + `wgpu` (~150 MB idle), also the automatic fallback if `wl` cannot start |
 | `AXON_SETTINGS` | — | A debugging aid: start with the settings panel open (screenshots, measurements) |
 | `AXON_WINDOWS` | `1` | A debugging aid: start with *n* windows (up to 9) |
 | `AXON_PANES` | `1` | A debugging aid: start with *n* panes in the first window (up to 12) |
@@ -253,13 +253,13 @@ Measured with [`scripts/bench.sh`](scripts/bench.sh) (`--clean` adds a cold buil
 can move size or speed** (rule in `CLAUDE.md`); older numbers stay in the history table.
 
 Machine: AMD Ryzen 5 5600H (12 threads) + RTX 3050 Mobile, Ubuntu, kernel 7.0.0-44, GNOME Shell 50.1 on Wayland.
-Last measured: 2026-11-24, on top of `02c3490` plus mouse reporting, the config file with the `axon config` command, the settings screen, the lost-frame watchdog, the prompt chips and the blur request, the sub-pixel text rasterizer with vertical hinting, the proportional settings font, fades, draggable chips and the UI refactor after `terminal.html` (the cold build time is from `02c3490`).
+Last measured: 2026-11-25, at `a44df93`: everything since `02c3490` (mouse reporting, the config file, the prompt chips, the blur request, the sub-pixel text rasterizer, the UI after `terminal.html`) plus the second reference: windows and groups (side panel or top tabs), split panes, the overlay kit, the docked settings panel, the command palette, the overview of windows, the group dialog, context menus, inline rename, toasts with undo, drag and drop, status icons, and the fixes after the review. The machine was idle (`vmstat`: 96-99 % idle; a browser open).
 
 **Build**
 
 | Binary | Cold release build |
 |---|---|
-| 7.4 MiB (7,733,936 bytes) | 96 s |
+| 7.9 MiB (8,294,576 bytes) | 98 s |
 
 **Idle memory and CPU** (`AXON_BACKEND` selects the backend; `wl` is the own Wayland client with the CPU renderer and the
 default on Wayland, `winit` is the `winit` + `wgpu` fallback)
@@ -267,24 +267,40 @@ default on Wayland, `winit` is the `winit` + `wgpu` fallback)
 | Backend | Font | RSS | PSS | Private (anon) | CPU |
 |---|---|---|---|---|---|
 | `wl` | JetBrains Mono (default) | **15 MB** | 10 MB | 6 MB | 0 ticks / 3 s |
-| `wl` | DejaVu Sans Mono | 20 MB | 15 MB | 11 MB | 0 ticks / 3 s |
-| `wl` | Cascadia Mono NF | 58 MB | 53 MB | 49 MB | 0 ticks / 3 s |
-| `winit` | JetBrains Mono (default) | 149 MB | 56 MB | 32 MB | 0 ticks / 3 s |
-| `winit` | DejaVu Sans Mono | 155 MB | 60 MB | 37 MB | 0 ticks / 3 s |
-| `winit` | Cascadia Mono NF | 192 MB | 96 MB | 74 MB | 0 ticks / 3 s |
+| `wl` | DejaVu Sans Mono | 20 MB | 16 MB | 11 MB | 0 ticks / 3 s |
+| `wl` | Cascadia Mono NF | 58 MB | 54 MB | 49 MB | 0 ticks / 3 s |
+| `winit` | JetBrains Mono (default) | 147 MB | 96 MB | 31 MB | 0 ticks / 3 s |
+| `winit` | DejaVu Sans Mono | 154 MB | 102 MB | 37 MB | 0 ticks / 3 s |
+| `winit` | Cascadia Mono NF | 190 MB | 138 MB | 74 MB | 0 ticks / 3 s |
 
 The idle target is under 50 MB of RSS. `wl` meets it with the default font; a Nerd Font such as Cascadia Mono NF costs
 ~45 MB inside `fontdue` (it parses every glyph), which the own font reader will remove. The `winit` backend cannot meet
-the target: the Vulkan loader and the drivers map ~94 MB.
+the target: the Vulkan loader and the drivers map ~94 MB. (`winit`'s PSS went from 56 to 96 MB with the RSS
+unchanged: PSS divides shared pages among every process that maps them, so it follows what else runs on the desktop.)
+
+**Windows, panes and screens** (`wl`, default font, idle shell in every pane; the debugging knobs `AXON_WINDOWS`,
+`AXON_PANES`, `AXON_SETTINGS`, `AXON_OVERVIEW`)
+
+| State | RSS | Private (anon) | CPU |
+|---|---|---|---|
+| One window | 14.7 MB | 5.7 MB | 0 ticks / 5 s |
+| Three windows (grouped or not) | 17.0 MB | 8.0 MB | 0 ticks / 5 s |
+| One window with four panes | 18.1 MB | 9.0 MB | 0 ticks / 5 s |
+| Settings panel open | 23.2 MB | 14.1 MB | 0 ticks / 5 s |
+| Overview of windows open | 19.9 MB | 10.7 MB | 0 ticks / 5 s |
+| Three windows, every pane marked as running (the status spinners turn) | 17.1 MB | 8.0 MB | 5 ticks / 5 s |
+
+A shell killed with `SIGKILL` closes only its own window; when the last one goes, axon quits and removes its report files.
 
 **Throughput** (`cat` of 99.6 MB of text lines)
 
 | Backend | Time | RSS afterwards |
 |---|---|---|
-| `wl` | 1.64 s* | 37 MB |
-| `winit` | 1.28 s* | 179 MB |
+| `wl` | 1.57 s | 37 MB |
+| `winit` | 1.30 s | 177 MB |
 
-\* Quiet machine, before the title bar work. The title bar build measured 1.95-2.08 s (`wl`) and 1.57-1.61 s (`winit`) while a browser held the load average at 3-4: `winit`, which runs none of this code, slowed down as much, so it is the machine. Re-measure on an idle machine.
+Idle machine, two runs of `scripts/bench.sh` (`wl` 1.58 and 1.57 s, `winit` 1.33 and 1.30 s): run-to-run noise is about
+0.1 s. The 1.95-2.08 s of the title bar build was the machine (a browser held the load average at 3-4), not the code.
 
 Not measured yet: startup time, input latency, and a comparison with Alacritty, Ghostty and foot (not installed here).
 
@@ -292,6 +308,7 @@ Not measured yet: startup time, input latency, and a comparison with Alacritty, 
 
 | Date | Change | Binary | Idle RSS `winit` | Idle RSS `wl` |
 |---|---|---|---|---|
+| 2026-11-25 | The second reference (`a44df93`): groups, split panes, overlay kit, docked settings, command palette, overview, group dialog, menus, rename, toasts, drag and drop, status icons, and the review fixes; +561 KB over the title bar row; three windows 17 MB, settings open 23 MB, overview open 20 MB | 8,294,576 B | 147 MB | 15 MB |
 | 2026-11-24 | Title bar after the reference: panel button, name and place as the title, windows as tabs at the top (`tabs = "top"`) | 7,733,936 B | 149 MB | 15 MB |
 | 2026-11-24 | Windows and the side panel (`Win` per shell, `side.rs`, `[windows]`, `Alt+N/W/1-9/[/]/B`, ADR 0023); one window idle 15 MB, three windows ~18 MB | 7,730,960 B | 150 MB | 15 MB |
 | 2026-11-24 | The changes chip comes from the shell's hook (`git diff` with the repository's hooks and filters off, `timeout 0.5`), axon no longer runs git: `safe.directory` works, the 3 s timer and the git thread are gone | 7,694,984 B | 150 MB | 15 MB |
