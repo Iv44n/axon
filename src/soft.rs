@@ -12,10 +12,22 @@ use crate::cell::{
 };
 use crate::chrome::{self, REACH, STATUS_H, TITLE_CLEAR, TITLE_H, Ui};
 use alacritty_terminal::vte::ansi::Rgb;
-use crate::{bar, config::Chip, i18n::{Str, tr}, palette, paint::Paint};
+use crate::{bar, config::Chip, i18n::{Str, tr}, palette, paint::{Paint, WHITE, seg}, panes::{self, Rect}};
 use crate::config::FontCfg;
 use crate::font::{Fonts, GlyphTable, special_tiles};
 use crate::view::Backend;
+
+/// Where one pane of the window is and how its frame looks: its box in window pixels (the outer edge of
+/// its border), whether it has the focus, and whether it has a frame at all (a window with one pane has none).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Slot {
+    pub rect: Rect,
+    pub focus: bool,
+    pub framed: bool,
+}
+
+/// The alpha an unfocused pane's screen is drawn at: the reference's `opacity: .72`.
+pub const UNFOCUSED: u32 = 184;
 
 pub struct Soft {
     fonts: Fonts,
@@ -63,6 +75,16 @@ pub struct Soft {
     /// Which grid rows were repainted in the last frame: whatever is drawn over a row (the prompt
     /// chips) has to be drawn again when the row was.
     touched: Vec<bool>,
+    /// The panes as the framebuffer shows them (`set_layout`); empty means one pane filling the workspace.
+    slots: Vec<Slot>,
+    /// The pane being built (`select`): the geometry every row and chip of the next calls follows.
+    cur: usize,
+    /// The frame being built repaints everything (decided when pane 0 began it).
+    full: bool,
+    /// The grid size of pane 0 at the last full frame.
+    shape0: (usize, usize),
+    /// Multiplies the alpha of cells and text painted next: 255 normally, `UNFOCUSED` for a pane without focus.
+    dim: u32,
 }
 
 impl Soft {
@@ -95,6 +117,11 @@ impl Soft {
             cols: 0,
             stale: true,
             touched: Vec::new(),
+            slots: Vec::new(),
+            cur: 0,
+            full: true,
+            shape0: (0, 0),
+            dim: 255,
         };
         s.set_metrics(font_px);
         s.bake_specials();
@@ -248,58 +275,200 @@ impl Soft {
         }
     }
 
-    /// Starts a frame on a `w` x `h` framebuffer holding a grid of `rows` x `cols` cells. Returns
-    /// true when every row has to be written: first frame, the sizes changed, or the tiles were
-    /// reassigned. The margins around the grid and the title bar are painted here.
+    /// Starts the frame of the pane selected (`select`, 0 first) on a `w` x `h` framebuffer holding a grid of
+    /// `rows` x `cols` cells. Returns true when every row has to be written: first frame, the window size
+    /// changed, the panes moved, or the tiles were reassigned. Pane 0 begins the frame and paints what is not
+    /// a pane (the glass, the title bar, the status bar, the gaps); the others find that decided. A framed
+    /// pane has its border painted here, on a full frame: a row never touches it.
     pub fn begin_frame(&mut self, fb: &mut [u32], w: usize, h: usize, rows: usize, cols: usize) -> bool {
-        let full = self.stale || (self.w, self.h, self.rows, self.cols) != (w, h, rows, cols);
-        let (ox, oy) = self.origin();
-        self.touched.clear();
-        self.touched.resize(rows, full);
-        if full {
-            self.stale = false;
-            (self.w, self.h, self.rows, self.cols) = (w, h, rows, cols);
-            let (top, bottom) = (oy + self.top as usize, oy + self.top as usize + rows * self.fonts.cell_h as usize);
-            self.paint_bg(fb, 0, top, 0, w);
-            self.paint_bg(fb, bottom, h, 0, w);
-            // Beside the grid rows: the shadow, which row repaints leave alone.
-            self.paint_bg(fb, top, bottom, 0, ox);
-            self.paint_bg(fb, top, bottom, w - ox, w);
-            self.paint_title(fb);
-            self.paint_status(fb);
-        } else if fb.len() >= self.w * self.h {
-            if self.chrome_dirty {
-                self.paint_bg(fb, oy, oy + TITLE_H, ox, self.w - ox);
+        if self.cur == 0 {
+            // The title and the status bar are not a pane's screen: never dimmed.
+            let dim = std::mem::replace(&mut self.dim, 255);
+            let full = self.stale || (self.w, self.h, self.shape0) != (w, h, (rows, cols));
+            let (ox, oy) = self.origin();
+            if full {
+                self.stale = false;
+                (self.w, self.h, self.shape0) = (w, h, (rows, cols));
+                self.paint_bg(fb, 0, h, 0, w);
                 self.paint_title(fb);
-            }
-            if self.status_dirty && self.ui.status {
-                let (_, wh) = self.window();
-                self.paint_bg(fb, oy + wh - STATUS_H, oy + wh, ox, self.w - ox);
                 self.paint_status(fb);
+            } else if fb.len() >= self.w * self.h {
+                if self.chrome_dirty {
+                    self.paint_bg(fb, oy, oy + TITLE_H, ox, self.w - ox);
+                    self.paint_title(fb);
+                }
+                if self.status_dirty && self.ui.status {
+                    let (_, wh) = self.window();
+                    self.paint_bg(fb, oy + wh - STATUS_H, oy + wh, ox, self.w - ox);
+                    self.paint_status(fb);
+                }
+            }
+            self.title_painted = full || self.chrome_dirty;
+            self.chrome_dirty = false;
+            self.status_dirty = false;
+            self.last_full = full;
+            self.full = full;
+            self.dim = dim;
+        }
+        (self.rows, self.cols) = (rows, cols);
+        self.touched.clear();
+        self.touched.resize(rows, self.full);
+        if self.full && fb.len() >= self.w * self.h {
+            let slot = self.slot(self.cur);
+            if slot.framed {
+                self.paint_frame(fb, &slot);
             }
         }
-        self.title_painted = full || self.chrome_dirty;
-        self.chrome_dirty = false;
-        self.status_dirty = false;
-        self.last_full = full;
-        full
+        self.full
     }
 
-    /// Paints `count` consecutive rows starting at `first` from `cells` (`count * cols` cells).
+    /// Paints `count` consecutive rows of the pane selected, starting at `first`, from `cells` (`count * cols` cells).
     pub fn paint_rows(&mut self, fb: &mut [u32], first: usize, count: usize, cells: &[Cell]) {
         if first + count > self.rows || fb.len() < self.w * self.h {
             return;
         }
+        let slot = self.slot(self.cur);
+        let g = self.grid_of(&slot);
+        // A row's background reaches the pane's edges; a frame's border and the pixel inside it are left alone.
+        let edge = if slot.framed { 2 } else { 0 };
         let (ox, oy) = self.origin();
-        let (top, ch) = (oy + self.top as usize, self.fonts.cell_h as usize);
+        let (x0, x1) = (ox + (slot.rect.x + edge).max(0) as usize, ox + (slot.rect.x2() - edge).max(0) as usize);
+        let (top, ch) = (oy + g.y.max(0) as usize, self.fonts.cell_h as usize);
         for (n, cells) in cells.chunks_exact(self.cols).enumerate() {
             if let Some(t) = self.touched.get_mut(first + n) {
                 *t = true;
             }
             let y0 = top + (first + n) * ch;
-            self.paint_bg(fb, y0, y0 + ch, ox + self.inset.0 as usize, self.w - ox - self.inset.1 as usize);
-            self.paint_cells(fb, y0, cells);
+            self.paint_bg(fb, y0, y0 + ch, x0, x1);
+            self.paint_cells_at(fb, ox + g.x.max(0) as usize, y0, cells);
         }
+    }
+
+    // --------------------------------------------------------------- panes --
+
+    /// The workspace in window pixels, for a window `ww` x `wh`: between the title bar and the status bar and
+    /// beside the panel of windows. One pane fills it; several are laid out in it (`panes::rect`).
+    pub fn workspace(&self, ww: u32, wh: u32) -> Rect {
+        let (il, ir) = (self.inset.0 as i32, self.inset.1 as i32);
+        let status = if self.ui.status { STATUS_H as i32 } else { 0 };
+        Rect::new(il, TITLE_H as i32, ww as i32 - il - ir, wh as i32 - TITLE_H as i32 - status)
+    }
+
+    /// The space between a pane's box and its text, `(left, top, right, bottom)`: for the only pane, the
+    /// window's own margins (which `grid_size` has always used); for one of several, the border and a padding
+    /// of 10 / 6 px at 15 px text (the reference's `.screen` padding).
+    pub fn margins(&self, framed: bool) -> (i32, i32, i32, i32) {
+        if framed {
+            let (hx, vy) = ((self.fonts.px * 0.67).round() as i32, (self.fonts.px * 0.4).round() as i32);
+            (1 + hx, 1 + vy, 1 + hx, 1 + vy)
+        } else {
+            let (pad, gap) = (self.pad as i32, self.top as i32 - TITLE_H as i32);
+            let below = self.bottom as i32 - if self.ui.status { STATUS_H as i32 } else { 0 };
+            (pad, gap, pad, below)
+        }
+    }
+
+    /// The text grid of a pane whose box is `rect`.
+    pub fn grid(&self, rect: Rect, framed: bool) -> panes::Grid {
+        panes::grid(rect, self.margins(framed), self.fonts.cell_w, self.fonts.cell_h)
+    }
+
+    /// The least a framed pane may be, in pixels: `cols` x `rows` cells and its margins.
+    pub fn min_pane(&self, cols: usize, rows: usize) -> (i32, i32) {
+        let (ml, mt, mr, mb) = self.margins(true);
+        (ml + mr + (cols as u32 * self.fonts.cell_w) as i32, mt + mb + (rows as u32 * self.fonts.cell_h) as i32)
+    }
+
+    /// Tells the renderer where the panes are. When that differs from what the framebuffer shows, the next
+    /// frame repaints everything (the gaps, the borders and the focus ring are only painted then).
+    pub fn set_layout(&mut self, slots: &[Slot]) {
+        if self.slots.as_slice() != slots {
+            self.slots.clear();
+            self.slots.extend_from_slice(slots);
+            self.stale = true;
+        }
+    }
+
+    /// The pane `i` of the layout; with none set, the one pane that fills the workspace.
+    fn slot(&self, i: usize) -> Slot {
+        self.slots.get(i).copied().unwrap_or_else(|| {
+            let (ww, wh) = self.window();
+            Slot { rect: self.workspace(ww as u32, wh as u32), focus: true, framed: false }
+        })
+    }
+
+    fn grid_of(&self, slot: &Slot) -> panes::Grid {
+        self.grid(slot.rect, slot.framed)
+    }
+
+    /// Makes pane `i` the one whose rows, chips and geometry the next calls are about.
+    pub fn select(&mut self, i: usize) {
+        self.cur = i;
+    }
+
+    /// Alpha (of 255) of the cells and text painted next: `UNFOCUSED` for a pane without focus, 255 otherwise.
+    pub fn set_dim(&mut self, alpha: u32) {
+        self.dim = alpha.min(255);
+    }
+
+    /// The same as a fraction, for shapes.
+    pub fn dim_alpha(&self) -> f32 {
+        self.dim as f32 / 255.0
+    }
+
+    /// The selected pane's text area in window pixels: where column 0 starts, the top of row 0, and the right
+    /// end of the usable width (what the prompt chips are laid out in).
+    pub fn content_box(&self) -> (usize, usize, usize) {
+        let slot = self.slot(self.cur);
+        let g = self.grid_of(&slot);
+        let right = slot.rect.x2() - self.margins(slot.framed).2;
+        (g.x.max(0) as usize, g.y.max(0) as usize, right.max(0) as usize)
+    }
+
+    /// The border of a framed pane: a hairline, or the accent at 55 % with a ring of 18 % just outside when
+    /// it has the focus (the reference's `.is-focus-pane`).
+    fn paint_frame(&self, fb: &mut [u32], slot: &Slot) {
+        let (ox, oy) = self.origin();
+        let mut p = Paint { fb, w: self.w, h: self.h, ox: ox as i32, oy: oy as i32, fade: 1.0 };
+        let r = slot.rect;
+        if slot.focus {
+            let accent = palette::unit(palette::ACCENT);
+            p.outline(r.x, r.y, r.w, r.h, panes::RADIUS, accent, 0.55);
+            p.outline(r.x - 1, r.y - 1, r.w + 2, r.h + 2, panes::RADIUS + 1.0, accent, 0.18);
+        } else {
+            p.outline(r.x, r.y, r.w, r.h, panes::RADIUS, WHITE, 0.07);
+        }
+    }
+
+    /// The grid rows of pane `i` that the cross at its top right is drawn over: they are repainted before the
+    /// cross is, every frame, so it is never drawn twice over the same pixels.
+    pub fn close_rows(&self, i: usize) -> std::ops::Range<usize> {
+        let slot = self.slot(i);
+        if !slot.framed {
+            return 0..0;
+        }
+        let (g, b, ch) = (self.grid_of(&slot), panes::close_box(slot.rect), (self.fonts.cell_h as i32).max(1));
+        let first = ((b.y - g.y).max(0) / ch) as usize;
+        let last = ((b.y2() - g.y).max(0) + ch - 1) / ch;
+        first..(last as usize).min(g.rows)
+    }
+
+    /// The cross that closes pane `i`, over the rows `close_rows` repainted; `hot` when the pointer is on it.
+    pub fn paint_pane_close(&self, fb: &mut [u32], i: usize, hot: bool) {
+        let slot = self.slot(i);
+        if !slot.framed || fb.len() < self.w * self.h {
+            return;
+        }
+        let b = panes::close_box(slot.rect);
+        let (ox, oy) = self.origin();
+        let mut p = Paint { fb, w: self.w, h: self.h, ox: ox as i32, oy: oy as i32, fade: 1.0 };
+        p.rrect(b.x, b.y, b.w, b.h, 6.0, WHITE, if hot { 0.16 } else { 0.08 });
+        let (cx, cy) = (b.x as f32 + b.w as f32 / 2.0, b.y as f32 + b.h as f32 / 2.0);
+        let fg = palette::unit(palette::FG);
+        p.shape(b.x, b.y, b.x2(), b.y2(), fg, 1.0, &|px, py| {
+            let d = seg(px, py, (cx - 2.5, cy - 2.5), (cx + 2.5, cy + 2.5)).min(seg(px, py, (cx + 2.5, cy - 2.5), (cx - 2.5, cy + 2.5)));
+            (1.2 - d).clamp(0.0, 1.0)
+        });
     }
 
     // ------------------------------------------------------------ painting --
@@ -310,15 +479,12 @@ impl Soft {
         (ml, mt)
     }
 
-    fn paint_cells(&self, fb: &mut [u32], y0: usize, cells: &[Cell]) {
-        self.paint_cells_at(fb, self.origin().0 + self.inset.0 as usize + self.pad as usize, y0, cells);
-    }
-
     /// Cells in a row starting at pixel `(left, y0)` of the framebuffer, not tied to the grid's columns.
     pub fn paint_cells_at(&self, fb: &mut [u32], left: usize, y0: usize, cells: &[Cell]) {
         let (cw, ch) = (self.fonts.cell_w as usize, self.fonts.cell_h as usize);
         let len = cw * ch * 3;
         let cursor = unpack(self.cursor_color);
+        let dim = self.dim;
         for (col, cell) in cells.iter().enumerate() {
             if cell.tf == 0 && cell.bg >> 24 == 0 {
                 continue; // nothing to draw: the background is already there
@@ -353,7 +519,7 @@ impl Soft {
                         px = overlay(px, cursor, tile(shape_tile)[i] as u32);
                     }
                     if px[3] != 0 {
-                        *dst = over(px, *dst);
+                        *dst = over(dimmed(px, dim), *dst);
                     }
                 }
             }
@@ -371,6 +537,7 @@ impl Soft {
         let (cw, ch) = (m.cell_w as usize, m.cell_h as usize);
         let Some(y0) = cy.checked_sub(ch / 2) else { return };
         let fg = unpack(fg);
+        let dim = self.dim;
         for (i, c) in text.enumerate() {
             let x0 = left + i * cw;
             if x0 + cw > self.w || y0 + ch > self.h {
@@ -383,7 +550,7 @@ impl Soft {
                     let i = (y * cw + x) * 3;
                     let cov = [scratch[i] as u32, scratch[i + 1] as u32, scratch[i + 2] as u32];
                     if cov != [0; 3] {
-                        *dst = over(text_px3(fg, [0; 4], cov), *dst);
+                        *dst = over(dimmed(text_px3(fg, [0; 4], cov), dim), *dst);
                     }
                 }
             }
@@ -395,10 +562,11 @@ impl Soft {
         self.touched.get(row).copied().unwrap_or(false)
     }
 
-    /// Where the grid starts, in framebuffer pixels: its left edge (after the padding) and the top of row 0.
+    /// Where the selected pane's grid starts, in framebuffer pixels: its left edge (after the padding) and the top of row 0.
     pub fn grid_origin(&self) -> (usize, usize) {
         let (ox, oy) = self.origin();
-        (ox + self.inset.0 as usize + self.pad as usize, oy + self.top as usize)
+        let (x, y, _) = self.content_box();
+        (ox + x, oy + y)
     }
 
     /// The framebuffer size of the last frame.
@@ -663,6 +831,14 @@ fn overlay(dst: [u32; 4], color: [u32; 4], c: u32) -> [u32; 4] {
     }
     let m = |i: usize| (div255(color[i] * c) + div255(dst[i] * (255 - c))).min(255);
     [m(0), m(1), m(2), (c + div255(dst[3] * (255 - c))).min(255)]
+}
+
+/// `px` with its alpha (and so its colour: premultiplied) scaled by `dim` / 255: what CSS `opacity` does to a layer.
+fn dimmed(px: [u32; 4], dim: u32) -> [u32; 4] {
+    if dim >= 255 {
+        return px;
+    }
+    px.map(|c| div255(c * dim))
 }
 
 /// Blend state of the shader's pipeline: `src + dst * (1 - src.a)`, both premultiplied.

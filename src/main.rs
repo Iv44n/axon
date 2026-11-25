@@ -12,6 +12,7 @@ mod i18n;
 mod input;
 mod mouse;
 mod paint;
+mod panes;
 mod palette;
 mod session;
 mod settings;

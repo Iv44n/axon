@@ -76,6 +76,8 @@
 [windows]
 # Where the list of windows (tabs) lives: "left" or "right" as a panel, or "top". Alt+N opens a window,
 # Alt+W closes it, Alt+1..9 goes to one, Alt+[ and Alt+] go to the previous and the next.
+# A window can be split into panes: Ctrl+Space adds one, Alt+\ splits in columns, Alt+- in rows, Alt+, and
+# Alt+. move the focus, Alt+Shift+W closes the focused pane. The panel lists a window's panes under it.
 # tabs = "left"
 
 # Whether the panel is shown (Alt+B toggles it), and its width in pixels (160 to 320).

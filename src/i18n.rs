@@ -87,6 +87,7 @@ strings! {
     SettingsTitle: "Settings", "Ajustes";
     Windows: "Windows", "Ventanas";
     GroupName: "group", "grupo";
+    Pane: "Pane", "Panel";
     HintFont: "drag, or click a number to type", "arrastra, o clic en un número para escribirlo";
     HintInput: "click to choose, drag to reorder", "clic para elegir, arrastra para reordenar";
     TabFont: "Font", "Fuente";

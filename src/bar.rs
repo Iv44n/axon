@@ -131,11 +131,11 @@ pub fn layout(ctx: &Context, chips: &[Chip], d: &Dims, left: usize, right: usize
 /// coverage buffer the text is rasterized through.
 pub fn paint(soft: &Soft, fb: &mut [u32], ctx: &Context, chips: &[Chip], row: usize, run: Option<&Run>, scratch: &mut Vec<u8>) {
     let (_, ch) = soft.cell();
-    let (ww, _) = soft.window();
-    let pad = soft.pad as usize;
-    let (il, ir) = (soft.inset().0 as usize, soft.inset().1 as usize);
-    let wy = soft.top as usize + row * ch as usize; // the row's top, in window pixels
-    paint_line(soft, fb, ctx, chips, run, (wy, ch as usize), (il + pad, ww.saturating_sub(ir + pad)), (1.0, 1.0), scratch);
+    // The pane being built: its text starts at `left`, row 0 is at `top`, and the chips may reach `right`.
+    let (left, top, right) = soft.content_box();
+    let wy = top + row * ch as usize; // the row's top, in window pixels
+    // An unfocused pane's chips are as dim as its text.
+    paint_line(soft, fb, ctx, chips, run, (wy, ch as usize), (left, right), (1.0, soft.dim_alpha()), scratch);
 }
 
 /// Draws the chips on a line `ch` pixels tall whose top is window pixel row `wy`, between the columns

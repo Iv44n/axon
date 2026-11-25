@@ -26,9 +26,10 @@ use crate::{
     context::Context,
     history::History,
     i18n::{self, Lang},
-    palette, session,
+    palette, panes, session,
     settings::{self, Settings},
-    soft::{Soft, Target},
+    side::Status,
+    soft::{Slot, Soft, Target, UNFOCUSED},
     view::View,
 };
 
@@ -80,6 +81,37 @@ fn with_hook(typed: &str) -> String {
     out + typed
 }
 
+/// What pane `i` of a split window shows: the demo session in the first, shorter ones in the others, every
+/// prompt marked the way the shell's hook marks it (so the chips go over them).
+fn pane_text(i: usize) -> String {
+    let p = |n: u32| format!("\x1b[8;38;2;0;0;{n}m \x1b[0m\r\n$\x1b[8m \x1b[0m");
+    match i % 4 {
+        0 => with_hook(""),
+        1 => format!("{}ls\r\n\x1b[1;34msrc\x1b[0m  \x1b[1;34mknowledge\x1b[0m  Cargo.toml\r\n{}git status\r\nOn branch main\r\nnothing to commit, working tree clean\r\n{}", p(1), p(2), p(3)),
+        2 => format!("{}cargo test\r\n\x1b[1;32m   Compiling\x1b[0m axon v0.1.0\r\ntest result: \x1b[32mok\x1b[0m. 211 passed\r\n{}\x1b[31mfailed\x1b[0m\r\n{}", p(1), p(2), p(3)),
+        _ => format!("{}htop\r\n  PID USER   %CPU %MEM\r\n 4212 alice   3.1  0.9 axon\r\n{}", p(1), p(2)),
+    }
+}
+
+/// The status icon of pane `i`'s row in the board's panel: a command running in the second, a failed one in the fourth.
+fn pane_status(i: usize) -> Status {
+    match i {
+        1 => Status::Running,
+        3 => Status::Failed,
+        _ => Status::Idle,
+    }
+}
+
+/// A window split into panes: how many, how they are arranged, which has the focus and the cross shown at a
+/// pane's corner (the pane, and whether the pointer is on it).
+#[derive(Clone, Copy)]
+struct PaneScene {
+    n: usize,
+    kind: panes::Kind,
+    focus: usize,
+    cross: Option<(usize, bool)>,
+}
+
 /// The records of the demo session's prompts: the first command ran in 12 ms, the second failed after 1.5 s.
 fn demo_history(ctx: &Context) -> History {
     let (mut h, t) = (History::default(), std::time::Instant::now());
@@ -119,6 +151,8 @@ struct Scene {
     side: Option<(crate::config::TabsPos, Option<crate::side::Part>)>,
     /// The second group of the panel is folded.
     folded: bool,
+    /// The first window is split into panes (`side` lists them, or shows their number in its tab).
+    panes: Option<PaneScene>,
 }
 
 /// What the bar says in the board's scenes: made-up values, the same on every machine.
@@ -161,9 +195,13 @@ fn scenes() -> Vec<Scene> {
         bar: None,
         side: None,
         folded: false,
+        panes: None,
         lang: Lang::En,
     };
     let bar = |chips: &[Chip]| Some((sample_context(), chips.to_vec()));
+    let chips3 = || bar(&[Chip::Time, Chip::Dir, Chip::Branch]);
+    let split = |n, kind, focus, cross| Some(PaneScene { n, kind, focus, cross });
+    let side_ui = Ui { side: 2, ..Ui::IDLE };
     let hooked: &'static str = Box::leak(with_hook("").into_boxed_str());
     let typing: &'static str = Box::leak(with_hook("git commit -m \"wire the chips to the prompt\"").into_boxed_str());
     let bar_cursor: &'static str = Box::leak(format!("{SHELL}\x1b[6 q").into_boxed_str());
@@ -229,6 +267,16 @@ fn scenes() -> Vec<Scene> {
         Scene { side: Some((TabsPos::Top, Some(crate::side::Part::Row(1)))), ..base("tabs-top", "Windows as tabs in the title bar, pointer over one", "windows", Ui { side: 0, ..Ui::IDLE }) },
         Scene { side: Some((TabsPos::Top, Some(crate::side::Part::Close(2)))), bar: bar(&[Chip::Time, Chip::Dir, Chip::Branch]), input: hooked, ..base("tabs-top-close", "Tabs, pointer over a cross, chips on", "windows", Ui { side: 0, ..Ui::IDLE }) },
         base("side-btn-hover", "Pointer over the panel button, panel hidden", "windows", Ui { side: 1, hover: 5, ..Ui::IDLE }),
+        Scene { panes: split(2, panes::Kind::Cols, 1, None), side: Some((TabsPos::Left, None)), bar: chips3(), ..base("panes-2", "Two panes in columns (Alt+\\): the focused one has the accent border and its ring, the other is dimmer with a hollow cursor; the panel lists them", "panes", side_ui) },
+        Scene { panes: split(3, panes::Kind::Grid, 2, None), side: Some((TabsPos::Left, None)), bar: chips3(), ..base("panes-3", "Three panes (Ctrl+Space twice): the last spans both columns of the second row", "panes", side_ui) },
+        Scene { panes: split(4, panes::Kind::Grid, 3, None), side: Some((TabsPos::Left, None)), bar: chips3(), ..base("panes-4", "Four panes: a grid of two by two", "panes", side_ui) },
+        Scene { panes: split(5, panes::Kind::Grid, 4, None), side: Some((TabsPos::Left, Some(crate::side::Part::Pane(0, 2)))), bar: chips3(), ..base("panes-5", "Five panes: three columns, the last pane spans the two cells the second row leaves empty; pointer over a pane's row in the panel; the rows' status icons (running, failed)", "panes", side_ui) },
+        Scene { panes: split(6, panes::Kind::Grid, 0, None), side: Some((TabsPos::Left, Some(crate::side::Part::ClosePane(0, 3)))), bar: chips3(), ..base("panes-6", "Six panes, the first focused; pointer over the cross of a pane's row", "panes", side_ui) },
+        Scene { panes: split(3, panes::Kind::Rows, 1, Some((1, false))), side: Some((TabsPos::Left, None)), bar: chips3(), ..base("panes-rows", "Three panes in rows (Alt+-): the cross at the corner of the pane under the pointer", "panes", side_ui) },
+        Scene { panes: split(4, panes::Kind::Grid, 0, Some((1, true))), side: Some((TabsPos::Left, None)), bar: chips3(), ..base("panes-cross-hot", "The pointer is on a pane's cross (closes it, Alt+Shift+W closes the focused one)", "panes", side_ui) },
+        Scene { panes: split(4, panes::Kind::Cols, 2, None), side: Some((TabsPos::Top, Some(crate::side::Part::Row(0)))), bar: chips3(), ..base("panes-tabs-top", "Windows as tabs: the first says how many panes it has", "panes", Ui { side: 0, ..Ui::IDLE }) },
+        Scene { panes: split(3, panes::Kind::Grid, 1, None), side: Some((TabsPos::Left, None)), bar: chips3(), lang: Lang::Es, ..base("panes-es", "Panes in Spanish: the rows of the panel say Panel n", "panes", side_ui) },
+        Scene { panes: split(2, panes::Kind::Cols, 0, None), bar: chips3(), ..base("panes-no-panel", "Two panes with the panel hidden (Alt+B)", "panes", Ui { side: 1, ..Ui::IDLE }) },
         Scene { font: font(300, 0.0, 1.0), ..base("font-light", "Weight 300 (light)", "font", Ui::IDLE) },
         Scene { font: font(500, 0.0, 1.0), ..base("font-medium", "Weight 500 (medium)", "font", Ui::IDLE) },
         Scene { font: font(400, 1.0, 1.0), ..base("font-spaced", "Letter spacing +1 px", "font", Ui::IDLE) },
@@ -250,28 +298,54 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
         soft.set_tabs_top(pos == TabsPos::Top);
     }
     let (cols, rows) = session::grid_size(W - side_w, H, cw, ch, soft.pad, soft.top, soft.bottom);
-    let mut term = Term::new(Config::default(), &session::Size { cols, rows }, VoidListener);
-    let mut p: Processor = Processor::new();
-    p.advance(&mut term, s.input.as_bytes());
-    if let Some((line, len)) = s.select {
-        let mut sel = Selection::new(SelectionType::Simple, Point::new(Line(line), Column(1)), Side::Left);
-        sel.update(Point::new(Line(line), Column(len)), Side::Right);
-        term.selection = Some(sel);
-    }
     let (ml, mt, mb) = chrome::margins(s.ui.maximized);
     let (w, h) = (W as usize + 2 * ml, H as usize + mt + mb);
     let mut fb = vec![0u32; w * h];
-    soft.set_status("zsh", "main", cols, rows);
     let (ctx, chips) = s.bar.clone().unwrap_or_default();
-    bar::Chips::default().frame(s.bar.is_some(), true, &demo_history(&ctx), &chips, &mut term, &mut View::new(), &mut soft, &mut fb, (w, h), s.ui.focused);
+    if let Some(ps) = s.panes {
+        // A window split into panes: each has a terminal of the size of its own box, and is drawn in turn.
+        let ws = soft.workspace(W, H);
+        let slots: Vec<Slot> = (0..ps.n).map(|i| Slot { rect: panes::rect(ps.kind, ps.n, i, ws), focus: i == ps.focus, framed: ps.n > 1 }).collect();
+        soft.set_layout(&slots);
+        let grids: Vec<panes::Grid> = slots.iter().map(|sl| soft.grid(sl.rect, sl.framed)).collect();
+        soft.set_status("zsh", "main", grids[ps.focus].cols, grids[ps.focus].rows);
+        for (i, g) in grids.iter().enumerate() {
+            let mut term = Term::new(Config::default(), &session::Size { cols: g.cols, rows: g.rows }, VoidListener);
+            Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::new().advance(&mut term, pane_text(i).as_bytes());
+            soft.select(i);
+            soft.set_dim(if i == ps.focus { 255 } else { UNFOCUSED });
+            bar::Chips::default().frame(s.bar.is_some(), true, &demo_history(&ctx), &chips, &mut term, &mut View::new(), &mut soft, &mut fb, (w, h), s.ui.focused && i == ps.focus);
+        }
+        soft.set_dim(255);
+        soft.select(0);
+        if let Some((i, hot)) = ps.cross {
+            soft.paint_pane_close(&mut fb, i, hot);
+        }
+    } else {
+        let mut term = Term::new(Config::default(), &session::Size { cols, rows }, VoidListener);
+        let mut p: Processor = Processor::new();
+        p.advance(&mut term, s.input.as_bytes());
+        if let Some((line, len)) = s.select {
+            let mut sel = Selection::new(SelectionType::Simple, Point::new(Line(line), Column(1)), Side::Left);
+            sel.update(Point::new(Line(line), Column(len)), Side::Right);
+            term.selection = Some(sel);
+        }
+        soft.set_status("zsh", "main", cols, rows);
+        bar::Chips::default().frame(s.bar.is_some(), true, &demo_history(&ctx), &chips, &mut term, &mut View::new(), &mut soft, &mut fb, (w, h), s.ui.focused);
+    }
     if let Some((pos, hover)) = s.side {
-        let item = |title: &str, selected, unread| crate::side::Item { title: title.to_string(), selected, unread };
-        let items = [item("arcton", true, false), item("servidor", false, false), item("pruebas", false, true), item("~", false, false), item("notas", false, false)];
+        let item = |title: &str, selected, unread| crate::side::Item { title: title.to_string(), selected, unread, badge: 0, panes: Vec::new() };
+        let mut items = [item("arcton", true, false), item("servidor", false, false), item("pruebas", false, true), item("~", false, false), item("notas", false, false)];
+        // The first window's panes: rows under it in the panel, a number in its tab at the top.
+        let pane_n = s.panes.map_or(1, |p| p.n);
+        if let Some(ps) = s.panes.filter(|p| p.n > 1) {
+            items[0].panes = (0..ps.n).map(|i| crate::side::PaneItem { title: format!("{} {}", i18n::tr(i18n::Str::Pane), i + 1), active: i == ps.focus, status: pane_status(i) }).collect();
+            items[0].badge = if pos == TabsPos::Top { ps.n } else { 0 };
+        }
         // The reference's session: a group of three windows, one in none, and a folded group of one.
         let group = |name: &str, color, collapsed, count| crate::side::GroupItem { name: name.to_string(), color, collapsed, count };
-        let groups = [group("arcton", 1, false, 3), group("docs", 3, s.folded, 1)];
-        let entries = crate::side::entries(&[Some(0), Some(0), Some(0), None, Some(1)], &[false, s.folded]);
-        let entries = if s.folded { entries } else { crate::side::entries(&[Some(0), Some(0), Some(0), None, Some(1)], &[false, false]) };
+        let groups = [group("arcton", 1, false, 2 + pane_n), group("docs", 3, s.folded, 1)];
+        let entries = crate::side::entries(&[Some(0), Some(0), Some(0), None, Some(1)], &[false, s.folded], &[pane_n, 1, 1, 1, 1]);
         let (ox, oy) = soft.origin();
         if let (TabsPos::Top, _) | (_, None) = (pos, soft.side_rect()) {
             let (x0, x1) = (chrome::TITLE_CLEAR as i32 - 8, W as i32 - 50);
@@ -406,6 +480,90 @@ fn chips_repaint_incrementally_like_a_full_frame() {
         bar::Chips::default().frame(*on, true, &history, &chips, &mut fterm, &mut View::new(), &mut fsoft, &mut full, (w, h), true);
         let diff = fb.iter().zip(&full).filter(|(a, b)| a != b).count();
         assert_eq!(diff, 0, "step {i}: {diff} pixels differ from a full repaint");
+    }
+}
+
+/// Split panes are repainted row by row like one grid: output in one pane, the focus moving (which repaints the
+/// frame: borders, ring and dimming change), a pane closing and the cross at a pane's corner coming and going
+/// must still give exactly what painting everything from scratch gives.
+#[test]
+fn panes_repaint_incrementally_like_a_full_frame() {
+    struct Pane {
+        term: Term<VoidListener>,
+        view: View,
+        chips: bar::Chips,
+    }
+    let make_soft = || {
+        let mut soft = Soft::new(&FontCfg::sized(PX), OPACITY);
+        soft.set_inset(220, 0);
+        soft
+    };
+    let (ml, mt, mb) = chrome::margins(false);
+    let (w, h) = (W as usize + 2 * ml, H as usize + mt + mb);
+    // One frame of the panes `n` in `kind` with the focus on `focus` and the cross on pane `cross`, from the
+    // texts each pane has been given: `keep` panes carry their state over, the others are built from scratch.
+    let frame = |soft: &mut Soft, panes: &mut Vec<Pane>, fb: &mut Vec<u32>, kind: panes::Kind, focus: usize, cross: Option<usize>, last_cross: Option<usize>| {
+        let n = panes.len();
+        let ws = soft.workspace(W, H);
+        let slots: Vec<Slot> = (0..n).map(|i| Slot { rect: panes::rect(kind, n, i, ws), focus: i == focus, framed: n > 1 }).collect();
+        soft.set_layout(&slots);
+        soft.set_status("zsh", "main", 10, 5);
+        for i in [last_cross, cross].into_iter().flatten().filter(|&i| i < n) {
+            for r in soft.close_rows(i) {
+                panes[i].view.invalidate_row(r);
+            }
+        }
+        for (i, p) in panes.iter_mut().enumerate() {
+            soft.select(i);
+            soft.set_dim(if i == focus { 255 } else { UNFOCUSED });
+            p.chips.frame(false, false, &History::default(), &[], &mut p.term, &mut p.view, soft, fb, (w, h), i == focus);
+        }
+        soft.set_dim(255);
+        soft.select(0);
+        if let Some(i) = cross {
+            soft.paint_pane_close(fb, i, false);
+        }
+    };
+    let new_term = |soft: &Soft, kind: panes::Kind, n: usize, i: usize, text: &str| {
+        let ws = soft.workspace(W, H);
+        let g = soft.grid(panes::rect(kind, n, i, ws), n > 1);
+        let mut t = Term::new(Config::default(), &session::Size { cols: g.cols, rows: g.rows }, VoidListener);
+        Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::new().advance(&mut t, text.as_bytes());
+        t
+    };
+    // Three panes in a grid; each step is (the focus, the pane showing its cross, output for the pane two after
+    // the focused one: never the focused pane, so a pane without the focus is shown changing too).
+    let kind = panes::Kind::Grid;
+    let scroll = "\r\n".repeat(30) + "scrolled\r\n";
+    let plan: [(usize, Option<usize>, &str); 7] = [
+        (0, None, ""),
+        (0, None, "\r\nmore output\r\n$ "),
+        (2, None, ""),
+        (2, Some(0), "\x1b[31mred\x1b[0m"),
+        (2, Some(1), "x"),
+        (1, None, scroll.as_str()),
+        (1, Some(2), ""),
+    ];
+    let base = ["$ one", "$ two", "$ three"];
+    let mut soft = make_soft();
+    let mut panes: Vec<Pane> = (0..3).map(|i| Pane { term: new_term(&soft, kind, 3, i, base[i]), view: View::new(), chips: bar::Chips::default() }).collect();
+    let mut texts: Vec<String> = base.iter().map(|s| s.to_string()).collect();
+    let mut fb = vec![0xdead_beefu32; w * h];
+    let mut last_cross = None;
+    for (n, (focus, cross, out)) in plan.into_iter().enumerate() {
+        // The output goes to the pane before the focus: another pane than the one with the focus must repaint too.
+        let to = (focus + 2) % 3;
+        texts[to].push_str(out);
+        Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::new().advance(&mut panes[to].term, out.as_bytes());
+        frame(&mut soft, &mut panes, &mut fb, kind, focus, cross, last_cross);
+        last_cross = cross;
+
+        let mut fresh_soft = make_soft();
+        let mut fresh: Vec<Pane> = (0..3).map(|i| Pane { term: new_term(&fresh_soft, kind, 3, i, &texts[i]), view: View::new(), chips: bar::Chips::default() }).collect();
+        let mut full = vec![0u32; w * h];
+        frame(&mut fresh_soft, &mut fresh, &mut full, kind, focus, cross, None);
+        let diff = fb.iter().zip(&full).filter(|(a, b)| a != b).count();
+        assert_eq!(diff, 0, "step {n}: {diff} pixels differ from a full repaint");
     }
 }
 
