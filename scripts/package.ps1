@@ -30,6 +30,8 @@ Remove-Item -Recurse -Force $stage
 $hash = (Get-FileHash -Algorithm SHA256 "$dist\$name.zip").Hash.ToLower()
 [IO.File]::WriteAllText((Join-Path (Resolve-Path $dist) "$name.zip.sha256"), "$hash  $name.zip`n")
 
-$mb = [math]::Round((Get-Item "$dist\$name.zip").Length / 1MB, 1)
+$exeBytes = (Get-Item $exe).Length
+$mb = [math]::Round((Get-Item "$dist\$name.zip").Length / 1MB, 2)
+Write-Host "axon.exe: $exeBytes bytes ($([math]::Round($exeBytes / 1MB, 1)) MiB)"
 Write-Host "$dist\$name.zip ($mb MB)"
 Write-Host "$dist\$name.zip.sha256"

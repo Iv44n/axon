@@ -14,3 +14,4 @@ The stack, the renderer, the data layout and the rule of owning what we ship. Ne
 - [0010 · Own implementations from scratch](0010-own-implementations.md) — dependencies are scaffolding; fonts, terminal core and PTY first.
 - [0011 · Software rendering into wl_shm](0011-software-render-wl-shm.md) — own Wayland client and CPU renderer; 8.7 MB idle against 191 MB with wgpu.
 - [0013 · Wayland default, xkb via dlopen](0013-wayland-default-xkb-dlopen.md) — `wl` is the default backend; `libxkbcommon` loaded at run time; `winit` fallback.
+- [0039 · Windows port](0039-windows-port.md) — own Win32 layered window behind `plat.rs`, ConPTY shell, self-test on CI; no blur or HiDPI yet.

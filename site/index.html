@@ -3,16 +3,26 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title data-i18n="meta.title">axon · a native terminal for Linux</title>
-<meta data-i18n-content="meta.desc" name="description" content="A native terminal emulator for Linux, written in Rust: its own Wayland client and a CPU renderer, 15 MB of memory and 0 % CPU when idle, windows in groups shown side by side, a command palette and prompt chips.">
+<title data-i18n="meta.title">axon · a native terminal for Linux and Windows</title>
+<meta data-i18n-content="meta.desc" name="description" content="A native terminal emulator for Linux and Windows, written in Rust: its own window layer (Wayland, Win32) and a CPU renderer, 15 MB of memory and 0 % CPU when idle on Linux, windows in groups shown side by side, a command palette and prompt chips.">
 <meta name="theme-color" content="#09090a">
 <meta property="og:type" content="website">
-<meta property="og:title" content="axon · a native terminal for Linux">
-<meta property="og:description" content="Own Wayland client, CPU renderer, 15 MB idle, 0 % CPU idle. Groups shown as split views, a command palette, prompt chips.">
+<meta property="og:title" content="axon · a native terminal for Linux and Windows">
+<meta property="og:description" content="Own window layer (Wayland, Win32), CPU renderer, 0 % CPU idle. Groups shown as split views, a command palette, prompt chips.">
 <meta property="og:url" content="https://iv44n.github.io/axon/">
 <meta property="og:image" content="https://iv44n.github.io/axon/shots/split.png">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="axon.svg" type="image/svg+xml">
+<script>
+// The system the install commands are for: the visitor's last pick, else the one they are on. Set before the first
+// paint, so the page never flashes the other one; without scripts, both are shown.
+(function () {
+  var os = null;
+  try { os = localStorage.getItem('axon-os'); } catch (e) {}
+  if (os !== 'linux' && os !== 'windows') os = /Win/i.test(navigator.platform || navigator.userAgent || '') ? 'windows' : 'linux';
+  document.documentElement.setAttribute('data-os', os);
+})();
+</script>
 <style>
 :root {
   color-scheme: dark;
@@ -83,6 +93,15 @@ nav a.gh svg { width: 16px; height: 16px; }
 .lang button[aria-pressed="true"] { color: var(--accent); background: var(--fill); }
 .lang button:focus-visible { outline-offset: -2px; }
 @media (max-width: 420px) { header.top .wrap { gap: 14px; } nav { gap: 14px; } nav a.gh span { display: none; } }
+
+/* The system picker, and what is for the other system: gone. */
+.os-row { text-align: center; margin: 0 0 16px; }
+.os { display: inline-flex; border: 1px solid var(--line-2); border-radius: 8px; overflow: hidden; }
+.os button { font: 500 12px/1 var(--mono); letter-spacing: .06em; color: var(--dim); background: none; border: 0; padding: 8px 16px; cursor: pointer; }
+.os button:hover { color: var(--text); }
+.os button[aria-pressed="true"] { color: var(--accent); background: var(--fill); }
+.os button:focus-visible { outline-offset: -2px; }
+html[data-os="linux"] [data-os="windows"], html[data-os="windows"] [data-os="linux"] { display: none !important; }
 
 /* Hero */
 .hero { padding: 88px 0 40px; text-align: center; }
@@ -264,22 +283,36 @@ footer nav { font-size: 13.5px; }
 <main>
   <div class="hero">
     <div class="wrap">
-      <p data-i18n="hero.eyebrow" class="eyebrow">Native terminal · Linux · Rust</p>
+      <p data-i18n="hero.eyebrow" class="eyebrow">Native terminal · Linux · Windows · Rust</p>
       <h1 data-i18n="hero.h1">A terminal that idles at <em>15&nbsp;MB</em>.</h1>
-      <p data-i18n="hero.lede" class="lede">axon draws itself: its own Wayland client and a CPU renderer that paints only the rows that changed
-        into shared memory, with no GPU stack loaded. Windows in groups shown side by side, a command palette,
-        prompt chips, and 0&nbsp;% CPU while nothing happens.</p>
+      <p data-i18n="hero.lede" class="lede">axon draws itself: its own window layer (a Wayland client on Linux, a Win32 window on Windows) and a CPU
+        renderer that paints only the rows that changed, with no GPU stack loaded. Windows in groups shown side by side,
+        a command palette, prompt chips, and 0&nbsp;% CPU while nothing happens.</p>
 
+      <div class="os-row">
+        <div class="os" role="group" data-i18n-aria-label="os.group" aria-label="Operating system">
+          <button type="button" data-pick="linux" aria-pressed="true">Linux</button>
+          <button type="button" data-pick="windows" aria-pressed="false">Windows</button>
+        </div>
+      </div>
       <div class="term">
         <div class="bar"><i></i><i></i><i></i><span data-i18n="hero.bar">install</span></div>
-        <div class="line">
-          <pre id="oneliner"><b>$ </b>curl -fsSL https://iv44n.github.io/axon/install.sh | sh</pre>
+        <div class="line" data-os="linux">
+          <pre><b>$ </b>curl -fsSL https://iv44n.github.io/axon/install.sh | sh</pre>
           <button data-i18n-aria-label="copy.aria" class="copy" type="button" data-copy="curl -fsSL https://iv44n.github.io/axon/install.sh | sh" aria-label="Copy the install command">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.8"/><path d="M10.5 3.2V3a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 3v5A1.5 1.5 0 0 0 4 9.5h.2"/></svg><span class="lbl">Copy</span>
           </button>
         </div>
+        <div class="line" data-os="windows">
+          <pre><b>PS&gt; </b>irm https://iv44n.github.io/axon/install.ps1 | iex</pre>
+          <button data-i18n-aria-label="copy.aria" class="copy" type="button" data-copy="irm https://iv44n.github.io/axon/install.ps1 | iex" aria-label="Copy the install command">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.8"/><path d="M10.5 3.2V3a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 3v5A1.5 1.5 0 0 0 4 9.5h.2"/></svg><span class="lbl">Copy</span>
+          </button>
+        </div>
       </div>
-      <p data-i18n="hero.under" class="under">Linux on x86_64 or aarch64, glibc 2.35 or newer. Installs under <code>~/.local</code> with a launcher entry.
+      <p data-os="linux" data-i18n="hero.under" class="under">Linux on x86_64 or aarch64, glibc 2.35 or newer. Installs under <code>~/.local</code> with a launcher entry.
+        <a href="#install">Other ways</a></p>
+      <p data-os="windows" data-i18n="hero.under.win" class="under">Windows 10 (1809) or 11, 64-bit. Installs for you under <code>%LOCALAPPDATA%\Programs\axon</code>, with a Start menu entry.
         <a href="#install">Other ways</a></p>
 
       <div class="desk">
@@ -420,11 +453,19 @@ footer nav { font-size: 13.5px; }
       <header>
         <p data-i18n="inst.eyebrow" class="eyebrow">Install</p>
         <h2 data-i18n="inst.h2">One line, or build it yourself.</h2>
-        <p data-i18n="inst.lede">The installer downloads the release for your machine from GitHub, checks its SHA-256 and installs the binary,
+        <p data-os="linux" data-i18n="inst.lede">The installer downloads the release for your machine from GitHub, checks its SHA-256 and installs the binary,
           a launcher entry and the icon. Nothing outside the prefix is touched.</p>
+        <p data-os="windows" data-i18n="inst.lede.win">The installer downloads the release from GitHub, checks its SHA-256 and installs the exe and the icon for you,
+          with a Start menu shortcut, an entry in Settings › Apps and the folder on your PATH; the uninstall removes all of it.</p>
+        <div class="os-row" style="margin:20px 0 0;text-align:left">
+          <div class="os" role="group" data-i18n-aria-label="os.group" aria-label="Operating system">
+            <button type="button" data-pick="linux" aria-pressed="true">Linux</button>
+            <button type="button" data-pick="windows" aria-pressed="false">Windows</button>
+          </div>
+        </div>
       </header>
 
-      <div class="steps">
+      <div class="steps" data-os="linux">
         <div class="step">
           <div data-i18n="st1.n" class="n">01 · Released binary</div>
           <h3 data-i18n="st1.h">The one-liner</h3>
@@ -448,7 +489,32 @@ footer nav { font-size: 13.5px; }
         </div>
       </div>
 
-      <div class="two">
+      <div class="steps" data-os="windows">
+        <div class="step">
+          <div data-i18n="st1.n" class="n">01 · Released binary</div>
+          <h3 data-i18n="st1.h">The one-liner</h3>
+          <p data-i18n="st1w.p">Installs the latest release under <code>%LOCALAPPDATA%\Programs\axon</code>, no administrator needed. Run it in PowerShell.</p>
+<pre class="code"><span class="p">PS&gt; </span>irm https://iv44n.github.io/axon/install.ps1 | iex</pre>
+        </div>
+        <div class="step">
+          <div data-i18n="st2.n" class="n">02 · By hand</div>
+          <h3 data-i18n="st2.h">From the release page</h3>
+          <p data-i18n="st2w.p">Download <code>axon-x86_64-windows.zip</code> from
+            <a href="https://github.com/Iv44n/axon/releases/latest">Releases</a>; the bundle installs itself.</p>
+<pre class="code"><span class="p">PS&gt; </span>Expand-Archive axon-x86_64-windows.zip .
+<span class="p">PS&gt; </span>powershell -ExecutionPolicy Bypass -File axon-x86_64-windows\install.ps1</pre>
+        </div>
+        <div class="step">
+          <div data-i18n="st3.n" class="n">03 · From source</div>
+          <h3 data-i18n="st3.h">With cargo</h3>
+          <p data-i18n="st3w.p">Needs a recent stable Rust (2024 edition) and the MSVC build tools. Builds with fat LTO, then installs the same files.</p>
+<pre class="code"><span class="p">PS&gt; </span>git clone https://github.com/Iv44n/axon
+<span class="p">PS&gt; </span>cd axon; cargo build --release
+<span class="p">PS&gt; </span>powershell -ExecutionPolicy Bypass -File scripts\install.ps1</pre>
+        </div>
+      </div>
+
+      <div class="two" data-os="linux">
         <div class="box">
           <h3 data-i18n="opt.title">Installer options</h3>
           <table class="opts">
@@ -464,6 +530,27 @@ footer nav { font-size: 13.5px; }
             <li data-i18n="req.l1">Linux, x86_64 or aarch64; the released binary needs glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later). Otherwise build from source.</li>
             <li data-i18n="req.l2">Wayland with <code>libxkbcommon.so.0</code> (every Wayland desktop has it). On X11, axon falls back to <code>winit</code> + <code>wgpu</code>, which needs a Vulkan or GL driver.</li>
             <li data-i18n="req.l3">A monospaced font: JetBrains Mono, Cascadia Mono or DejaVu Sans Mono, or any file in <code>AXON_FONT</code>.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="two" data-os="windows">
+        <div class="box">
+          <h3 data-i18n="opt.title">Installer options</h3>
+          <table class="opts">
+            <tr><td><code>-Prefix DIR</code></td><td data-i18n="optw.prefix">Where to install (default <code>%LOCALAPPDATA%\Programs\axon</code>).</td></tr>
+            <tr><td><code>-Version v0.1.0</code></td><td data-i18n="opt.version">A given release instead of the latest.</td></tr>
+            <tr><td><code>-Uninstall</code></td><td data-i18n="optw.uninstall">Removes what it installed, also from your PATH; your settings stay.</td></tr>
+          </table>
+<pre class="code" style="margin-top:14px"><span class="p">PS&gt; </span>&amp; ([scriptblock]::Create((irm https://iv44n.github.io/axon/install.ps1))) -Version v0.1.0</pre>
+        </div>
+        <div class="box">
+          <h3 data-i18n="req.title">Requirements</h3>
+          <ul>
+            <li data-i18n="reqw.l1">Windows 10 (version 1809) or 11, 64-bit. On Windows on ARM the x64 build runs emulated.</li>
+            <li data-i18n="reqw.l2">The shell is PowerShell 7 (<code>pwsh</code>) when installed, else Windows PowerShell, else <code>cmd</code>; <code>AXON_SHELL</code> names another.</li>
+            <li data-i18n="reqw.l3">A monospaced font: JetBrains Mono, Cascadia Mono or Consolas (it comes with Windows), or any file in <code>AXON_FONT</code>.</li>
+            <li data-i18n="reqw.l4">Not there yet on Windows: background blur, display scaling above 100&nbsp;% (the window is then blurry) and prompt chips in PowerShell.</li>
           </ul>
         </div>
       </div>
@@ -498,12 +585,13 @@ footer nav { font-size: 13.5px; }
 <footer>
   <div class="wrap">
     <a class="brand" href="#"><img src="axon.svg" alt="" width="20" height="20">axon</a>
-    <span data-i18n="foot.tag">A native terminal for Linux, written in Rust.</span>
+    <span data-i18n="foot.tag">A native terminal for Linux and Windows, written in Rust.</span>
     <nav data-i18n-aria-label="foot.nav" aria-label="Project">
       <a data-i18n="foot.source" href="https://github.com/Iv44n/axon">Source</a>
       <a href="https://github.com/Iv44n/axon/releases">Releases</a>
       <a href="https://github.com/Iv44n/axon/issues">Issues</a>
       <a href="install.sh">install.sh</a>
+      <a href="install.ps1">install.ps1</a>
     </nav>
   </div>
 </footer>
@@ -514,20 +602,22 @@ footer nav { font-size: 13.5px; }
 // the visitor's last pick, the browser's languages. The app has its own strings (src/i18n.rs); this is only the page.
 (function () {
   var ES = {
-  "meta.title": "axon · una terminal nativa para Linux",
-  "meta.desc": "Un emulador de terminal nativo para Linux, escrito en Rust: su propio cliente Wayland y un renderizador por CPU, 15 MB de memoria y 0 % de CPU en reposo, ventanas en grupos mostradas lado a lado, una paleta de comandos y chips en el prompt.",
+  "meta.title": "axon · una terminal nativa para Linux y Windows",
+  "meta.desc": "Un emulador de terminal nativo para Linux y Windows, escrito en Rust: su propia capa de ventanas (Wayland, Win32) y un renderizador por CPU, 15 MB de memoria y 0 % de CPU en reposo en Linux, ventanas en grupos mostradas lado a lado, una paleta de comandos y chips en el prompt.",
   "nav.sections": "Secciones",
   "nav.features": "Funciones",
   "nav.numbers": "Cifras",
   "nav.install": "Instalar",
   "nav.shortcuts": "Atajos",
   "lang.group": "Idioma",
-  "hero.eyebrow": "Terminal nativa · Linux · Rust",
+  "hero.eyebrow": "Terminal nativa · Linux · Windows · Rust",
   "hero.h1": "Una terminal que en reposo usa <em>15&nbsp;MB</em>.",
-  "hero.lede": "axon se dibuja a sí mismo: su propio cliente Wayland y un renderizador por CPU que pinta solo las filas que cambiaron en memoria compartida, sin cargar ninguna pila de GPU. Ventanas en grupos mostradas lado a lado, una paleta de comandos, chips en el prompt y 0&nbsp;% de CPU mientras no pasa nada.",
+  "os.group": "Sistema operativo",
+  "hero.lede": "axon se dibuja a sí mismo: su propia capa de ventanas (un cliente Wayland en Linux, una ventana Win32 en Windows) y un renderizador por CPU que pinta solo las filas que cambiaron, sin cargar ninguna pila de GPU. Ventanas en grupos mostradas lado a lado, una paleta de comandos, chips en el prompt y 0&nbsp;% de CPU mientras no pasa nada.",
   "hero.bar": "instalación",
   "copy.aria": "Copiar el comando de instalación",
   "hero.under": "Linux en x86_64 o aarch64, glibc 2.35 o superior. Se instala en <code>~/.local</code> con una entrada en el lanzador de aplicaciones. <a href=\"#install\">Otras formas</a>",
+  "hero.under.win": "Windows 10 (1809) u 11, de 64 bits. Se instala para ti en <code>%LOCALAPPDATA%\\Programs\\axon</code>, con una entrada en el menú Inicio. <a href=\"#install\">Otras formas</a>",
   "alt.split": "axon con un panel de ventanas agrupadas a la izquierda y tres terminales de un grupo divididas lado a lado; los chips del prompt muestran la hora y el directorio sobre cada prompt, y una barra de estado recorre la parte inferior.",
   "hero.caption": "Cada imagen de esta página es un fotograma del renderizador real, con alfa: los colores detrás del cristal son esta página.",
   "stat.mem": "de memoria con una shell en reposo",
@@ -579,23 +669,33 @@ footer nav { font-size: 13.5px; }
   "inst.eyebrow": "Instalar",
   "inst.h2": "Una línea, o compílalo tú.",
   "inst.lede": "El instalador descarga de GitHub la release para tu máquina, comprueba su SHA-256 e instala el binario, una entrada en el lanzador y el icono. No toca nada fuera del prefijo.",
+  "inst.lede.win": "El instalador descarga la release de GitHub, comprueba su SHA-256 e instala para ti el exe y el icono, con un acceso directo en el menú Inicio, una entrada en Configuración › Aplicaciones y la carpeta en tu PATH; al desinstalar se quita todo.",
   "st1.n": "01 · Binario publicado",
   "st1.h": "El one-liner",
   "st1.p": "Instala la última release en <code>~/.local</code>. Añade opciones después de <code>sh -s --</code>.",
+  "st1w.p": "Instala la última release en <code>%LOCALAPPDATA%\\Programs\\axon</code>, sin necesitar administrador. Ejecútalo en PowerShell.",
   "st2.n": "02 · A mano",
   "st2.h": "Desde la página de releases",
   "st2.p": "Descarga <code>axon-x86_64-linux.tar.gz</code> (o <code>aarch64</code>) desde <a href=\"https://github.com/Iv44n/axon/releases/latest\">Releases</a>; el paquete se instala solo.",
+  "st2w.p": "Descarga <code>axon-x86_64-windows.zip</code> desde <a href=\"https://github.com/Iv44n/axon/releases/latest\">Releases</a>; el paquete se instala solo.",
   "st3.n": "03 · Desde el código",
   "st3.h": "Con cargo",
   "st3.p": "Necesita un Rust estable reciente (edición 2024). Compila con LTO completo y luego instala los mismos archivos.",
+  "st3w.p": "Necesita un Rust estable reciente (edición 2024) y las herramientas de compilación de MSVC. Compila con LTO completo y luego instala los mismos archivos.",
   "opt.title": "Opciones del instalador",
   "opt.prefix": "Dónde instalar. <code>/usr/local</code> instala para todos (pide sudo).",
+  "optw.prefix": "Dónde instalar (por defecto <code>%LOCALAPPDATA%\\Programs\\axon</code>).",
+  "optw.uninstall": "Quita lo que instaló, también del PATH; tus ajustes se quedan.",
   "opt.version": "Una release concreta en lugar de la última.",
   "opt.uninstall": "Quita lo que instaló; tus ajustes se quedan.",
   "req.title": "Requisitos",
   "req.l1": "Linux, x86_64 o aarch64; el binario publicado necesita glibc 2.35 o superior (Ubuntu 22.04, Debian 12, Fedora 36 y posteriores). Si no, compílalo desde el código.",
   "req.l2": "Wayland con <code>libxkbcommon.so.0</code> (todo escritorio Wayland la tiene). En X11, axon recurre a <code>winit</code> + <code>wgpu</code>, que necesita un driver Vulkan o GL.",
   "req.l3": "Una fuente monoespaciada: JetBrains Mono, Cascadia Mono o DejaVu Sans Mono, o cualquier archivo en <code>AXON_FONT</code>.",
+  "reqw.l1": "Windows 10 (versión 1809) u 11, de 64 bits. En Windows on ARM el build x64 funciona emulado.",
+  "reqw.l2": "La shell es PowerShell 7 (<code>pwsh</code>) si está instalado, si no Windows PowerShell, si no <code>cmd</code>; <code>AXON_SHELL</code> indica otra.",
+  "reqw.l3": "Una fuente monoespaciada: JetBrains Mono, Cascadia Mono o Consolas (viene con Windows), o cualquier archivo en <code>AXON_FONT</code>.",
+  "reqw.l4": "Aún no está en Windows: el desenfoque del fondo, el escalado de pantalla por encima del 100&nbsp;% (la ventana se ve borrosa) y los chips del prompt en PowerShell.",
   "sc.eyebrow": "Atajos",
   "sc.h2": "Las teclas que conviene aprender primero.",
   "sc.p": "La tabla completa, con el ratón, está en el <a href=\"https://github.com/Iv44n/axon#shortcuts\">README</a>.",
@@ -611,7 +711,7 @@ footer nav { font-size: 13.5px; }
   "k.copy": "Copiar / pegar",
   "k.font": "Tamaño de fuente",
   "k.reload": "Recargar el archivo de configuración",
-  "foot.tag": "Una terminal nativa para Linux, escrita en Rust.",
+  "foot.tag": "Una terminal nativa para Linux y Windows, escrita en Rust.",
   "foot.nav": "Proyecto",
   "foot.source": "Código"
 };
@@ -672,11 +772,27 @@ footer nav { font-size: 13.5px; }
       if (navigator.clipboard && window.isSecureContext) {
         navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
       } else {
-        var r = document.createRange(); r.selectNodeContents(document.getElementById('oneliner'));
+        var r = document.createRange(); r.selectNodeContents(b.parentNode.querySelector('pre'));
         var s = getSelection(); s.removeAllRanges(); s.addRange(r); done(false);
       }
     });
   });
+
+  // The system picker: the head script chose one; a click changes it (all pickers on the page follow) and is remembered.
+  function pick(os) {
+    root.setAttribute('data-os', os);
+    document.querySelectorAll('.os button').forEach(function (b) {
+      b.setAttribute('aria-pressed', b.getAttribute('data-pick') === os ? 'true' : 'false');
+    });
+  }
+  document.querySelectorAll('.os button').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var os = b.getAttribute('data-pick');
+      try { localStorage.setItem('axon-os', os); } catch (e) {}
+      pick(os);
+    });
+  });
+  pick(root.getAttribute('data-os') === 'windows' ? 'windows' : 'linux');
 
   var first = detect();
   if (first !== 'en') apply(first);

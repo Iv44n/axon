@@ -26,10 +26,19 @@ try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::S
 if ($env:OS -ne 'Windows_NT') { Die "this installer is for Windows (on Linux: curl -fsSL https://iv44n.github.io/axon/install.sh | sh)" }
 if (-not $Prefix) { $Prefix = Join-Path $env:LOCALAPPDATA 'Programs\axon' }
 
+# The installer is a script file, which a default Windows PowerShell refuses to run (execution policy `Restricted`);
+# this one is run in a process of its own, with the policy off for it alone.
+function Invoke-Installer($script) {
+    $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $script, '-Prefix', $Prefix)
+    if ($Uninstall) { $a += '-Uninstall' }
+    & (Get-Process -Id $PID).Path @a
+    if ($LASTEXITCODE -ne 0) { Die "the installer failed (exit code $LASTEXITCODE)" }
+}
+
 if ($Uninstall) {
     $installed = Join-Path $Prefix 'install.ps1'
     if (-not (Test-Path $installed)) { Die "there is no install in $Prefix (-Prefix names another place)" }
-    & $installed -Prefix $Prefix -Uninstall
+    Invoke-Installer $installed
     return
 }
 
@@ -64,7 +73,7 @@ try {
     Expand-Archive -Force "$tmp\$name.zip" $tmp
     $installer = Join-Path $tmp "$name\install.ps1"
     if (-not (Test-Path $installer)) { Die "the release has no install.ps1 in $name\" }
-    & $installer -Prefix $Prefix
+    Invoke-Installer $installer
 } finally {
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $tmp
 }
