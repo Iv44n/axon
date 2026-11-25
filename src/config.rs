@@ -214,7 +214,11 @@ pub struct Config {
 pub fn path() -> Option<PathBuf> {
     let dir = match std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
         Some(d) => PathBuf::from(d),
+        // `~/.config` on Linux; `%APPDATA%` (`C:\Users\me\AppData\Roaming`) on Windows.
+        #[cfg(target_os = "linux")]
         None => PathBuf::from(std::env::var_os("HOME")?).join(".config"),
+        #[cfg(windows)]
+        None => std::env::var_os("APPDATA").filter(|v| !v.is_empty()).map(PathBuf::from).or_else(|| crate::context::home_dir().map(|h| h.join("AppData").join("Roaming")))?,
     };
     Some(dir.join("axon").join("config.toml"))
 }
@@ -314,7 +318,7 @@ pub fn set_key(text: &str, section: &str, key: &str, value: Option<&str>) -> Str
 /// when there is no file yet. Written to a temporary file and renamed, so a crash cannot leave half
 /// a file.
 pub fn save(changes: &[(&str, Option<String>)]) -> std::io::Result<PathBuf> {
-    let path = path().ok_or_else(|| std::io::Error::other("neither XDG_CONFIG_HOME nor HOME is set"))?;
+    let path = path().ok_or_else(|| std::io::Error::other("the settings folder is unknown (XDG_CONFIG_HOME, HOME or APPDATA)"))?;
     save_at(&path, changes)?;
     Ok(path)
 }
@@ -393,7 +397,7 @@ const USAGE: &str = "usage: axon [command]
   config path      print where the settings file is
   config show      print the settings in effect (file and environment), and any mistakes in the file
   config edit      create the file if needed and open it in $VISUAL or $EDITOR
-  shell-init SHELL print what to add to your shell's rc file (bash, zsh or fish) so the prompt chips
+  shell-init SHELL print what to add to your shell's rc file (bash, zsh, fish or pwsh) so the prompt chips
                    work in it: eval \"$(axon shell-init bash)\" (axon starts bash with it already)
   --help, --version
 
@@ -425,7 +429,7 @@ fn shell_init(shell: Option<&str>) -> i32 {
 
 fn config_command(sub: Option<&str>) -> i32 {
     let Some(path) = path() else {
-        eprintln!("axon: cannot tell where the settings go: neither XDG_CONFIG_HOME nor HOME is set");
+        eprintln!("axon: cannot tell where the settings go: neither XDG_CONFIG_HOME nor {} is set", if cfg!(windows) { "APPDATA" } else { "HOME" });
         return 1;
     };
     match sub {
@@ -453,6 +457,8 @@ fn config_command(sub: Option<&str>) -> i32 {
             }
             if sub == Some("edit") {
                 let editor = ["VISUAL", "EDITOR"].iter().find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()));
+                // Windows always has Notepad; elsewhere there is nothing to guess.
+                let editor = editor.or_else(|| cfg!(windows).then(|| "notepad".to_string()));
                 let Some(editor) = editor else {
                     eprintln!("axon: set VISUAL or EDITOR to open the file, or edit it yourself");
                     return 1;

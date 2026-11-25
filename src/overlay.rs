@@ -26,7 +26,7 @@ use crate::{
     paint::{BLACK, Paint, WHITE},
     palette,
     toast::Toast,
-    xkb::Key,
+    plat::Key,
 };
 
 pub type Rect = (i32, i32, i32, i32);

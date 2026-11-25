@@ -16,7 +16,7 @@ use crate::config::{FontCfg, Smoothing};
 /// ~300 MB and ~600 ms; `ranges` (inclusive code points, empty = any) keeps it from being
 /// consulted, and therefore loaded, for characters it cannot help with.
 struct Fallback {
-    path: &'static str,
+    path: PathBuf,
     ranges: &'static [(u32, u32)],
     font: OnceCell<Option<Font>>,
 }
@@ -30,12 +30,36 @@ const CJK: &[(u32, u32)] = &[
     (0x20000, 0x3FFFF), // ideograph extensions
 ];
 
-const FALLBACKS: &[(&str, &[(u32, u32)])] = &[
-    ("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", &[]),
-    ("/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf", &[]),
-    ("/usr/share/fonts/truetype/noto/NotoSansSymbols-Regular.ttf", &[]),
-    ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", CJK),
-];
+/// The fonts consulted for a character the primary one lacks, in order (a path and the code points it is for).
+#[cfg(target_os = "linux")]
+fn fallback_files() -> Vec<(PathBuf, &'static [(u32, u32)])> {
+    [
+        ("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", &[][..]),
+        ("/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf", &[]),
+        ("/usr/share/fonts/truetype/noto/NotoSansSymbols-Regular.ttf", &[]),
+        ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", CJK),
+    ]
+    .into_iter()
+    .map(|(p, r)| (PathBuf::from(p), r))
+    .collect()
+}
+
+/// Windows ships Segoe UI Symbol (arrows, braille, dingbats, the box and block characters Consolas lacks) and a CJK font
+/// per language (YaHei: Chinese, Malgun Gothic: Korean, Yu Gothic and MS Gothic: Japanese).
+#[cfg(windows)]
+fn fallback_files() -> Vec<(PathBuf, &'static [(u32, u32)])> {
+    let dir = windows_fonts_dir();
+    [("seguisym.ttf", &[][..]), ("lucon.ttf", &[]), ("msyh.ttc", CJK), ("malgun.ttf", CJK), ("YuGothR.ttc", CJK), ("msgothic.ttc", CJK)]
+        .into_iter()
+        .map(|(f, r)| (dir.join(f), r))
+        .collect()
+}
+
+/// `%SystemRoot%\Fonts`.
+#[cfg(windows)]
+fn windows_fonts_dir() -> PathBuf {
+    PathBuf::from(std::env::var_os("SystemRoot").or_else(|| std::env::var_os("windir")).unwrap_or_else(|| "C:\\Windows".into())).join("Fonts")
+}
 
 pub struct Fonts {
     primary: Font,
@@ -77,13 +101,25 @@ const STYLE_WORDS: &[&str] = &[
 
 /// Fonts directories searched by family name.
 fn font_dirs() -> Vec<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    vec![
-        home.join(".local/share/fonts"),
-        home.join(".fonts"),
-        PathBuf::from("/usr/local/share/fonts"),
-        PathBuf::from("/usr/share/fonts"),
-    ]
+    #[cfg(target_os = "linux")]
+    {
+        let home = crate::context::home_dir().unwrap_or_default();
+        vec![
+            home.join(".local/share/fonts"),
+            home.join(".fonts"),
+            PathBuf::from("/usr/local/share/fonts"),
+            PathBuf::from("/usr/share/fonts"),
+        ]
+    }
+    #[cfg(windows)]
+    {
+        // The system's, and the ones installed for this user only.
+        let mut dirs = vec![windows_fonts_dir()];
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            dirs.push(PathBuf::from(local).join("Microsoft\\Windows\\Fonts"));
+        }
+        dirs
+    }
 }
 
 /// Letters and digits only, lower case: "JetBrains Mono" and "JetBrainsMono[wght]" compare by prefix.
@@ -95,7 +131,11 @@ fn squash(s: &str) -> String {
 /// italic or oblique, and is the plain style (no Bold, Light...) with the shortest name. Looks
 /// through the font directories, up to six levels down.
 fn find_family(name: &str) -> Option<PathBuf> {
-    find_in(font_dirs(), name)
+    find_in(font_dirs(), name).or_else(|| {
+        // A family whose files are not named after it (Windows' Consolas is `consola.ttf`): by the name inside the font.
+        let want = squash(name);
+        list_monospaced(font_dirs()).into_iter().find(|(n, _)| squash(n) == want).map(|(_, p)| p)
+    })
 }
 
 // ------------------------------------------------------- reading font files --
@@ -264,8 +304,8 @@ fn find_any(dirs: Vec<PathBuf>, names: &[&str]) -> Option<PathBuf> {
 }
 
 pub fn expand_home(p: &str) -> PathBuf {
-    match (p.strip_prefix("~/"), std::env::var_os("HOME")) {
-        (Some(rest), Some(home)) => Path::new(&home).join(rest),
+    match (p.strip_prefix("~/").or_else(|| p.strip_prefix("~\\")), crate::context::home_dir()) {
+        (Some(rest), Some(home)) => home.join(rest),
         _ => PathBuf::from(p),
     }
 }
@@ -299,10 +339,9 @@ impl Fonts {
     /// Loads the configured family (a path, or a name searched in the font directories), then the
     /// built-in candidates; panics only when no monospaced font exists at all.
     pub fn new(cfg: &FontCfg) -> Self {
-        let home = std::env::var("HOME").unwrap_or_default();
         let mut candidates: Vec<PathBuf> = Vec::new();
         if let Some(fam) = &cfg.family {
-            if fam.contains('/') || fam.starts_with('~') {
+            if fam.contains('/') || fam.contains('\\') || fam.starts_with('~') {
                 candidates.push(expand_home(fam));
             } else if let Some(p) = find_family(fam) {
                 candidates.push(p);
@@ -311,25 +350,33 @@ impl Fonts {
                 eprintln!("axon: config: font {fam:?} not found or not readable, using the default font");
             }
         }
-        for f in ["JetBrainsMono[wght].ttf", "CascadiaMonoNF.ttf", "CascadiaMono.ttf"] {
-            candidates.push(format!("{home}/.local/share/fonts/{f}").into());
+        #[cfg(target_os = "linux")]
+        {
+            let home = crate::context::home_dir().unwrap_or_default();
+            for f in ["JetBrainsMono[wght].ttf", "CascadiaMonoNF.ttf", "CascadiaMono.ttf"] {
+                candidates.push(home.join(".local/share/fonts").join(f));
+            }
+            for f in [
+                "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+                "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf",
+            ] {
+                candidates.push(f.into());
+            }
         }
-        for f in [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
-            "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf",
-        ] {
-            candidates.push(f.into());
+        // Windows: Cascadia Mono where it is (Windows 11, Windows Terminal), else the Consolas every Windows has.
+        #[cfg(windows)]
+        for dir in font_dirs() {
+            for f in ["JetBrainsMono-Regular.ttf", "CascadiaMono.ttf", "consola.ttf", "lucon.ttf", "cour.ttf"] {
+                candidates.push(dir.join(f));
+            }
         }
         let primary = candidates
             .iter()
             .find_map(|p| load_font(p))
             .expect("no monospaced font found (set font.family in ~/.config/axon/config.toml)");
 
-        let fallbacks = FALLBACKS
-            .iter()
-            .map(|&(path, ranges)| Fallback { path, ranges, font: OnceCell::new() })
-            .collect();
+        let fallbacks = fallback_files().into_iter().map(|(path, ranges)| Fallback { path, ranges, font: OnceCell::new() }).collect();
 
         let mut fonts = Fonts { primary, fallbacks, cfg: cfg.clone(), px: cfg.size, cell_w: 1, cell_h: 1, ascent: 0, dx: 0, vmap: Vmap::NONE };
         fonts.set_px(cfg.size);
@@ -370,7 +417,7 @@ impl Fonts {
             if !f.ranges.is_empty() && !f.ranges.iter().any(|&(lo, hi)| (lo..=hi).contains(&cp)) {
                 return None;
             }
-            f.font.get_or_init(|| load_font(Path::new(f.path))).as_ref().filter(|font| font.lookup_glyph_index(c) != 0)
+            f.font.get_or_init(|| load_font(&f.path)).as_ref().filter(|font| font.lookup_glyph_index(c) != 0)
         })
     }
 
@@ -662,7 +709,8 @@ pub fn release_memory() {
 /// Families tried in order: the reference's own (Geist), the two that look most like it (Inter, and GNOME's Adwaita
 /// Sans, drawn from it), then the desktop's and other common good ones. Not Cantarell: its file is CFF2, which
 /// `fontdue` parses but draws nothing from.
-const UI_FAMILIES: [&str; 7] = ["Geist", "Inter", "Adwaita Sans", "Ubuntu Sans", "Noto Sans", "Open Sans", "DejaVu Sans"];
+/// Segoe UI is Windows' own.
+const UI_FAMILIES: [&str; 9] = ["Geist", "Inter", "Adwaita Sans", "Ubuntu Sans", "Noto Sans", "Open Sans", "DejaVu Sans", "Segoe UI", "Arial"];
 
 /// The UI font in `path`, with its character map narrowed to what an interface draws (`cmap::narrow`), or none
 /// when it cannot be read or draws nothing (an outline format `fontdue` does not draw).

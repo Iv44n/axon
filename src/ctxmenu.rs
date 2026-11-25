@@ -199,7 +199,7 @@ mod tests {
 
     #[test]
     fn what_cannot_be_chosen_is_not_found_and_enter_runs_what_is_selected() {
-        use crate::{input::sym, overlay::{Cx, Out, Overlay, Text}, xkb::Key};
+        use crate::{input::sym, overlay::{Cx, Out, Overlay, Text}, plat::Key};
         let t = Text::load();
         let g = Geo { w: 900, h: 620, square: false };
         let cx = Cx { g, text: &t };

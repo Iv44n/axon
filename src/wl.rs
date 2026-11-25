@@ -18,6 +18,7 @@ use std::{
     path::PathBuf,
 };
 
+use crate::plat::{Event, cursor};
 use rustix::{
     event::{PollFd, PollFlags, poll},
     fs::{MemfdFlags, ftruncate, memfd_create},
@@ -38,22 +39,6 @@ const STATE_ACTIVATED: u32 = 4;
 const STATE_TILED: [u32; 4] = [5, 6, 7, 8];
 /// Smallest window the title bar and a usable grid fit in.
 const MIN_SIZE: (i32, i32) = (320, 200);
-
-/// `wp_cursor_shape_device_v1.shape` values the window uses.
-pub mod cursor {
-    pub const DEFAULT: u32 = 1;
-    pub const POINTER: u32 = 4;
-    pub const TEXT: u32 = 9;
-    pub const GRABBING: u32 = 17;
-    pub const E_RESIZE: u32 = 18;
-    pub const N_RESIZE: u32 = 19;
-    pub const NE_RESIZE: u32 = 20;
-    pub const NW_RESIZE: u32 = 21;
-    pub const S_RESIZE: u32 = 22;
-    pub const SE_RESIZE: u32 = 23;
-    pub const SW_RESIZE: u32 = 24;
-    pub const W_RESIZE: u32 = 25;
-}
 
 /// What an object id means. Index `id` of `Wl::kinds`; `None` = free or unknown.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -100,36 +85,6 @@ struct Offer {
 }
 
 const TEXT_MIMES: [&str; 3] = ["text/plain;charset=utf-8", "UTF8_STRING", "text/plain"];
-
-/// What the window layer tells the application.
-#[derive(Clone, Debug)]
-pub enum Event {
-    /// The compositor proposes a size; 0 means "your choice". `square`: maximized, fullscreen or
-    /// tiled, so no rounded corners, shadow or resize edges.
-    Configure { w: i32, h: i32, square: bool },
-    /// The window gained or lost the activated state (keyboard focus, to the user).
-    Focus(bool),
-    Close,
-    /// The previous frame was shown: the next one may be drawn.
-    FrameDone,
-    /// The pointer entered or moved, in surface pixels.
-    PointerMove { x: f32, y: f32 },
-    PointerLeave,
-    /// A button changed state; `time` is the compositor's millisecond clock.
-    PointerButton { button: u32, pressed: bool, time: u32 },
-    /// A wheel or touchpad scroll: `clicks` wheel notches (down is positive) or, for smooth
-    /// scrolling, `pixels`.
-    Scroll { pixels: f32, clicks: i32 },
-    /// The keymap text of the layout in use (`xkb.rs` compiles it).
-    Keymap(String),
-    /// A key by its evdev code; layouts and modifiers are applied by `xkb.rs`.
-    Key { key: u32, pressed: bool },
-    Modifiers { depressed: u32, latched: u32, locked: u32, group: u32 },
-    /// Client-side key repeat: keys per second (0 = off) and the delay before it starts, in ms.
-    RepeatInfo { rate: i32, delay: i32 },
-    /// The keyboard focus left the window: stop repeating.
-    KeyboardLeave,
-}
 
 /// Interfaces the compositor offers, as `(registry name, version)`; 0 = absent.
 #[derive(Default)]
@@ -375,10 +330,6 @@ impl Wl {
         wl.send(wl.surface, 6, []); // commit: asks for the first configure
         wl.flush()?;
         Ok(wl)
-    }
-
-    pub fn fd(&self) -> BorrowedFd<'_> {
-        self.sock.as_fd()
     }
 
     pub fn set_title(&mut self, title: &str) {
@@ -629,6 +580,18 @@ impl Wl {
                 r => return r.map(|_| ()).map_err(io::Error::from),
             }
         }
+    }
+
+    /// Blocks until the socket is readable, `wake` is signalled or `timeout` passes (`None` = forever). Says which of
+    /// the first two it was: `(the compositor has something, wake was signalled)`.
+    pub fn wait_wake(&self, wake: &crate::plat::Wake, timeout: Option<std::time::Duration>) -> io::Result<(bool, bool)> {
+        let ts = timeout.map(|d| rustix::event::Timespec { tv_sec: d.as_secs() as i64, tv_nsec: d.subsec_nanos() as i64 });
+        let mut fds = [PollFd::new(&self.sock, PollFlags::IN), PollFd::new(wake, PollFlags::IN)];
+        match poll(&mut fds, ts.as_ref()) {
+            Ok(_) | Err(rustix::io::Errno::INTR) => {}
+            Err(e) => return Err(e.into()),
+        }
+        Ok((fds[0].revents().contains(PollFlags::IN), fds[1].revents().contains(PollFlags::IN)))
     }
 
     /// Reads what the compositor has sent (without blocking) and handles every complete event.

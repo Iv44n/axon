@@ -15,7 +15,7 @@ use crate::{
     overlay::{Cap, Click, Cx, Cursor, Fade, Geo, Ink, Out, Overlay, POP, PX_HEAD, PX_MENU, Rect, SHADOW_POP, Text, accent, card, faint, fg, inside, kbd, kbd_width},
     paint::{Paint, WHITE},
     side::group_color,
-    xkb::Key,
+    plat::Key,
 };
 
 /// Flags of an item: the red of a destructive action, an item that cannot be chosen, a mark before it.
@@ -346,7 +346,7 @@ fn paint_item(p: &mut Paint, t: &Text, m: &Menu, i: usize, (x, y, w, h): Rect) {
 mod tests {
     use super::*;
     use crate::overlay::Text;
-    use crate::xkb::Mods;
+    use crate::plat::Mods;
 
     const G: Geo = Geo { w: 900, h: 620, square: false };
 

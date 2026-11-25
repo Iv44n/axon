@@ -24,7 +24,7 @@ use crate::{
     input::sym,
     paint::{BLACK, Paint, WHITE, seg},
     palette,
-    xkb::Key,
+    plat::Key,
 };
 
 // ----------------------------------------------------------------- layout --
@@ -1989,7 +1989,7 @@ struct Lay {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::xkb::Mods;
+    use crate::plat::Mods;
     use std::time::{Duration, Instant};
 
     fn fams() -> Vec<(String, PathBuf)> {

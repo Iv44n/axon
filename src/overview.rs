@@ -22,7 +22,7 @@ use crate::{
     paint::{Paint, WHITE},
     palette,
     side::{Status, group_color},
-    xkb::Key,
+    plat::Key,
 };
 
 /// The tag the app opens the overview under.
@@ -1249,7 +1249,7 @@ fn paint_tile(p: &mut Paint, t: &Text, r: Rect, lit: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{overlay::NoGrid, xkb::Mods};
+    use crate::{overlay::NoGrid, plat::Mods};
 
     const G: Geo = Geo { w: 900, h: 620, square: false };
     /// The workspace of the board's window with the panel of windows at its left.

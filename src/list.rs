@@ -20,7 +20,7 @@ use crate::{
     overlay::{Cap, Ink, KBD_GAP, PX, PX_HEAD, PX_SMALL, Rect, Text, accent, dim, faint, fg, kbd, kbd_row},
     paint::{Paint, WHITE},
     side::group_color,
-    xkb::Key,
+    plat::Key,
 };
 
 /// The most rows shown for a query, and with none (the reference's `slice(0, 40)` and `slice(0, 70)`).
@@ -684,7 +684,7 @@ impl List {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::xkb::Mods;
+    use crate::plat::Mods;
 
     fn key(sym: u32) -> Key {
         Key { sym, ..Key::default() }

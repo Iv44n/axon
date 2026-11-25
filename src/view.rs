@@ -21,6 +21,7 @@ pub trait Backend: Glyphs {
     /// Receives `count` consecutive rows starting at `first`: `count * cols` cells, row-major.
     fn put_rows(&mut self, first: usize, count: usize, cells: &[Cell]);
     /// Whether it draws the composer apart (`Fold`); one that does not gets the rows as the terminal has them.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn docks(&self) -> bool {
         false
     }
@@ -156,6 +157,7 @@ impl View {
     }
 
     /// Brings the backend up to date: only rows that changed since the last frame are rebuilt.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn build<L: EventListener>(&mut self, term: &mut Term<L>, focused: bool, out: &mut impl Backend) {
         let fold = fold(term, out.docks());
         self.build_folded(term, focused, fold, out);

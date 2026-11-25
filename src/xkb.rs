@@ -5,6 +5,7 @@
 //! `libxkbcommon.so.0` is missing the window still opens, it just cannot type. The plan is an own
 //! parser of the keymap text (`knowledge/plan/software-renderer.md`, stage C); until then this is
 //! the one place that knows the C API, behind a handful of plain functions.
+use crate::plat::{Key, Mods};
 use std::{
     ffi::{CStr, CString, c_char, c_int, c_void},
     ptr::NonNull,
@@ -93,23 +94,6 @@ fn load_fns() -> Option<Fns> {
             compose_reset: sym!("xkb_compose_state_reset"),
         })
     }
-}
-
-/// Modifiers that change what a key sends to a terminal.
-#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
-pub struct Mods {
-    pub shift: bool,
-    pub ctrl: bool,
-    pub alt: bool,
-}
-
-/// What a key press means.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Key {
-    pub sym: u32,
-    /// The text the key types, after dead keys and compose; empty for keys that type nothing.
-    pub text: String,
-    pub mods: Mods,
 }
 
 /// Where a keymap's modifier bits live (`Shift`, `Control`, `Mod1` = Alt).

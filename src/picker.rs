@@ -15,7 +15,7 @@ use crate::{
     list::{self, FOOT_H, Hint, List, Nav},
     overlay::{Cap, Click, Clicks, Cx, Cursor, Geo, Modal, Out, Overlay, Rect, inside},
     paint::Paint,
-    xkb::Key,
+    plat::Key,
 };
 
 /// The palette: a field in a row, a list under it, a footer with the keys.
@@ -196,7 +196,7 @@ impl Overlay for Picker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{commands, overlay::Text, overlay_demo, xkb::Mods};
+    use crate::{commands, overlay::Text, overlay_demo, plat::Mods};
 
     const G: Geo = Geo { w: 900, h: 620, square: false };
 

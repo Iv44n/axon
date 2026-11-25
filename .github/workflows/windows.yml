@@ -1,0 +1,63 @@
+# The Windows port (ADR 0039) cannot be run anywhere but on Windows, so this does it: builds, runs the app's own
+# self-test (AXON_SELFTEST: the real window and a real PowerShell through ConPTY; see src/wlapp/selftest.rs), keeps what
+# it saw (the report and a screenshot of the window) as artifacts, then runs the unit tests.
+name: Windows
+
+on:
+  push:
+    branches: [main, windows-port]
+    paths:
+      - "src/**"
+      - "Cargo.*"
+      - "scripts/argb2png.py"
+      - ".github/workflows/windows.yml"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Rust stable
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Self-test
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'selftest'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $env:AXON_SELFTEST = $out
+          $p = Start-Process -FilePath target\release\axon.exe -PassThru
+          if (-not $p.WaitForExit(120000)) {
+            $p.Kill()
+            "axon did not exit in 120 s" | Out-File -Append (Join-Path $out 'selftest.txt')
+          }
+          $code = $p.ExitCode
+          Write-Host "exit code: $code"
+          if (Test-Path (Join-Path $out 'selftest.txt')) { Get-Content (Join-Path $out 'selftest.txt') } else { Write-Host 'no report written' }
+          if (Test-Path (Join-Path $out 'frame.argb')) { python scripts/argb2png.py (Join-Path $out 'frame.argb') (Join-Path $out 'frame.png') }
+          Copy-Item -Recurse $out selftest-out
+          if ($code -ne 0) { exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: selftest
+          path: selftest-out
+          if-no-files-found: warn
+
+      - name: Tests
+        if: always()
+        run: cargo test --release --locked

@@ -1,7 +1,8 @@
-//! Keyboard -> bytes for the PTY. `encode_key` takes a resolved xkb key (the `wl` backend);
-//! `encode` takes a winit event and goes away with winit.
+//! Keyboard -> bytes for the PTY. `encode_key` takes a resolved key (the own window layers: xkb on Wayland, the system's
+//! layout on Windows); `encode` takes a winit event and goes away with winit.
 use alacritty_terminal::term::TermMode;
-use crate::xkb::Key as XKey;
+use crate::plat::Key as XKey;
+#[cfg(target_os = "linux")]
 use winit::{
     event::KeyEvent,
     keyboard::{Key, ModifiersState, NamedKey},
@@ -21,6 +22,7 @@ fn tilde(mods: u8, n: u8) -> Vec<u8> {
     if mods > 1 { format!("\x1b[{n};{mods}~").into_bytes() } else { format!("\x1b[{n}~").into_bytes() }
 }
 
+#[cfg(target_os = "linux")]
 pub fn encode(ev: &KeyEvent, m: ModifiersState, mode: TermMode) -> Option<Vec<u8>> {
     let mods = 1 + m.shift_key() as u8 + 2 * m.alt_key() as u8 + 4 * m.control_key() as u8;
     let app = mode.contains(TermMode::APP_CURSOR);
@@ -73,6 +75,7 @@ fn csi_ss3(mods: u8, f: char) -> Vec<u8> {
     if mods > 1 { format!("\x1b[1;{mods}{f}").into_bytes() } else { format!("\x1bO{f}").into_bytes() }
 }
 
+#[cfg(target_os = "linux")]
 fn space(m: ModifiersState) -> Vec<u8> {
     if m.control_key() { vec![0] } else if m.alt_key() { b"\x1b ".to_vec() } else { b" ".to_vec() }
 }
@@ -91,6 +94,7 @@ fn ctrl_byte(c: char) -> Option<u8> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn text_bytes(ev: &KeyEvent, m: ModifiersState) -> Option<Vec<u8>> {
     let t = ev.text.as_ref()?;
     if t.is_empty() {
@@ -194,7 +198,7 @@ fn text_key(k: &XKey) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::xkb::Mods;
+    use crate::plat::Mods;
 
     fn key(sym: u32, text: &str, shift: bool, ctrl: bool, alt: bool) -> XKey {
         XKey { sym, text: text.into(), mods: Mods { shift, ctrl, alt } }

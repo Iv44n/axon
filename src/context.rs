@@ -40,24 +40,51 @@ impl Context {
 pub struct Probe {
     /// The shell's process id.
     pub pid: u32,
+    /// Where the shell says it is (`history::Hook::Dir`), when asking its process would not tell.
+    pub cwd: Option<PathBuf>,
     /// The file `axon shell-init` makes the shell write, if the shell was started with one.
     pub report: Option<PathBuf>,
     pub clock24: bool,
 }
 
+/// The directory process `pid` is in: the kernel's `/proc/<pid>/cwd` on Linux, the process's own block on Windows (cmd
+/// and most programs; PowerShell's `cd` does not move it, so its hook says where it is, see `history::Hook::Dir`).
+pub fn cwd_of(pid: u32) -> Option<PathBuf> {
+    #[cfg(target_os = "linux")]
+    return std::fs::read_link(format!("/proc/{pid}/cwd")).ok();
+    #[cfg(windows)]
+    return crate::win::process_cwd(pid);
+}
+
+/// The user's home directory: `$HOME`, or on Windows `%USERPROFILE%`.
+pub fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).filter(|h| !h.is_empty()).map(PathBuf::from)
+}
+
+fn user_name() -> String {
+    ["USER", "LOGNAME", "USERNAME"].iter().find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty())).unwrap_or_default()
+}
+
+fn host_name() -> String {
+    #[cfg(target_os = "linux")]
+    return std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default();
+    #[cfg(windows)]
+    return std::env::var("COMPUTERNAME").unwrap_or_default();
+}
+
 /// Reads everything. Slow: a thread, not the UI.
 pub fn gather(p: &Probe) -> Context {
-    let home = std::env::var("HOME").ok().map(PathBuf::from);
-    let cwd = std::fs::read_link(format!("/proc/{}/cwd", p.pid)).unwrap_or_default();
+    let home = home_dir();
+    let cwd = p.cwd.clone().or_else(|| cwd_of(p.pid)).unwrap_or_default();
     let report = p.report.as_ref().and_then(|f| std::fs::read_to_string(f).ok()).map(|t| parse_report(&t)).unwrap_or_default();
     let mut c = Context { cwd: cwd.to_string_lossy().into_owned(), ..Context::default() };
     let set = |c: &mut Context, chip: Chip, v: String| c.text[chip as usize] = clean(&v);
 
     let (h, m) = local_hm();
     set(&mut c, Chip::Time, clock_text(h, m, p.clock24));
-    let user = std::env::var("USER").or_else(|_| std::env::var("LOGNAME")).unwrap_or_default();
+    let user = user_name();
     set(&mut c, Chip::User, user.clone());
-    let host = std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default();
+    let host = host_name();
     if !user.is_empty() && !host.trim().is_empty() {
         set(&mut c, Chip::Host, format!("{user}@{}", host.trim()));
     }
@@ -86,11 +113,14 @@ pub fn gather(p: &Probe) -> Context {
     c
 }
 
-/// The file a window's shell reports to: `$XDG_RUNTIME_DIR/axon-<pid>-<n>.ctx`, `pid` being axon's own and
-/// `n` the window's number.
+/// The file a window's shell reports to: `$XDG_RUNTIME_DIR/axon-<pid>-<n>.ctx` (on Windows, in the temporary
+/// directory), `pid` being axon's own and `n` the window's number.
 pub fn report_path(pid: u32, n: u64) -> Option<PathBuf> {
-    let dir = std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty())?;
-    Some(PathBuf::from(dir).join(format!("axon-{pid}-{n}.ctx")))
+    #[cfg(target_os = "linux")]
+    let dir = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty())?);
+    #[cfg(windows)]
+    let dir = std::env::temp_dir();
+    Some(dir.join(format!("axon-{pid}-{n}.ctx")))
 }
 
 /// Removes the report files of windows that are gone (killed, so their `Drop` never ran).
@@ -99,10 +129,18 @@ pub fn remove_stale_reports(dir: &Path) {
     for e in entries.flatten() {
         let name = e.file_name();
         let pid = name.to_str().and_then(|n| n.strip_prefix("axon-")).and_then(|n| n.strip_suffix(".ctx").or_else(|| n.strip_suffix(".chips"))).and_then(|n| n.split('-').next()).and_then(|n| n.parse::<u32>().ok());
-        if pid.is_some_and(|p| !Path::new(&format!("/proc/{p}")).exists()) {
+        if pid.is_some_and(|p| !process_alive(p)) {
             let _ = std::fs::remove_file(e.path());
         }
     }
+}
+
+/// Whether process `pid` still runs (a report file of one that does not is stale).
+fn process_alive(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    return Path::new(&format!("/proc/{pid}")).exists();
+    #[cfg(windows)]
+    return crate::win::process_alive(pid);
 }
 
 // ---------------------------------------------------------- shell hooks --
@@ -238,9 +276,56 @@ function __axon_report --on-event fish_prompt
 end
 "##;
 
+/// The PowerShell hook (Windows PowerShell 5.1 and PowerShell 7): wraps the `prompt` function the profile left, so it
+/// says at every prompt how the command before it ended (`E`) and where the shell is (`D`: PowerShell's `cd` does not
+/// move its process, so the process cannot tell), and PSReadLine's Enter says what is about to run (`S`, `L`). The
+/// terminal turns the title escapes into what the windows show and keeps them out of the title. The wrapped prompt is
+/// called as if nothing had run in between (`$?` is put back: Starship and the like read it). The prompt chips (the
+/// concealed marks the other shells' hooks draw) are not drawn here: ConPTY does not carry them.
+pub const POWERSHELL_HOOK: &str = r##"if (-not $global:__axon_hooked) {
+  $global:__axon_hooked = $true
+  $global:__axon_n = 0
+  $global:__axon_prompt = if (Test-Path Function:\prompt) { $function:prompt } else { { 'PS ' + $PWD.Path + '> ' } }
+  function global:prompt {
+    $ok = $?
+    $code = $global:LASTEXITCODE
+    $s = if ($ok) { 0 } elseif ($code -is [int] -and $code -ne 0) { $code } else { 1 }
+    $global:__axon_n++
+    $e = [char]27; $bel = [char]7
+    $out = "$e]2;axon!hook E $($global:__axon_n) $s$bel"
+    if ($PWD.Provider.Name -eq 'FileSystem') { $out += "$e]2;axon!hook D $($PWD.ProviderPath)$bel" }
+    [Console]::Write($out)
+    if (-not $ok) { Write-Error 'axon' -ErrorAction Ignore }
+    & $global:__axon_prompt
+  }
+  if (Get-Module PSReadLine) {
+    $h = Get-PSReadLineKeyHandler | Where-Object { $_.Key -eq 'Enter' }
+    if ($h -and $h.Function -eq 'AcceptLine') {
+      Set-PSReadLineKeyHandler -Key Enter -ScriptBlock {
+        $line = $null; $cursor = $null
+        [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$line, [ref]$cursor)
+        if ($line.Trim()) {
+          $e = [char]27; $bel = [char]7
+          [Console]::Write("$e]2;axon!hook S$bel$e]2;axon!hook L $line$bel")
+        }
+        [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
+      }
+    }
+  }
+}
+"##;
+
+/// Whether `shell` (a path or a name) is PowerShell, either edition.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+pub fn is_powershell(shell: &str) -> bool {
+    let name = shell.rsplit(['/', '\\']).next().unwrap_or(shell).to_ascii_lowercase();
+    matches!(name.strip_suffix(".exe").unwrap_or(&name), "pwsh" | "powershell")
+}
+
 /// What `axon shell-init SHELL` prints, for a shell's rc file.
 pub fn shell_init_script(shell: &str) -> Option<String> {
     Some(match shell {
+        "pwsh" | "powershell" => POWERSHELL_HOOK.to_string(),
         "bash" => format!(
             "__axon_prompt() {{\n{BASH_HOOK}\n  return $__axon_s\n}}\n\
              case \";$PROMPT_COMMAND;\" in *\";__axon_prompt;\"*) ;; *) PROMPT_COMMAND=\"__axon_prompt${{PROMPT_COMMAND:+;$PROMPT_COMMAND}}\" ;; esac\n"
@@ -301,19 +386,31 @@ pub fn clean(s: &str) -> String {
 }
 
 /// `/home/me/code/axon/src` -> `~/code/axon/src`; more than three components keep the last three:
-/// `…/axon/src/bin`. `home` is the home directory, when known.
+/// `…/axon/src/bin`. `home` is the home directory, when known. A Windows path (`C:\Users\me\code`) is told by its
+/// backslashes and keeps them, and its drive: `C:\a\b`.
 pub fn tidy_dir(path: &str, home: Option<&str>) -> String {
-    let (prefix, rest) = match home.filter(|h| !h.is_empty() && *h != "/") {
-        Some(h) if path == h => return "~".into(),
-        Some(h) if path.strip_prefix(h).is_some_and(|r| r.starts_with('/')) => ("~", &path[h.len()..]),
-        _ => ("", path),
+    let sep = if path.contains('\\') && !path.contains('/') { '\\' } else { '/' };
+    let is_sep = |c: char| c == '/' || c == '\\';
+    // Windows paths do not tell upper from lower case.
+    let same = |a: &str, b: &str| if cfg!(windows) { a.eq_ignore_ascii_case(b) } else { a == b };
+    let under_home = home
+        .filter(|h| !h.is_empty() && !h.trim_end_matches(is_sep).is_empty())
+        .and_then(|h| path.get(..h.len()).filter(|head| same(head, h)).map(|_| &path[h.len()..]))
+        .filter(|rest| rest.is_empty() || rest.starts_with(is_sep));
+    let (mut lead, rest) = match under_home {
+        Some(rest) => ("~", rest),
+        None => ("", path),
     };
-    let parts: Vec<&str> = rest.split('/').filter(|p| !p.is_empty()).collect();
-    match (prefix, parts.len()) {
-        (_, 0) => if prefix.is_empty() { "/".into() } else { prefix.into() },
-        (_, n) if n > 3 => format!("…/{}", parts[n - 3..].join("/")),
-        ("~", _) => format!("~/{}", parts.join("/")),
-        _ => format!("/{}", parts.join("/")),
+    let mut parts: Vec<&str> = rest.split(is_sep).filter(|p| !p.is_empty()).collect();
+    if lead.is_empty() && parts.first().is_some_and(|p| p.len() == 2 && p.ends_with(':')) {
+        lead = parts.remove(0);
+    }
+    match (lead, parts.len()) {
+        ("", 0) => sep.into(),
+        (l, 0) if l.ends_with(':') => format!("{l}{sep}"),
+        (l, 0) => l.into(),
+        (_, n) if n > 3 => format!("…{sep}{}", parts[n - 3..].join(&sep.to_string())),
+        (l, _) => format!("{l}{sep}{}", parts.join(&sep.to_string())),
     }
 }
 
@@ -415,6 +512,7 @@ pub fn kube_context(text: &str) -> Option<String> {
 
 // ------------------------------------------------------------------ time --
 
+#[cfg(target_os = "linux")]
 #[repr(C)]
 struct Tm {
     sec: i32,
@@ -430,6 +528,7 @@ struct Tm {
     zone: *const std::ffi::c_char,
 }
 
+#[cfg(target_os = "linux")]
 unsafe extern "C" {
     fn localtime_r(t: *const i64, out: *mut Tm) -> *mut Tm;
 }
@@ -439,6 +538,15 @@ fn epoch() -> i64 {
 }
 
 /// The local hour and minute (the C library knows the time zone; `std` does not).
+#[cfg(windows)]
+fn local_hm() -> (u32, u32) {
+    let mut t = windows_sys::Win32::Foundation::SYSTEMTIME { wYear: 0, wMonth: 0, wDayOfWeek: 0, wDay: 0, wHour: 0, wMinute: 0, wSecond: 0, wMilliseconds: 0 };
+    // SAFETY: `t` is a valid SYSTEMTIME for the call to fill.
+    unsafe { windows_sys::Win32::System::SystemInformation::GetLocalTime(&mut t) };
+    ((t.wHour as u32).min(23), (t.wMinute as u32).min(59))
+}
+
+#[cfg(target_os = "linux")]
 fn local_hm() -> (u32, u32) {
     let t = epoch();
     let mut tm = Tm { sec: 0, min: 0, hour: 0, mday: 0, mon: 0, year: 0, wday: 0, yday: 0, isdst: 0, gmtoff: 0, zone: std::ptr::null() };
@@ -483,6 +591,28 @@ mod tests {
         assert_eq!(tidy_dir("/usr/share", home), "/usr/share");
         assert_eq!(tidy_dir("/a/b/c/d", None), "…/b/c/d");
         assert_eq!(tidy_dir("/home/ana/x", Some("/")), "/home/ana/x");
+    }
+
+    #[test]
+    fn windows_paths_keep_their_backslashes_and_drive() {
+        let home = Some("C:\\Users\\Ana");
+        assert_eq!(tidy_dir("C:\\Users\\Ana", home), "~");
+        assert_eq!(tidy_dir("C:\\Users\\Ana\\Desktop", home), "~\\Desktop");
+        assert_eq!(tidy_dir("C:\\Users\\Ana\\code\\axon\\src\\bin", home), "…\\axon\\src\\bin");
+        assert_eq!(tidy_dir("C:\\Users\\Anabel\\x", home), "C:\\Users\\Anabel\\x", "a longer name is not the home");
+        assert_eq!(tidy_dir("C:\\", home), "C:\\");
+        assert_eq!(tidy_dir("C:\\Windows\\System32", home), "C:\\Windows\\System32");
+        assert_eq!(tidy_dir("D:\\a\\b\\c\\d", None), "…\\b\\c\\d");
+    }
+
+    #[test]
+    fn powershell_is_told_by_the_programs_name() {
+        for yes in ["pwsh", "pwsh.exe", "C:\\Program Files\\PowerShell\\7\\pwsh.exe", "PowerShell.EXE", "/usr/bin/pwsh"] {
+            assert!(is_powershell(yes), "{yes}");
+        }
+        for no in ["bash", "cmd.exe", "C:\\Windows\\System32\\cmd.exe", "/bin/zsh", ""] {
+            assert!(!is_powershell(no), "{no}");
+        }
     }
 
     #[test]
@@ -582,244 +712,248 @@ mod tests {
     }
 
     // ----------------------------------------------------- the shells' hooks --
-    // The hooks are run for real, as a shell would at a prompt. zsh and fish are skipped when not installed;
-    // bash must be there.
+    // The hooks are run for real, as a shell would at a prompt: where a unix shell is. zsh and fish are skipped when not
+    // installed; bash must be there.
+    #[cfg(unix)]
+    mod hooks {
+        use super::*;
 
-    use std::process::{Command, Stdio};
+        use std::process::{Command, Stdio};
 
-    const SHELLS: [&str; 3] = ["bash", "zsh", "fish"];
+        const SHELLS: [&str; 3] = ["bash", "zsh", "fish"];
 
-    fn git(dir: &Path, args: &[&str]) -> bool {
-        Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
-    }
-
-    /// A repository with `f` committed as `a\nb\n` and modified to `a\nc\n`: one file, +1 -1.
-    fn repo(name: &str) -> PathBuf {
-        let d = scratch(name);
-        assert!(git(&d, &["init", "-q"]), "git is needed for these tests");
-        std::fs::write(d.join("f"), "a\nb\n").unwrap();
-        assert!(git(&d, &["add", "f"]) && git(&d, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "x"]));
-        std::fs::write(d.join("f"), "a\nc\n").unwrap();
-        d
-    }
-
-    fn script(path: &Path, body: &str) {
-        std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    }
-
-    /// Runs `shell`'s hook once in `dir`, as at a prompt, and returns the report it wrote; `None` when the
-    /// shell is not installed. `global` is the user's git config, `env` extra variables (they may replace `PATH`).
-    fn run_hook(shell: &str, tag: &str, dir: &Path, chips: bool, global: Option<&Path>, env: &[(&str, String)]) -> Option<Report> {
-        let w = scratch(&format!("run-{tag}-{shell}"));
-        let (report, flag, file) = (w.join("report"), w.join("chips"), w.join("hook"));
-        let call = if shell == "fish" { "__axon_report" } else { "__axon_prompt" };
-        std::fs::write(&file, format!("{}\n{call}\n", shell_init_script(shell).unwrap())).unwrap();
-        if chips {
-            std::fs::write(&flag, "").unwrap();
+        fn git(dir: &Path, args: &[&str]) -> bool {
+            Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
         }
-        let mut c = Command::new(shell);
-        c.arg(match shell {
-            "bash" => "--norc",
-            "zsh" => "-f",
-            _ => "--no-config",
-        });
-        c.arg(&file).current_dir(dir).env_clear();
-        c.env("PATH", std::env::var("PATH").unwrap_or_default()).env("HOME", &w).env("LC_ALL", "C");
-        c.env("GIT_CONFIG_NOSYSTEM", "1").env("GIT_CONFIG_GLOBAL", global.unwrap_or(Path::new("/dev/null")));
-        c.env("AXON_CONTEXT", &report).env("AXON_CHIPS", &flag);
-        for (k, v) in env {
-            c.env(k, v);
-        }
-        c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-        let ran = c.status().ok()?;
-        assert!(ran.success(), "{shell}'s hook failed");
-        let text = std::fs::read_to_string(&report).unwrap_or_default();
-        let _ = std::fs::remove_dir_all(&w);
-        Some(parse_report(&text))
-    }
 
-    /// Calls `check` with the report of every installed shell's hook.
-    fn for_each_shell(tag: &str, dir: &Path, chips: bool, global: Option<&Path>, env: &[(&str, String)], check: impl Fn(&str, &Report)) {
-        for sh in SHELLS {
-            match run_hook(sh, tag, dir, chips, global, env) {
-                Some(r) => check(sh, &r),
-                None => assert_ne!(sh, "bash", "bash is needed for these tests"),
+        /// A repository with `f` committed as `a\nb\n` and modified to `a\nc\n`: one file, +1 -1.
+        fn repo(name: &str) -> PathBuf {
+            let d = scratch(name);
+            assert!(git(&d, &["init", "-q"]), "git is needed for these tests");
+            std::fs::write(d.join("f"), "a\nb\n").unwrap();
+            assert!(git(&d, &["add", "f"]) && git(&d, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "x"]));
+            std::fs::write(d.join("f"), "a\nc\n").unwrap();
+            d
+        }
+
+        fn script(path: &Path, body: &str) {
+            std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        }
+
+        /// Runs `shell`'s hook once in `dir`, as at a prompt, and returns the report it wrote; `None` when the
+        /// shell is not installed. `global` is the user's git config, `env` extra variables (they may replace `PATH`).
+        fn run_hook(shell: &str, tag: &str, dir: &Path, chips: bool, global: Option<&Path>, env: &[(&str, String)]) -> Option<Report> {
+            let w = scratch(&format!("run-{tag}-{shell}"));
+            let (report, flag, file) = (w.join("report"), w.join("chips"), w.join("hook"));
+            let call = if shell == "fish" { "__axon_report" } else { "__axon_prompt" };
+            std::fs::write(&file, format!("{}\n{call}\n", shell_init_script(shell).unwrap())).unwrap();
+            if chips {
+                std::fs::write(&flag, "").unwrap();
+            }
+            let mut c = Command::new(shell);
+            c.arg(match shell {
+                "bash" => "--norc",
+                "zsh" => "-f",
+                _ => "--no-config",
+            });
+            c.arg(&file).current_dir(dir).env_clear();
+            c.env("PATH", std::env::var("PATH").unwrap_or_default()).env("HOME", &w).env("LC_ALL", "C");
+            c.env("GIT_CONFIG_NOSYSTEM", "1").env("GIT_CONFIG_GLOBAL", global.unwrap_or(Path::new("/dev/null")));
+            c.env("AXON_CONTEXT", &report).env("AXON_CHIPS", &flag);
+            for (k, v) in env {
+                c.env(k, v);
+            }
+            c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+            let ran = c.status().ok()?;
+            assert!(ran.success(), "{shell}'s hook failed");
+            let text = std::fs::read_to_string(&report).unwrap_or_default();
+            let _ = std::fs::remove_dir_all(&w);
+            Some(parse_report(&text))
+        }
+
+        /// Calls `check` with the report of every installed shell's hook.
+        fn for_each_shell(tag: &str, dir: &Path, chips: bool, global: Option<&Path>, env: &[(&str, String)], check: impl Fn(&str, &Report)) {
+            for sh in SHELLS {
+                match run_hook(sh, tag, dir, chips, global, env) {
+                    Some(r) => check(sh, &r),
+                    None => assert_ne!(sh, "bash", "bash is needed for these tests"),
+                }
             }
         }
-    }
 
-    #[test]
-    fn every_hook_reports_the_changes_of_a_normal_repository() {
-        let d = repo("normal");
-        for_each_shell("normal", &d, true, None, &[("PYENV_VERSION", "3.12.1".to_string())], |sh, r| {
-            assert_eq!(r.changes, "1 1 1", "{sh}");
-            assert_eq!(r.pyenv, "3.12.1", "{sh}: the rest of the report is still written");
-        });
-        // A subdirectory is the same repository.
-        std::fs::create_dir_all(d.join("sub")).unwrap();
-        for_each_shell("sub", &d.join("sub"), true, None, &[], |sh, r| assert_eq!(r.changes, "1 1 1", "{sh}"));
-        let _ = std::fs::remove_dir_all(&d);
-    }
-
-    #[test]
-    fn every_hook_says_what_command_runs_for_the_windows_label() {
-        for shell in ["bash", "zsh", "fish"] {
-            let script = shell_init_script(shell).unwrap();
-            assert!(script.contains("axon!hook L"), "{shell} does not say what runs");
+        #[test]
+        fn every_hook_reports_the_changes_of_a_normal_repository() {
+            let d = repo("normal");
+            for_each_shell("normal", &d, true, None, &[("PYENV_VERSION", "3.12.1".to_string())], |sh, r| {
+                assert_eq!(r.changes, "1 1 1", "{sh}");
+                assert_eq!(r.pyenv, "3.12.1", "{sh}: the rest of the report is still written");
+            });
+            // A subdirectory is the same repository.
+            std::fs::create_dir_all(d.join("sub")).unwrap();
+            for_each_shell("sub", &d.join("sub"), true, None, &[], |sh, r| assert_eq!(r.changes, "1 1 1", "{sh}"));
+            let _ = std::fs::remove_dir_all(&d);
         }
-    }
 
-    #[test]
-    fn bash_labels_the_first_command_of_a_line_once_and_leaves_the_last_argument_alone() {
-        let w = scratch("label-run");
-        let (report, flag) = (w.join("report"), w.join("chips"));
-        std::fs::write(&flag, "").unwrap();
-        let env = shell_env("bash", Some(&report), Some(&flag), None);
-        let pc = &env.iter().find(|(k, _)| k == "PROMPT_COMMAND").unwrap().1;
-        // What an interactive shell does around a line: the hook at the prompt, PS0 as the line is about to run (`@P` expands
-        // it the same way), the line: only its first command is labelled.
-        let script = "eval \"$PROMPT_COMMAND\" >/dev/null; s=${PS0@P}; echo a b; echo last=$_; echo again";
-        let out = Command::new("bash")
-            .args(["--norc", "-c", script])
-            .env("PROMPT_COMMAND", pc)
-            .env("AXON_CONTEXT", &report)
-            .env("AXON_CHIPS", &flag)
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output();
-        let _ = std::fs::remove_dir_all(&w);
-        let Ok(out) = out else { return };
-        let text = String::from_utf8_lossy(&out.stdout);
-        assert_eq!(text.matches("axon!hook L ").count(), 1, "one label, for the first command: {text:?}");
-        assert!(text.contains("axon!hook L echo a b"), "{text:?}");
-        assert!(text.contains("last=b"), "the trap leaves $_ as it was: {text:?}");
-    }
+        #[test]
+        fn every_hook_says_what_command_runs_for_the_windows_label() {
+            for shell in ["bash", "zsh", "fish"] {
+                let script = shell_init_script(shell).unwrap();
+                assert!(script.contains("axon!hook L"), "{shell} does not say what runs");
+            }
+        }
 
-    #[test]
-    fn the_shell_axon_starts_reports_through_prompt_command() {
-        let d = repo("raw");
-        let w = scratch("raw-run");
-        let (report, flag) = (w.join("report"), w.join("chips"));
-        std::fs::write(&flag, "").unwrap();
-        let env = shell_env("bash", Some(&report), Some(&flag), None);
-        let pc = &env.iter().find(|(k, _)| k == "PROMPT_COMMAND").unwrap().1;
-        let ok = Command::new("bash")
-            .args(["--norc", "-c", "eval \"$PROMPT_COMMAND\""])
-            .current_dir(&d)
-            .env("PROMPT_COMMAND", pc)
-            .env("AXON_CONTEXT", &report)
-            .env("AXON_CHIPS", &flag)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success());
-        assert!(ok);
-        assert_eq!(parse_report(&std::fs::read_to_string(&report).unwrap()).changes, "1 1 1");
-        let _ = std::fs::remove_dir_all(&d);
-        let _ = std::fs::remove_dir_all(&w);
-    }
+        #[test]
+        fn bash_labels_the_first_command_of_a_line_once_and_leaves_the_last_argument_alone() {
+            let w = scratch("label-run");
+            let (report, flag) = (w.join("report"), w.join("chips"));
+            std::fs::write(&flag, "").unwrap();
+            let env = shell_env("bash", Some(&report), Some(&flag), None);
+            let pc = &env.iter().find(|(k, _)| k == "PROMPT_COMMAND").unwrap().1;
+            // What an interactive shell does around a line: the hook at the prompt, PS0 as the line is about to run (`@P` expands
+            // it the same way), the line: only its first command is labelled.
+            let script = "eval \"$PROMPT_COMMAND\" >/dev/null; s=${PS0@P}; echo a b; echo last=$_; echo again";
+            let out = Command::new("bash")
+                .args(["--norc", "-c", script])
+                .env("PROMPT_COMMAND", pc)
+                .env("AXON_CONTEXT", &report)
+                .env("AXON_CHIPS", &flag)
+                .stdin(Stdio::null())
+                .stderr(Stdio::null())
+                .output();
+            let _ = std::fs::remove_dir_all(&w);
+            let Ok(out) = out else { return };
+            let text = String::from_utf8_lossy(&out.stdout);
+            assert_eq!(text.matches("axon!hook L ").count(), 1, "one label, for the first command: {text:?}");
+            assert!(text.contains("axon!hook L echo a b"), "{text:?}");
+            assert!(text.contains("last=b"), "the trap leaves $_ as it was: {text:?}");
+        }
 
-    #[test]
-    fn a_repository_cannot_run_its_own_commands_through_the_hook() {
-        let d = repo("evil");
-        let (marker, bin) = (d.join("ran"), d.join("evil.sh"));
-        script(&bin, &format!("touch {}\ncat", marker.display()));
-        let b = bin.to_string_lossy().into_owned();
-        // What a repository can carry: an fsmonitor command, an external diff, a clean filter named by its own
-        // .gitattributes and by a core.attributesFile its config points at.
-        assert!(git(&d, &["config", "core.fsmonitor", &b]));
-        assert!(git(&d, &["config", "diff.external", &b]));
-        assert!(git(&d, &["config", "filter.x.clean", &b]));
-        std::fs::write(d.join(".gitattributes"), "f filter=x\n").unwrap();
-        std::fs::write(d.join("attrs"), "f filter=x\n").unwrap();
-        assert!(git(&d, &["config", "core.attributesFile", &d.join("attrs").to_string_lossy()]));
-        // The test has teeth: plain `git diff` does run it.
-        let _ = Command::new("git").args(["diff", "HEAD", "--numstat"]).current_dir(&d).env("GIT_CONFIG_GLOBAL", "/dev/null").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
-        assert!(marker.exists(), "plain git did not run the repository's command: the test proves nothing");
-        std::fs::remove_file(&marker).unwrap();
-        for_each_shell("evil", &d, true, None, &[], |sh, r| {
-            assert!(!marker.exists(), "{sh}: the repository's own command was executed");
-            assert_eq!(r.changes, "1 1 1", "{sh}");
-        });
-        let _ = std::fs::remove_dir_all(&d);
-    }
+        #[test]
+        fn the_shell_axon_starts_reports_through_prompt_command() {
+            let d = repo("raw");
+            let w = scratch("raw-run");
+            let (report, flag) = (w.join("report"), w.join("chips"));
+            std::fs::write(&flag, "").unwrap();
+            let env = shell_env("bash", Some(&report), Some(&flag), None);
+            let pc = &env.iter().find(|(k, _)| k == "PROMPT_COMMAND").unwrap().1;
+            let ok = Command::new("bash")
+                .args(["--norc", "-c", "eval \"$PROMPT_COMMAND\""])
+                .current_dir(&d)
+                .env("PROMPT_COMMAND", pc)
+                .env("AXON_CONTEXT", &report)
+                .env("AXON_CHIPS", &flag)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success());
+            assert!(ok);
+            assert_eq!(parse_report(&std::fs::read_to_string(&report).unwrap()).changes, "1 1 1");
+            let _ = std::fs::remove_dir_all(&d);
+            let _ = std::fs::remove_dir_all(&w);
+        }
 
-    #[test]
-    fn a_repository_with_info_attributes_gets_no_chip() {
-        let d = repo("info");
-        let (marker, bin) = (d.join("ran"), d.join("evil.sh"));
-        script(&bin, &format!("touch {}\ncat", marker.display()));
-        assert!(git(&d, &["config", "filter.x.clean", &bin.to_string_lossy()]));
-        std::fs::write(d.join(".git/info/attributes"), "f filter=x\n").unwrap();
-        for_each_shell("info", &d, true, None, &[], |sh, r| {
-            assert!(!marker.exists(), "{sh}: info/attributes ran a filter");
-            assert_eq!(r.changes, "", "{sh}");
-        });
-        let _ = std::fs::remove_dir_all(&d);
-    }
+        #[test]
+        fn a_repository_cannot_run_its_own_commands_through_the_hook() {
+            let d = repo("evil");
+            let (marker, bin) = (d.join("ran"), d.join("evil.sh"));
+            script(&bin, &format!("touch {}\ncat", marker.display()));
+            let b = bin.to_string_lossy().into_owned();
+            // What a repository can carry: an fsmonitor command, an external diff, a clean filter named by its own
+            // .gitattributes and by a core.attributesFile its config points at.
+            assert!(git(&d, &["config", "core.fsmonitor", &b]));
+            assert!(git(&d, &["config", "diff.external", &b]));
+            assert!(git(&d, &["config", "filter.x.clean", &b]));
+            std::fs::write(d.join(".gitattributes"), "f filter=x\n").unwrap();
+            std::fs::write(d.join("attrs"), "f filter=x\n").unwrap();
+            assert!(git(&d, &["config", "core.attributesFile", &d.join("attrs").to_string_lossy()]));
+            // The test has teeth: plain `git diff` does run it.
+            let _ = Command::new("git").args(["diff", "HEAD", "--numstat"]).current_dir(&d).env("GIT_CONFIG_GLOBAL", "/dev/null").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+            assert!(marker.exists(), "plain git did not run the repository's command: the test proves nothing");
+            std::fs::remove_file(&marker).unwrap();
+            for_each_shell("evil", &d, true, None, &[], |sh, r| {
+                assert!(!marker.exists(), "{sh}: the repository's own command was executed");
+                assert_eq!(r.changes, "1 1 1", "{sh}");
+            });
+            let _ = std::fs::remove_dir_all(&d);
+        }
 
-    #[test]
-    fn a_safe_directory_in_the_users_git_config_applies() {
-        // A repository somebody else owns (git is told to see it that way): refused unless the user's own
-        // config trusts it, and then the chip is there. A refusal costs only the chip.
-        let d = repo("foreign");
-        let global = d.join("gitconfig");
-        std::fs::write(&global, format!("[safe]\n\tdirectory = {}\n", d.display())).unwrap();
-        let env = [("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1".to_string()), ("PYENV_VERSION", "3.12.1".to_string())];
-        for_each_shell("trusted", &d, true, Some(&global), &env, |sh, r| assert_eq!(r.changes, "1 1 1", "{sh}"));
-        for_each_shell("untrusted", &d, true, None, &env, |sh, r| {
-            assert_eq!(r.changes, "", "{sh}");
-            assert_eq!(r.pyenv, "3.12.1", "{sh}: the rest of the report is still written");
-        });
-        let _ = std::fs::remove_dir_all(&d);
-    }
+        #[test]
+        fn a_repository_with_info_attributes_gets_no_chip() {
+            let d = repo("info");
+            let (marker, bin) = (d.join("ran"), d.join("evil.sh"));
+            script(&bin, &format!("touch {}\ncat", marker.display()));
+            assert!(git(&d, &["config", "filter.x.clean", &bin.to_string_lossy()]));
+            std::fs::write(d.join(".git/info/attributes"), "f filter=x\n").unwrap();
+            for_each_shell("info", &d, true, None, &[], |sh, r| {
+                assert!(!marker.exists(), "{sh}: info/attributes ran a filter");
+                assert_eq!(r.changes, "", "{sh}");
+            });
+            let _ = std::fs::remove_dir_all(&d);
+        }
 
-    #[test]
-    fn nothing_is_run_without_chips_or_outside_a_repository() {
-        let d = repo("quiet");
-        let (marker, fake) = (d.join("git-ran"), d.join("bin"));
-        std::fs::create_dir_all(&fake).unwrap();
-        script(&fake.join("git"), &format!("touch {}", marker.display()));
-        let path = format!("{}:{}", fake.display(), std::env::var("PATH").unwrap_or_default());
-        for_each_shell("off", &d, false, None, &[("PATH", path)], |sh, r| {
-            assert_eq!(r.changes, "", "{sh}");
-            assert!(!marker.exists(), "{sh}: git ran with the chips off");
-        });
-        let plain = scratch("plain");
-        for_each_shell("plain", &plain, true, None, &[], |sh, r| assert_eq!(r.changes, "", "{sh}"));
-        let _ = std::fs::remove_dir_all(&d);
-        let _ = std::fs::remove_dir_all(&plain);
-    }
+        #[test]
+        fn a_safe_directory_in_the_users_git_config_applies() {
+            // A repository somebody else owns (git is told to see it that way): refused unless the user's own
+            // config trusts it, and then the chip is there. A refusal costs only the chip.
+            let d = repo("foreign");
+            let global = d.join("gitconfig");
+            std::fs::write(&global, format!("[safe]\n\tdirectory = {}\n", d.display())).unwrap();
+            let env = [("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1".to_string()), ("PYENV_VERSION", "3.12.1".to_string())];
+            for_each_shell("trusted", &d, true, Some(&global), &env, |sh, r| assert_eq!(r.changes, "1 1 1", "{sh}"));
+            for_each_shell("untrusted", &d, true, None, &env, |sh, r| {
+                assert_eq!(r.changes, "", "{sh}");
+                assert_eq!(r.pyenv, "3.12.1", "{sh}: the rest of the report is still written");
+            });
+            let _ = std::fs::remove_dir_all(&d);
+        }
 
-    #[test]
-    fn a_git_that_hangs_does_not_hold_the_prompt() {
-        let d = repo("slow");
-        let fake = d.join("bin");
-        std::fs::create_dir_all(&fake).unwrap();
-        script(&fake.join("git"), "exec sleep 5");
-        let path = format!("{}:{}", fake.display(), std::env::var("PATH").unwrap_or_default());
-        let t = std::time::Instant::now();
-        for_each_shell("slow", &d, true, None, &[("PATH", path)], |sh, r| assert_eq!(r.changes, "", "{sh}"));
-        assert!(t.elapsed() < Duration::from_secs(4 * SHELLS.len() as u64), "the hook waited for git");
-        let _ = std::fs::remove_dir_all(&d);
+        #[test]
+        fn nothing_is_run_without_chips_or_outside_a_repository() {
+            let d = repo("quiet");
+            let (marker, fake) = (d.join("git-ran"), d.join("bin"));
+            std::fs::create_dir_all(&fake).unwrap();
+            script(&fake.join("git"), &format!("touch {}", marker.display()));
+            let path = format!("{}:{}", fake.display(), std::env::var("PATH").unwrap_or_default());
+            for_each_shell("off", &d, false, None, &[("PATH", path)], |sh, r| {
+                assert_eq!(r.changes, "", "{sh}");
+                assert!(!marker.exists(), "{sh}: git ran with the chips off");
+            });
+            let plain = scratch("plain");
+            for_each_shell("plain", &plain, true, None, &[], |sh, r| assert_eq!(r.changes, "", "{sh}"));
+            let _ = std::fs::remove_dir_all(&d);
+            let _ = std::fs::remove_dir_all(&plain);
+        }
+
+        #[test]
+        fn a_git_that_hangs_does_not_hold_the_prompt() {
+            let d = repo("slow");
+            let fake = d.join("bin");
+            std::fs::create_dir_all(&fake).unwrap();
+            script(&fake.join("git"), "exec sleep 5");
+            let path = format!("{}:{}", fake.display(), std::env::var("PATH").unwrap_or_default());
+            let t = std::time::Instant::now();
+            for_each_shell("slow", &d, true, None, &[("PATH", path)], |sh, r| assert_eq!(r.changes, "", "{sh}"));
+            assert!(t.elapsed() < Duration::from_secs(4 * SHELLS.len() as u64), "the hook waited for git");
+            let _ = std::fs::remove_dir_all(&d);
+        }
     }
 
     #[test]
     fn gather_fills_what_it_can_for_a_process_that_exists() {
-        let p = Probe { pid: std::process::id(), report: None, clock24: true };
+        let p = Probe { pid: std::process::id(), cwd: None, report: None, clock24: true };
         let c = gather(&p);
         assert_eq!(c.get(Chip::Time).len(), 5);
         assert!(!c.get(Chip::Dir).is_empty());
@@ -833,7 +967,7 @@ mod tests {
     #[test]
     #[ignore = "prints, for a look by hand"]
     fn print_the_context() {
-        let p = Probe { pid: std::process::id(), report: None, clock24: false };
+        let p = Probe { pid: std::process::id(), cwd: None, report: None, clock24: false };
         let c = gather(&p);
         for chip in Chip::ALL {
             println!("{:8} {:?}", chip.name(), c.get(chip));

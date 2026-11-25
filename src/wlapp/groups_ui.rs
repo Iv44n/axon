@@ -78,7 +78,7 @@ impl App {
 
     /// The folder of window `wi`'s shell.
     fn win_dir(&self, wi: usize) -> Option<PathBuf> {
-        std::fs::read_link(format!("/proc/{}/cwd", self.wins[wi].pane().shell)).ok()
+        self.wins[wi].pane().cwd_now()
     }
 
     fn next_group_id(&mut self) -> u32 {
@@ -572,11 +572,11 @@ impl App {
         }
         match r.field.key(k) {
             Edit::Paste => {
-                if let Some(text) = self.wl.clipboard_text() {
+                if let Some(text) = self.plat.clipboard_text() {
                     r.field.insert(&text);
                 }
             }
-            Edit::Copy(t) | Edit::Cut(t) => self.wl.set_clipboard(&t),
+            Edit::Copy(t) | Edit::Cut(t) => self.plat.set_clipboard(&t),
             Edit::Ignored | Edit::Same | Edit::Moved | Edit::Changed => {}
         }
         self.side_dirty = true;

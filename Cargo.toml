@@ -5,13 +5,39 @@ edition = "2024"
 
 [dependencies]
 alacritty_terminal = "0.26.0"
-arboard = { version = "3.7.0", default-features = false, features = ["wayland-data-control"] }
 bytemuck = { version = "1.25.2", features = ["derive"] }
 fontdue = "0.9.5"
+
+# Linux: the own Wayland client (`wl.rs`, `xkb.rs`) talks through unix sockets and memfds; `winit` + `wgpu` are the X11 fallback.
+[target.'cfg(target_os = "linux")'.dependencies]
+arboard = { version = "3.7.0", default-features = false, features = ["wayland-data-control"] }
 pollster = "1.0.3"
 rustix = { version = "1", default-features = false, features = ["std", "net", "event", "fs", "mm", "pipe"] }
 wgpu = "30.0.2"
 winit = "0.30.13"
+
+# Windows: the own Win32 client (`win.rs`). `windows-sys` is only declarations (no code, no binary size), and the same
+# version `alacritty_terminal` already builds for its ConPTY, so it adds no crate (ADR 0039).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59.0", features = [
+    "Wdk_System_Threading",
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_DataExchange",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Kernel",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [profile.release]
 opt-level = 3

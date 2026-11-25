@@ -17,7 +17,7 @@ use crate::{
     overlay::{BTN_H, Click, Clicks, Cx, Cursor, Geo, Ink, Modal, Out, Overlay, PX_HINT, PX_TITLE, Rect, Stack, button, button_width, dim, fg, inside},
     paint::{Paint, WHITE},
     picker::Picker,
-    xkb::Key,
+    plat::Key,
 };
 
 /// The tag the demo overlays are opened under, and the commands they run.
@@ -288,7 +288,7 @@ pub fn picker() -> Picker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{overlay::Text, xkb::Mods};
+    use crate::{overlay::Text, plat::Mods};
 
     const G: Geo = Geo { w: 900, h: 620, square: false };
 

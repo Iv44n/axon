@@ -58,7 +58,12 @@ impl Setting {
     /// `resolve` against the real environment.
     pub fn resolve_here(self) -> Lang {
         let var = |k| std::env::var(k).ok();
-        self.resolve(&[var("LC_ALL"), var("LC_MESSAGES"), var("LANG")])
+        // Windows has no locale variables: the user's own setting (`es-ES`).
+        #[cfg(windows)]
+        let system = crate::win::locale_name();
+        #[cfg(not(windows))]
+        let system = None;
+        self.resolve(&[var("LC_ALL"), var("LC_MESSAGES"), var("LANG"), system])
     }
 }
 

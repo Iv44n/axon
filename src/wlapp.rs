@@ -1,9 +1,9 @@
-//! The application on the own Wayland client: the terminal session, the CPU renderer and `wl.rs`,
-//! in one blocking `poll` loop with no windowing or GPU library. It handles the keyboard (layouts
-//! by `xkb.rs`, client-side repeat), the pointer (window chrome, selection, wheel) and the clipboard.
+//! The application on the own window layer: the terminal session, the CPU renderer and `plat.rs`'s `Plat` (the
+//! own Wayland client `wl.rs` on Linux, the own Win32 window `win.rs` on Windows), in one blocking wait loop with no
+//! windowing or GPU library. It handles the keyboard (layouts by `xkb.rs` and client-side repeat on Linux, the
+//! system's on Windows), the pointer (window chrome, selection, wheel) and the clipboard.
 use std::{
     collections::VecDeque,
-    os::fd::{AsFd, OwnedFd},
     path::PathBuf,
     sync::{
         Arc, Mutex,
@@ -22,11 +22,6 @@ use alacritty_terminal::{
     sync::FairMutex,
     term::TermMode,
 };
-use rustix::{
-    event::{EventfdFlags, PollFd, PollFlags, Timespec, eventfd, poll},
-    io::{read, write},
-};
-
 mod windows_overview;
 
 use crate::{
@@ -48,12 +43,14 @@ use crate::{
     settings::{self, Effect, Settings},
     soft::{Dock, Slot, Soft, UNFOCUSED},
     view::View,
-    wl::{Event, Wl, cursor},
-    xkb::{Key, Xkb},
+    plat::{Event, Key, Mods, Plat, Wake, cursor},
 };
+#[cfg(target_os = "linux")]
+use crate::xkb::Xkb;
 use windows_overview::AppGrid;
 
 mod groups_ui;
+mod selftest;
 
 /// How long a redraw may wait for the compositor's frame callback or buffer release before axon
 /// assumes it was lost (suspend and resume, a hidden window) and draws anyway.
@@ -99,10 +96,10 @@ fn cursor_for(hit: Hit) -> u32 {
     }
 }
 
-/// How the PTY thread reaches the loop: events go in a queue and an eventfd wakes `poll`.
+/// How the PTY thread reaches the loop: events go in a queue and `Wake` wakes the loop's wait.
 #[derive(Clone)]
 struct Proxy {
-    wake: Arc<OwnedFd>,
+    wake: Arc<Wake>,
     pending: Arc<AtomicBool>,
     queue: Arc<Mutex<VecDeque<TermEvent>>>,
     /// What the shell's hook said, with the moment the PTY thread read it: commands are timed there.
@@ -111,7 +108,7 @@ struct Proxy {
 
 impl Proxy {
     fn wake(&self) {
-        let _ = write(self.wake.as_ref(), &1u64.to_ne_bytes());
+        self.wake.signal();
     }
 }
 
@@ -152,9 +149,9 @@ struct Refresh {
 }
 
 /// The app's clipboard as the overlays see it (read only when one asks to paste).
-struct WlClip<'a>(&'a mut Wl);
+struct PlatClip<'a>(&'a mut Plat);
 
-impl overlay::Clipboard for WlClip<'_> {
+impl overlay::Clipboard for PlatClip<'_> {
     fn get(&mut self) -> Option<String> {
         self.0.clipboard_text()
     }
@@ -165,6 +162,7 @@ impl overlay::Clipboard for WlClip<'_> {
 }
 
 /// A key being held: sent again at `at`, then every `1 / rate` seconds.
+#[cfg_attr(windows, allow(dead_code))]
 struct Repeat {
     code: u32,
     key: Key,
@@ -185,6 +183,8 @@ struct Pane {
     chips: bar::Chips,
     /// The shell's process id, the file it reports to, the flag that turns the chips on, the refresh in progress.
     shell: u32,
+    /// Where the shell's own hook said it is, for the shells whose process does not move with them (`Hook::Dir`).
+    cwd: Option<PathBuf>,
     report: Option<PathBuf>,
     flag: Option<PathBuf>,
     refresh: Refresh,
@@ -273,13 +273,13 @@ impl Drop for Pane {
 }
 
 struct App {
-    wl: Wl,
+    plat: Plat,
     soft: Soft,
     /// The windows, in the order of the side panel, and the one on screen.
     wins: Vec<Win>,
     cur: usize,
-    /// What wakes `poll`: the PTY threads write to it.
-    wake: Arc<OwnedFd>,
+    /// What wakes the wait: the PTY threads signal it.
+    wake: Arc<Wake>,
     /// The number the next window gets (for its report file and its PTY).
     next_win: u64,
     /// Whether a shell can be given a scope of its own on this machine (`session::scope_probe`); None while the
@@ -317,7 +317,12 @@ struct App {
     strip_acc: f32,
     spin_due: bool,
     spin_t0: Instant,
+    #[cfg(target_os = "linux")]
     xkb: Option<Xkb>,
+    /// The last key pressed (`Event::Press`) may repeat while it is held.
+    press_repeats: bool,
+    /// `AXON_SELFTEST`: the app testing itself for CI (`selftest.rs`).
+    selftest: Option<selftest::Run>,
     ui: Ui,
     hover: Hit,
     /// Window size in pixels, the grid of a window with one pane, cell size.
@@ -401,13 +406,18 @@ fn dir_name(dir: &str) -> &str {
 }
 
 impl Pane {
+    /// The directory the pane's shell is in: what its hook said, else what its process says.
+    fn cwd_now(&self) -> Option<PathBuf> {
+        self.cwd.clone().or_else(|| context::cwd_of(self.shell))
+    }
+
     /// Reads the directory of the pane's shell again. True when it is another one. Asked when the shell may have
     /// moved (a prompt, a new title, the window coming on screen), not when the list is painted: the painters
     /// only read `dir`.
     fn read_dir(&mut self) -> bool {
-        let cwd = std::fs::read_link(format!("/proc/{}/cwd", self.shell)).unwrap_or_default();
-        let home = std::env::var("HOME").ok();
-        let dir = context::tidy_dir(&cwd.to_string_lossy(), home.as_deref());
+        let cwd = self.cwd_now().unwrap_or_default();
+        let home = context::home_dir();
+        let dir = context::tidy_dir(&cwd.to_string_lossy(), home.as_deref().and_then(std::path::Path::to_str));
         let moved = dir != self.dir;
         self.dir = dir;
         moved
@@ -632,12 +642,12 @@ pub fn run() -> bool {
 impl Pane {
     /// A new pane with its own shell. `n` numbers it for the files it reports through.
     /// `scope` starts its shell in a scope of its own (`App::scope_for_new`).
-    fn spawn(wake: &Arc<OwnedFd>, n: u64, (cols, rows, cw, ch): (usize, usize, u32, u32), cursor: config::CursorKind, chips: bool, dir: Option<PathBuf>, scope: bool) -> Pane {
+    fn spawn(wake: &Arc<Wake>, n: u64, (cols, rows, cw, ch): (usize, usize, u32, u32), cursor: config::CursorKind, chips: bool, dir: Option<PathBuf>, scope: bool) -> Pane {
         let proxy = Proxy { wake: wake.clone(), pending: Arc::new(AtomicBool::new(false)), queue: Arc::default(), hooks: Arc::default() };
         // The files the shell and axon talk through (`context.rs`): what the shell reports, and the flag
         // that says the prompt chips are on.
         let (report, flag) = (context::report_path(std::process::id(), n), context::flag_path(std::process::id(), n));
-        let shell_path = std::env::var("SHELL").unwrap_or_default();
+        let shell_path = session::shell_path();
         let inherited = std::env::var("PROMPT_COMMAND").ok();
         let env = context::shell_env(&shell_path, report.as_deref(), flag.as_deref(), inherited.as_deref()).into_iter().collect();
         let (term, pty, shell) = session::spawn(proxy.clone(), cols, rows, cw, ch, n, env, cursor, dir, scope);
@@ -651,6 +661,7 @@ impl Pane {
             ctx_dirty: true,
             chips: bar::Chips::default(),
             shell,
+            cwd: None,
             report,
             flag,
             refresh: Refresh { due: chips.then(Instant::now), last: Instant::now(), running: Arc::new(AtomicBool::new(false)), done: Arc::default(), clock_at: None },
@@ -684,16 +695,17 @@ impl App {
         soft.set_title("axon", "");
         let (cw, ch) = soft.cell();
 
-        let mut wl = Wl::connect("axon", "axon")?;
+        let mut plat = Plat::connect("axon", "axon")?;
+        #[cfg(target_os = "linux")]
         let mut xkb = Some(Xkb::load().ok_or_else(|| std::io::Error::other("libxkbcommon.so.0 not found, the keyboard would not work"))?);
         // The first configure decides the size; 0 x 0 means the compositor has no opinion.
         let (mut w, mut h) = (1000, 640);
         let mut ui = Ui { status: cfg.status_bar, ..Ui::IDLE };
         let (mut rate, mut delay) = (25, 600);
         'first: loop {
-            wl.wait(None)?;
-            wl.read_events()?;
-            while let Some(ev) = wl.next_event() {
+            plat.wait(None)?;
+            plat.read_events()?;
+            while let Some(ev) = plat.next_event() {
                 match ev {
                     Event::Configure { w: nw, h: nh, square } => {
                         if nw > 0 && nh > 0 {
@@ -704,6 +716,7 @@ impl App {
                     }
                     Event::Focus(f) => ui.focused = f,
                     Event::Close => std::process::exit(0),
+                    #[cfg(target_os = "linux")]
                     Event::Keymap(text) => {
                         if let Some(x) = xkb.as_mut() {
                             x.set_keymap(&text);
@@ -715,7 +728,7 @@ impl App {
             }
         }
 
-        let wake = Arc::new(eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)?);
+        let wake = Arc::new(Wake::new()?);
         let (side_dock, prefs_dock) = docks(&cfg.windows, 0, w);
         soft.set_docks(side_dock, prefs_dock);
         ui.side = match (cfg.windows.tabs, cfg.windows.side) {
@@ -734,7 +747,7 @@ impl App {
         let scope_ok = cfg.windows.scope.then(|| scope_probe.works());
         let first = Win::new(Pane::spawn(&wake, 0, (cols, rows, cw, ch), cfg.input.cursor, cfg_chips, None, scope_ok == Some(true)), 0);
         let mut app = App {
-            wl,
+            plat,
             soft,
             wins: vec![first],
             cur: 0,
@@ -761,7 +774,10 @@ impl App {
             strip_acc: 0.0,
             spin_due: false,
             spin_t0: Instant::now(),
+            #[cfg(target_os = "linux")]
             xkb,
+            press_repeats: false,
+            selftest: selftest::Run::from_env(),
             ui,
             hover: Hit::Client,
             w,
@@ -852,30 +868,21 @@ impl App {
     fn run(mut self) -> std::io::Result<()> {
         while !self.quit {
             self.draw();
-            self.wl.flush()?;
+            self.plat.flush()?;
 
             // Block until the compositor, the PTY thread or a held key needs us; and, when a redraw is
             // stuck waiting for the compositor, only until it is clear that it will not answer.
             let now = Instant::now();
-            let timeout = [self.repeat.as_ref().map(|r| r.at), self.waiting.map(|t| t + STALL), self.save_at, self.overlays.deadline(now), self.undo.as_ref().map(|u| u.until), self.spin_at]
+            let timeout = [self.repeat.as_ref().map(|r| r.at), self.waiting.map(|t| t + STALL), self.save_at, self.overlays.deadline(now), self.undo.as_ref().map(|u| u.until), self.spin_at, self.selftest.as_ref().map(|t| t.next)]
                 .into_iter()
                 .chain(self.shown_panes().flat_map(|p| [p.refresh.due, p.refresh.clock_at]))
                 .flatten()
                 .min()
-                .map(|at| {
-                    let left = at.saturating_duration_since(now);
-                    Timespec { tv_sec: left.as_secs() as i64, tv_nsec: left.subsec_nanos() as i64 }
-                });
+                .map(|at| at.saturating_duration_since(now));
             let wake = self.wake.clone();
-            let wl_fd = self.wl.fd();
-            let mut fds = [PollFd::new(&wl_fd, PollFlags::IN), PollFd::new(wake.as_ref(), PollFlags::IN)];
-            match poll(&mut fds, timeout.as_ref()) {
-                Ok(_) | Err(rustix::io::Errno::INTR) => {}
-                Err(e) => return Err(e.into()),
-            }
-            let (wl_ready, wake_ready) = (fds[0].revents().contains(PollFlags::IN), fds[1].revents().contains(PollFlags::IN));
+            let (plat_ready, wake_ready) = self.plat.wait_wake(&wake, timeout)?;
             if wake_ready {
-                let _ = read(wake.as_fd(), &mut [0u8; 8]);
+                wake.clear();
                 self.dirty = true;
                 // A terminal printed something: the directory or the branch may have changed.
                 let now = Instant::now();
@@ -885,11 +892,11 @@ impl App {
                     }
                 }
             }
-            if wl_ready {
-                self.wl.read_events()?;
+            if plat_ready {
+                self.plat.read_events()?;
             }
             self.term_events();
-            while let Some(ev) = self.wl.next_event() {
+            while let Some(ev) = self.plat.next_event() {
                 self.wl_event(ev);
             }
             self.tick_repeat();
@@ -906,8 +913,9 @@ impl App {
             self.tick_save();
             self.tick_undo(Instant::now());
             self.tick_spin();
+            self.tick_selftest();
             if self.waiting.is_some_and(|t| t.elapsed() >= STALL) {
-                self.wl.give_up_waiting();
+                self.plat.give_up_waiting();
                 self.waiting = None;
             }
         }
@@ -922,7 +930,7 @@ impl App {
             self.waiting = None;
             return;
         }
-        if self.wl.frame_pending() {
+        if self.plat.frame_pending() {
             self.waiting.get_or_insert_with(Instant::now);
             return;
         }
@@ -952,15 +960,16 @@ impl App {
         if self.overlays.has(overview::TAG) {
             self.sync_overview();
         }
-        let Some(fb) = self.wl.framebuffer(w, h) else {
+        let Some(fb) = self.plat.framebuffer(w, h) else {
             self.waiting.get_or_insert_with(Instant::now);
             return;
         };
         self.waiting = None;
         let win = &self.wins[self.cur];
         let branch = if chips_on { win.pane().ctx.get(Chip::Branch) } else { "" };
-        let shell = std::env::var("SHELL").ok();
-        let shell = shell.as_deref().and_then(|s| s.rsplit('/').next()).unwrap_or("shell");
+        let shell = session::shell_path();
+        let shell = shell.rsplit(['/', '\\']).next().filter(|s| !s.is_empty()).unwrap_or("shell");
+        let shell = shell.strip_suffix(".exe").unwrap_or(shell);
         let (cols, rows) = win.pane().size;
         self.soft.set_status(shell, branch, cols, rows);
         self.soft.set_ui(self.ui);
@@ -1026,7 +1035,7 @@ impl App {
         self.prefs_dirty = false;
         let mut grid = AppGrid { soft: &self.soft, wins: &self.wins, scratch: &mut self.side_scratch };
         animating |= self.overlays.draw_with(fb, (w, h), (ml, mt), geo, Instant::now(), &mut grid);
-        self.wl.present();
+        self.plat.present();
         // A fade in progress asks for the next frame itself; at rest nothing does (idle is 0 % CPU).
         self.dirty = animating;
     }
@@ -1069,6 +1078,10 @@ impl App {
                             p.history.prompt(n, status, at, &p.ctx);
                             p.read_dir()
                         }
+                        Hook::Dir(dir) => {
+                            p.cwd = Some(PathBuf::from(dir));
+                            p.read_dir()
+                        }
                     };
                     // The panel and the tabs say whether a command runs or failed (a folded group, that one does).
                     self.refresh_groups();
@@ -1093,7 +1106,7 @@ impl App {
                             self.titled(i);
                         }
                         TermEvent::PtyWrite(t) => self.wins[i].panes[j].pty.notify(t.into_bytes()),
-                        TermEvent::ClipboardStore(_, t) => self.wl.set_clipboard(&t),
+                        TermEvent::ClipboardStore(_, t) => self.plat.set_clipboard(&t),
                         // OSC 52 reads are refused (`session::term_config`): output must not read the clipboard.
                         TermEvent::ClipboardLoad(..) => {}
                         TermEvent::ColorRequest(c, f) => {
@@ -1125,7 +1138,7 @@ impl App {
     fn titled(&mut self, i: usize) {
         if i == self.cur {
             let (name, place) = (win_title(&self.wins[i]), win_place(&self.wins[i]));
-            self.wl.set_title(&format!("{name} {place}"));
+            self.plat.set_title(&format!("{name} {place}"));
             self.soft.set_title(name, place);
         }
         self.side_dirty = true;
@@ -1585,11 +1598,13 @@ impl App {
             }
             Event::Close => self.quit = true,
             Event::FrameDone => {}
+            #[cfg(target_os = "linux")]
             Event::Keymap(text) => {
                 if let Some(x) = self.xkb.as_mut() {
                     x.set_keymap(&text);
                 }
             }
+            #[cfg(target_os = "linux")]
             Event::Modifiers { depressed, latched, locked, group } => {
                 if let Some(x) = self.xkb.as_mut() {
                     x.update_mods(depressed, latched, locked, group);
@@ -1597,7 +1612,17 @@ impl App {
             }
             Event::RepeatInfo { rate, delay } => (self.rate, self.delay) = (rate, delay),
             Event::KeyboardLeave => self.repeat = None,
+            #[cfg(target_os = "linux")]
             Event::Key { key, pressed } => self.on_key(key, pressed),
+            // A key the platform already turned into what it means: it repeats by itself, so nothing is held here.
+            Event::Press { key, repeat } => {
+                // Held, a key goes on only if its first press may repeat (the shortcuts that act once per press do not).
+                if !repeat || self.press_repeats {
+                    self.press_repeats = self.handle_key(&key);
+                }
+            }
+            #[cfg(not(target_os = "linux"))]
+            Event::Keymap(_) | Event::Modifiers { .. } | Event::Key { .. } => {}
             Event::Scroll { pixels, clicks } => self.on_scroll(pixels, clicks),
             Event::PointerMove { x, y } => self.on_pointer_move(x, y),
             Event::PointerLeave => {
@@ -1679,19 +1704,19 @@ impl App {
     fn set_geometry(&mut self) {
         let (ml, mt, _) = chrome::margins(self.ui.maximized);
         let grab = if self.ui.maximized { None } else { Some(chrome::EDGE_OUT as i32) };
-        self.wl.set_geometry(ml as i32, mt as i32, self.w as i32, self.h as i32, grab);
+        self.plat.set_geometry(ml as i32, mt as i32, self.w as i32, self.h as i32, grab);
         self.set_blur();
     }
 
     /// Asks the compositor to blur behind the window when the settings say so (its rounded outline).
     fn set_blur(&mut self) {
         if !self.cfg.blur {
-            return self.wl.set_blur(&[]);
+            return self.plat.set_blur(&[]);
         }
         let (ml, mt, _) = chrome::margins(self.ui.maximized);
         let radius = if self.ui.maximized { 0 } else { chrome::RADIUS as i32 };
         let (rects, n) = chrome::blur_strips(ml as i32, mt as i32, self.w as i32, self.h as i32, radius);
-        self.wl.set_blur(&rects[..n]);
+        self.plat.set_blur(&rects[..n]);
     }
 
     /// Grid size of every pane of every window, after a resize, a new font size, a split or a closed pane: each
@@ -1807,7 +1832,7 @@ impl App {
             }
             pane.refresh.due = None;
             pane.refresh.last = now;
-            let probe = Probe { pid: pane.shell, report: pane.report.clone(), clock24: self.cfg.input.clock24 };
+            let probe = Probe { pid: pane.shell, cwd: pane.cwd.clone(), report: pane.report.clone(), clock24: self.cfg.input.clock24 };
             let (done, running, proxy) = (pane.refresh.done.clone(), pane.refresh.running.clone(), pane.proxy.clone());
             let spawned = std::thread::Builder::new().name("context".into()).spawn(move || {
                 let c = context::gather(&probe);
@@ -1832,7 +1857,7 @@ impl App {
         Settings::open(&self.shown_font, self.opacity)
             .with_input(&self.cfg.input)
             .with_windows(&self.cfg.windows)
-            .with_blur(self.cfg.blur, self.wl.blur_supported())
+            .with_blur(self.cfg.blur, self.plat.blur_supported())
             .with_lang(self.cfg.lang)
     }
 
@@ -2090,6 +2115,15 @@ impl App {
 
     // ----------------------------------------------------------- keyboard --
 
+    /// The modifiers held now.
+    fn mods(&self) -> Mods {
+        #[cfg(target_os = "linux")]
+        return self.xkb.as_ref().map(|x| x.mods()).unwrap_or_default();
+        #[cfg(windows)]
+        return crate::win::mods();
+    }
+
+    #[cfg(target_os = "linux")]
     fn on_key(&mut self, code: u32, pressed: bool) {
         if !pressed {
             if self.repeat.as_ref().is_some_and(|r| r.code == code) {
@@ -2124,7 +2158,7 @@ impl App {
         // An overlay open has the keyboard before everything: the shell hears nothing, Esc closes the top one.
         if self.overlays.is_open() {
             let g = self.geo();
-            let r = self.overlays.key(k, g, &mut WlClip(&mut self.wl));
+            let r = self.overlays.key(k, g, &mut PlatClip(&mut self.plat));
             let closed = r.closed;
             self.overlay_reply(r);
             return !closed; // the key that closed it must not repeat into the shell
@@ -2309,12 +2343,12 @@ impl App {
             self.repeat = None;
             if self.overlays.is_empty() {
                 self.overlay_cursor = None;
-                self.wl.set_cursor(cursor_for(self.hover));
+                self.plat.set_cursor(cursor_for(self.hover));
             }
         }
         if let Some(c) = r.cursor.filter(|&c| Some(c) != self.overlay_cursor) {
             self.overlay_cursor = Some(c);
-            self.wl.set_cursor(match c {
+            self.plat.set_cursor(match c {
                 overlay::Cursor::Default => cursor::DEFAULT,
                 overlay::Cursor::Pointer => cursor::POINTER,
                 overlay::Cursor::Text => cursor::TEXT,
@@ -2464,7 +2498,7 @@ impl App {
     // ---------------------------------------------------------- clipboard --
 
     fn paste(&mut self) -> bool {
-        let Some(text) = self.wl.clipboard_text() else { return true };
+        let Some(text) = self.plat.clipboard_text() else { return true };
         let text = text.replace('\x1b', "");
         let pane = self.wins[self.cur].pane();
         let bracketed = pane.term.lock().mode().contains(TermMode::BRACKETED_PASTE);
@@ -2479,7 +2513,7 @@ impl App {
     fn copy(&mut self) -> bool {
         let text = self.wins[self.cur].pane().term.lock().selection_to_string();
         if let Some(t) = text {
-            self.wl.set_clipboard(&t);
+            self.plat.set_clipboard(&t);
         }
         true
     }
@@ -2525,7 +2559,7 @@ impl App {
     /// Whether the pointer feeds the program in pane `pi` instead of selecting: it asked for reports, and Shift
     /// (the usual way out, to select text anyway) is not held.
     fn reporting(&self, pi: usize) -> bool {
-        let shift = self.xkb.as_ref().is_some_and(|x| x.mods().shift);
+        let shift = self.mods().shift;
         !shift && mouse::reporting(*self.pane(pi).term.lock().mode())
     }
 
@@ -2534,7 +2568,7 @@ impl App {
         let (col, row, _) = self.viewport_cell(pi);
         // The program counts the rows of its screen: the line the row shows.
         let screen = self.row_line(pi, row).clamp(0, self.pane(pi).size.1 as i32 - 1) as usize;
-        let mods = self.xkb.as_ref().map(|x| x.mods()).unwrap_or_default();
+        let mods = self.mods();
         let (wi, pj) = self.shown().locate(pi);
         let pane = &self.wins[wi].panes[pj];
         let mode = *pane.term.lock().mode();
@@ -2679,7 +2713,7 @@ impl App {
         } else {
             cursor_for(now)
         };
-        self.wl.set_cursor(shape);
+        self.plat.set_cursor(shape);
     }
 
     fn on_button(&mut self, pressed: bool, time: u32) {
@@ -2701,8 +2735,8 @@ impl App {
                 self.dirty = true;
                 match self.hover {
                     Hit::Close => self.quit = true,
-                    Hit::Minimize => self.wl.minimize(),
-                    Hit::Maximize => self.wl.toggle_maximized(),
+                    Hit::Minimize => self.plat.minimize(),
+                    Hit::Maximize => self.plat.toggle_maximized(),
                     Hit::Settings => self.toggle_settings(),
                     Hit::SideBtn => self.toggle_side(),
                     Hit::NewGroup => self.group_dialog_here(),
@@ -2718,13 +2752,13 @@ impl App {
             }
             Hit::Title if self.title_click != 0 && time.wrapping_sub(self.title_click) < DOUBLE_CLICK_MS => {
                 self.title_click = 0;
-                self.wl.toggle_maximized();
+                self.plat.toggle_maximized();
             }
             Hit::Title => {
                 self.title_click = time;
-                self.wl.begin_move();
+                self.plat.begin_move();
             }
-            Hit::Edge(edges) => self.wl.begin_resize(edges),
+            Hit::Edge(edges) => self.plat.begin_resize(edges),
             Hit::Prefs => {}
             Hit::Side => match self.side_hover {
                 // A row or a header is a click when the button comes up where it went down, a drag when it moves. A second
@@ -2849,7 +2883,7 @@ impl App {
         let Some(d) = self.dnd.as_mut() else { return false };
         let changed = !d.live || d.target != target || d.at != (x, y);
         (d.live, d.at, d.target) = (true, (x, y), target);
-        self.wl.set_cursor(cursor::GRABBING);
+        self.plat.set_cursor(cursor::GRABBING);
         if changed {
             self.side_hover = None;
             self.side_dirty = true;
@@ -2889,7 +2923,7 @@ impl App {
             }
             return true;
         }
-        self.wl.set_cursor(cursor::POINTER);
+        self.plat.set_cursor(cursor::POINTER);
         if let Some(to) = d.target {
             self.drop_on(d.grab, to);
         }
@@ -2901,7 +2935,7 @@ impl App {
         if let Some(d) = self.dnd.take()
             && d.live
         {
-            self.wl.set_cursor(cursor::DEFAULT);
+            self.plat.set_cursor(cursor::DEFAULT);
             self.side_dirty = true;
             self.dirty = true;
         }

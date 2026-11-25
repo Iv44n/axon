@@ -22,7 +22,7 @@ use crate::{
     overlay::{BTN_H, CARD, Click, Clicks, Cx, Cursor, Geo, Ink, Modal, Out, Overlay, PX, PX_HINT, PX_SMALL, PX_TITLE, Rect, Text, accent, button, button_width, dim, fg, inside},
     paint::{BLACK, Paint, WHITE, seg},
     side::group_color,
-    xkb::Key,
+    plat::Key,
 };
 
 /// The tag the dialog is opened under on the overlay stack, and the command it runs when the form is valid.
@@ -846,7 +846,7 @@ impl GroupDialog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::xkb::Mods;
+    use crate::plat::Mods;
 
     const G: Geo = Geo { w: 1000, h: 640, square: false };
 

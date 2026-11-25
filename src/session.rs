@@ -52,6 +52,7 @@ pub fn set_cursor<L: EventListener>(term: &FairMutex<Term<L>>, cursor: CursorKin
 
 /// Columns and rows that fit in a `w` x `h` pixel window with `pad` pixels of margin left and right,
 /// `top` pixels above and `bottom` below.
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
 pub fn grid_size(w: u32, h: u32, cw: u32, ch: u32, pad: u32, top: u32, bottom: u32) -> (usize, usize) {
     let cols = (w.saturating_sub(2 * pad) / cw).max(2) as usize;
     let rows = (h.saturating_sub(top + bottom) / ch).max(2) as usize;
@@ -91,6 +92,55 @@ fn scope_args(shell: &str, axon: u32, window: u64) -> Vec<String> {
 fn scoped_shell(window: u64) -> Option<tty::Shell> {
     let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty())?;
     Some(tty::Shell::new("systemd-run".into(), scope_args(&shell, std::process::id(), window)))
+}
+
+/// The shell the user's environment names, as a path: `$SHELL`. On Windows `AXON_SHELL`, else PowerShell 7
+/// (`pwsh`) when it is installed, else Windows PowerShell, else `%COMSPEC%`; empty when nothing says.
+pub fn shell_path() -> String {
+    #[cfg(unix)]
+    return std::env::var("SHELL").unwrap_or_default();
+    #[cfg(windows)]
+    return windows_shell();
+}
+
+/// The shell axon starts when it is not given a scope: the PTY layer's own choice on Linux (the user's from the
+/// password file), the one `windows_shell` finds on Windows.
+fn own_shell() -> Option<tty::Shell> {
+    #[cfg(unix)]
+    return None;
+    #[cfg(windows)]
+    {
+        let shell = windows_shell();
+        // PowerShell is started with axon's hook (`context::POWERSHELL_HOOK`) run after the profile, then stays interactive.
+        let args = if crate::context::is_powershell(&shell) {
+            vec!["-NoLogo".into(), "-NoExit".into(), "-Command".into(), crate::context::POWERSHELL_HOOK.to_string()]
+        } else {
+            Vec::new()
+        };
+        return Some(tty::Shell::new(quote_program(&shell), args));
+    }
+}
+
+/// A program path as a command line carries it: quoted when it has a space.
+#[cfg(windows)]
+fn quote_program(p: &str) -> String {
+    if p.contains(' ') && !p.starts_with('"') { format!("\"{p}\"") } else { p.to_string() }
+}
+
+/// What a Windows machine offers, in the order a terminal should prefer: `AXON_SHELL`, `pwsh.exe` (PowerShell 7, on
+/// the `PATH` or in its usual folder), the `powershell.exe` every Windows has, `%COMSPEC%`.
+#[cfg(windows)]
+fn windows_shell() -> String {
+    let on_path = |name: &str| std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).map(|d| d.join(name)).find(|f| f.is_file()));
+    let env_dir = |k: &str, rest: &str| std::env::var_os(k).map(|d| Path::new(&d).join(rest));
+    if let Some(s) = std::env::var("AXON_SHELL").ok().filter(|s| !s.is_empty()) {
+        return s;
+    }
+    let found = on_path("pwsh.exe")
+        .or_else(|| env_dir("ProgramFiles", "PowerShell\\7\\pwsh.exe").filter(|f| f.is_file()))
+        .or_else(|| on_path("powershell.exe"))
+        .or_else(|| env_dir("SystemRoot", "System32\\WindowsPowerShell\\v1.0\\powershell.exe").filter(|f| f.is_file()));
+    found.map(|f| f.to_string_lossy().into_owned()).or_else(|| std::env::var("COMSPEC").ok()).unwrap_or_else(|| "powershell.exe".into())
 }
 
 /// Whether this machine can give a shell a scope: systemd is the init system (`booted` is its `/run/systemd/system`),
@@ -181,10 +231,20 @@ pub fn spawn<L: EventListener + Clone + Send + 'static>(
 ) -> (Arc<FairMutex<Term<L>>>, Notifier, u32) {
     let term = Arc::new(FairMutex::new(Term::new(term_config(cursor), &Size { cols, rows }, listener.clone())));
     tty::setup_env();
-    let shell = if scope { scoped_shell(id) } else { None };
-    let opts = tty::Options { shell, working_directory: dir, drain_on_exit: false, env };
+    let shell = if scope { scoped_shell(id) } else { own_shell() };
+    let opts = tty::Options {
+        shell,
+        working_directory: dir,
+        drain_on_exit: false,
+        env,
+        #[cfg(windows)]
+        escape_args: true,
+    };
     let pty = tty::new(&opts, window_size(cols, rows, cw, ch), id).expect("pty");
+    #[cfg(unix)]
     let pid = pty.child().id();
+    #[cfg(windows)]
+    let pid = pty.child_watcher().pid().map_or(0, |p| p.get());
     let lp = PtyLoop::new(term.clone(), listener, pty, false, false).expect("pty event loop");
     let notifier = Notifier(lp.channel());
     lp.spawn();

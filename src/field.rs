@@ -1,5 +1,5 @@
 //! A line of text being edited: the field of a dialog (`.f-input`), of the overview's filter (`.ov-search`)
-//! and of the palette (`.pal-input-row`). A state machine over `xkb::Key` with a caret, a selection and a
+//! and of the palette (`.pal-input-row`). A state machine over `plat::Key` with a caret, a selection and a
 //! longest length, and the painting of the three looks in the glass style of the reference.
 //!
 //! The model is pure: `Field::key` takes a key and says what happened (`Edit`), the clipboard is the app's
@@ -13,7 +13,7 @@ use crate::{
     input::sym,
     overlay::{Ink, PX, PX_INPUT, Rect, Text, accent, dim, faint, fg, ring},
     paint::{Paint, WHITE},
-    xkb::Key,
+    plat::Key,
 };
 
 /// What a key did to the field.
@@ -470,7 +470,7 @@ pub fn paint(p: &mut Paint, t: &Text, f: &Field, r: Rect, look: Look, focused: b
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::xkb::Mods;
+    use crate::plat::Mods;
 
     fn key(sym: u32) -> Key {
         Key { sym, ..Key::default() }

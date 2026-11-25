@@ -554,7 +554,7 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
         }
         (panel.sel, panel.hover) = (pf.sel, pf.hover);
         for c in pf.typing.chars() {
-            panel.key(&crate::xkb::Key { text: c.to_string(), ..Default::default() });
+            panel.key(&crate::plat::Key { text: c.to_string(), ..Default::default() });
         }
         panel.scroll_by(pf.scroll);
         soft.clear_rect(&mut fb, rect);

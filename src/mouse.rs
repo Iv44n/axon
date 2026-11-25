@@ -1,6 +1,6 @@
 //! Mouse reports for programs that ask for them (vim, tmux, htop, less): xterm modes 1000, 1002, 1003
 //! with the SGR (1006), UTF-8 (1005) or classic X10 encoding. Pure: no state, no I/O.
-use crate::xkb::Mods;
+use crate::plat::Mods;
 use alacritty_terminal::term::TermMode;
 
 /// What happened to which button. Buttons are the xterm numbers: 0 left, 1 middle, 2 right.

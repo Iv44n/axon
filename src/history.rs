@@ -30,6 +30,8 @@ pub enum Hook {
     Label(String),
     /// A new prompt, number `n`; the command before it ended with `status`.
     Prompt { n: u32, status: i32 },
+    /// The directory the shell is in, for a shell whose process does not move when it does (PowerShell's `cd`).
+    Dir(String),
 }
 
 /// The hook a window title carries, if it is one.
@@ -40,6 +42,7 @@ pub fn parse(title: &str) -> Option<Hook> {
         // What follows an `S` is bash's arming token: nothing to read.
         "S" if !arg.contains(' ') => Some(Hook::Start),
         "L" => Some(Hook::Label(command_word(arg).to_string())),
+        "D" if !arg.is_empty() => Some(Hook::Dir(arg.to_string())),
         "E" => match arg.split(' ').collect::<Vec<_>>()[..] {
             [n, status] => Some(Hook::Prompt { n: n.parse().ok()?, status: status.parse().ok()? }),
             _ => None,
@@ -217,6 +220,9 @@ mod tests {
         }
         assert_eq!(parse("axon!hook L cargo build"), Some(Hook::Label("cargo".into())));
         assert_eq!(parse("axon!hook L"), Some(Hook::Label(String::new())));
+        // The directory a shell says it is in (PowerShell): the whole rest of the title, spaces included.
+        assert_eq!(parse("axon!hook D C:\\Users\\Ana Perez\\code"), Some(Hook::Dir("C:\\Users\\Ana Perez\\code".into())));
+        assert_eq!(parse("axon!hook D"), None);
     }
 
     #[test]
