@@ -420,7 +420,7 @@ fn shell_init(shell: Option<&str>) -> i32 {
     match shell.and_then(context::shell_init_script) {
         Some(script) => print!("{script}"),
         None => {
-            eprintln!("usage: axon shell-init bash|zsh|fish\n\nAdd to ~/.bashrc:  eval \"$(axon shell-init bash)\"\n       ~/.zshrc:   eval \"$(axon shell-init zsh)\"\n       config.fish: axon shell-init fish | source");
+            eprintln!("usage: axon shell-init bash|zsh|fish|pwsh\n\nAdd to ~/.bashrc:  eval \"$(axon shell-init bash)\"\n       ~/.zshrc:   eval \"$(axon shell-init zsh)\"\n       config.fish: axon shell-init fish | source\n       PowerShell:  axon shell-init pwsh | Out-String | Invoke-Expression  (axon starts its own PowerShell with it)");
             return 2;
         }
     }

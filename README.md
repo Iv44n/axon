@@ -1,15 +1,15 @@
 # axon
 
 Native terminal emulator: **simple, minimalist, high-performance and futuristic**.
-Written in Rust, for Wayland (own client, CPU-rendered into `wl_shm`, no GPU stack) with a `winit` + `wgpu` fallback for X11 until it gets its own client (see `knowledge/decisions/core/0011-software-render-wl-shm.md`).
+Written in Rust, for **Linux** (Wayland: own client, CPU-rendered into `wl_shm`, no GPU stack; a `winit` + `wgpu` fallback for X11 until it gets its own client, see `knowledge/decisions/core/0011-software-render-wl-shm.md`) and **Windows** (own Win32 window, the same CPU renderer, `knowledge/decisions/core/0039-windows-port.md`).
 
-**Website:** <https://iv44n.github.io/axon/> · **Install:** `curl -fsSL https://iv44n.github.io/axon/install.sh | sh` (see [Installation](#installation))
+**Website:** <https://iv44n.github.io/axon/> · **Install:** Linux `curl -fsSL https://iv44n.github.io/axon/install.sh | sh`, Windows `irm https://iv44n.github.io/axon/install.ps1 | iex` (see [Installation](#installation))
 
 ![axon: a dark glass window with its shadow](assets/screenshot.png)
 
 <sub>A frame from the real renderer (`scripts/design.sh`), with alpha: what you see behind it is this page.</sub>
 
-- **Own Wayland client and CPU renderer**: the grid is painted straight into a shared-memory buffer, only the damaged rows. ~15 MB idle, no Vulkan or GL loaded.
+- **Own window layer and CPU renderer**: the grid is painted straight into a shared-memory buffer (a Wayland client on Linux) or a layered Win32 window (on Windows), only the damaged rows. ~18 MB idle on Linux, no Vulkan or GL loaded.
 - **Zero idle usage**: no continuous redraw; it only paints when there are events (the one timer is the time chip's clock, once a minute, and only while that chip is shown).
 - **Full VT emulation** thanks to [`alacritty_terminal`](https://crates.io/crates/alacritty_terminal).
 - **Dark glass look** (after the `terminal.html` reference, ADR 0021, 0036 and 0037): one rounded translucent pane with a soft shadow; a title bar divided from the grid by a hairline, the line you type at docked at the bottom below another (output rises above it; it is still your shell's own prompt and line editor), grey window buttons that turn red/yellow/green on hover, one amber accent and six clear hues (also the ANSI colours), a proportional UI font (Geist, else Inter) around the monospaced grid, the reference's airy margins, quiet outline-icon chips and a settings panel docked beside the terminal; the status bar is there if you ask for it (`[window] status_bar`). The frame is computed per pixel (`src/chrome.rs`), no images. On the default backend; the `winit` fallback only has the black-and-white colours.
@@ -17,10 +17,11 @@ Written in Rust, for Wayland (own client, CPU-rendered into `wl_shm`, no GPU sta
 - **Command palette and overview**: `Ctrl+K` lists actions, windows and groups (ranked as you type, each with its shortcut); `Alt+O` shows every window as a card with the last rows of its terminal, in a section per group, with a filter and drag and drop between groups.
 - **Prompt chips** (opt-in): a row of context chips on the line above your prompt (time, user, directory, git branch and changes, conda/venv, pyenv, Kubernetes), chosen and ordered by you. See [Prompt chips](#prompt-chips).
 - **Design board**: `design/board.html` shows frames of every screen (the window, the settings panel, the panes, the palette, the overview, the group dialog and menus, in English and Spanish) from the real renderer over different desktops, zoomed to the pixel and compared with a baseline (see [Design](#design)).
-- **Small binary** (7.9 MiB, see [Benchmarks](#benchmarks)) with LTO, `panic=abort` and `strip`.
+- **Small binary** (8.0 MiB on Linux, see [Benchmarks](#benchmarks)) with LTO, `panic=abort` and `strip`.
 
 ## Requirements
 
+- Windows 10 (version 1809) or 11, 64-bit: nothing else to install (on ARM the x64 build runs emulated). The shell is PowerShell 7 (`pwsh`) when it is installed, else Windows PowerShell, else `cmd`; `AXON_SHELL` names another. Fonts: JetBrains Mono, Cascadia Mono or Consolas.
 - Linux on x86_64 or aarch64. The released binaries are linked on Ubuntu 22.04 and need glibc 2.35 or newer (Ubuntu 22.04,
   Debian 12, Fedora 36 and later); elsewhere, or on musl, build from source with a recent stable Rust (`cargo`, 2024 edition).
 - On Wayland: `libxkbcommon.so.0` (loaded at run time for keyboard layouts; every desktop with Wayland has it). On X11, or without that library, axon falls back to `winit` + `wgpu`, which needs a Vulkan/GL driver.
@@ -30,7 +31,21 @@ Written in Rust, for Wayland (own client, CPU-rendered into `wl_shm`, no GPU sta
 
 ## Installation
 
-**A released binary** (no Rust needed): the installer downloads `axon-<arch>-linux.tar.gz` from the GitHub release, checks its
+**Windows** (PowerShell; no administrator needed): downloads `axon-x86_64-windows.zip` from the GitHub release, checks its SHA-256 and
+installs for your user under `%LOCALAPPDATA%\Programs\axon`, with the folder on your `PATH`, a Start menu shortcut and an entry in
+Settings › Apps (ADR 0040).
+
+```powershell
+irm https://iv44n.github.io/axon/install.ps1 | iex
+& ([scriptblock]::Create((irm https://iv44n.github.io/axon/install.ps1))) -Version v0.1.0   # a given release
+& ([scriptblock]::Create((irm https://iv44n.github.io/axon/install.ps1))) -Uninstall        # remove it again
+```
+
+The installer is [`scripts/get.ps1`](scripts/get.ps1) (`AXON_VERSION` and `AXON_PREFIX` do what `-Version` and `-Prefix` do); from
+the release zip, `powershell -ExecutionPolicy Bypass -File axon-x86_64-windows\install.ps1`; from a checkout,
+`cargo build --release` and then `powershell -ExecutionPolicy Bypass -File scripts\install.ps1`.
+
+**Linux, a released binary** (no Rust needed): the installer downloads `axon-<arch>-linux.tar.gz` from the GitHub release, checks its
 SHA-256 and runs the `install.sh` inside it, which puts the same files as a source install under the prefix.
 
 ```sh
@@ -44,7 +59,7 @@ The installer is [`scripts/get.sh`](scripts/get.sh), served by the website as `i
 what the options do. A bundle also installs by hand, from the [releases page](https://github.com/Iv44n/axon/releases):
 `tar xzf axon-x86_64-linux.tar.gz && axon-x86_64-linux/install.sh`.
 
-**From source:**
+**Linux, from source:**
 
 ```sh
 scripts/install.sh                       # build and install for your user under ~/.local
@@ -241,7 +256,7 @@ axis of a font like `JetBrainsMono[wght].ttf`; the own font reader (task 12) wil
 | `AXON_FONT_SIZE` | `15` | Font size in logical pixels |
 | `AXON_OPACITY` | `0.93` (`winit`), `0.88` (`wl`) | Opacity of the glass body (if the compositor supports transparency) |
 | `AXON_DECORATIONS` | off | `1` to use the system title bar (`winit` fallback only) |
-| `AXON_BACKEND` | `wl` on Wayland, else `winit` | `wl`: own Wayland client + CPU renderer (~15 MB idle). `winit`: `winit` + `wgpu` (~150 MB idle), also the automatic fallback if `wl` cannot start |
+| `AXON_BACKEND` | `wl` on Wayland, else `winit` | `wl`: own Wayland client + CPU renderer (~18 MB idle). `winit`: `winit` + `wgpu` (~150 MB idle), also the automatic fallback if `wl` cannot start |
 | `AXON_SETTINGS` | — | A debugging aid: start with the settings panel open (screenshots, measurements) |
 | `AXON_WINDOWS` | `1` | A debugging aid: start with *n* windows (up to 9) |
 | `AXON_PANES` | `1` | A debugging aid: start with *n* terminals split in a group around the first window (up to 12) |
@@ -251,6 +266,8 @@ axis of a font like `JetBrainsMono[wght].ttf`; the own font reader (task 12) wil
 | `AXON_LIST_UI` | — | A debugging aid: start with one of the window list's screens open: `dialog`, `edit`, `menu`, `group-menu`, `strip-menu`, `rename`, `close` or `toast` (`edit` and `group-menu` need `AXON_GROUPS`) |
 | `AXON_DEMO_OVERLAY` | — | A debugging aid: start with one of the overlay kit's screens open (`field`, `list`, `menu`, `toast`, `modal`), or `palette` for the real command palette |
 | `AXON_WL_DEBUG` | — | A debugging aid: trace the Wayland protocol on stderr |
+| `AXON_SHELL` | — | Windows only: the shell to start (a path or a name on the `PATH`), instead of `pwsh`, `powershell` or `cmd` |
+| `AXON_SELFTEST` | — | A debugging aid, for CI: a folder; axon runs a real shell, types a command, changes directory, round-trips the clipboard, maximizes and restores, idles 3 s, writes `selftest.txt` and `frame.argb` (the window's pixels; `scripts/argb2png.py` makes a PNG) there and exits 0 or 1. `scripts/selftest.ps1` runs it on Windows; `.github/workflows/windows.yml` does on every push |
 
 ## Design
 
@@ -273,7 +290,9 @@ The frames are build output (`design/frames/`, `design/baseline/`, git-ignored).
 A tag `vX.Y.Z` equal to `Cargo.toml`'s version publishes a release (`.github/workflows/release.yml`, ADR 0035): it builds on
 Ubuntu 22.04 for x86_64 and aarch64, packs each with [`scripts/package.sh`](scripts/package.sh) (the binary, the icon,
 `config.example` and `install.sh`, as `axon-<arch>-linux.tar.gz` plus its `.sha256`; no version in the name, so
-`releases/latest/download/` always finds the newest) and attaches them to the GitHub release.
+`releases/latest/download/` always finds the newest) and attaches them to the GitHub release. The same tag builds `axon-x86_64-windows.zip` on `windows-latest`
+([`scripts/package.ps1`](scripts/package.ps1): `axon.exe`, the icon, `config.example` and `install.ps1`; ADR 0040), after the exe passed its own
+self-test (`AXON_SELFTEST`, below), and attaches it too.
 
 ```sh
 # bump version in Cargo.toml, commit, then
@@ -282,7 +301,7 @@ git tag v0.1.0 && git push origin v0.1.0
 
 The website is [`site/`](site/index.html): one static page, no framework and no request to other hosts. Its pictures are frames
 of the real renderer in `site/shots/`. [`scripts/site.sh`](scripts/site.sh) builds it into `target/site/` with the icon and
-`scripts/get.sh` as `install.sh` (`--serve` serves it on <http://localhost:8000>, `--shots` copies fresh frames from
+`scripts/get.sh` as `install.sh` and `scripts/get.ps1` as `install.ps1` (`--serve` serves it on <http://localhost:8000>, `--shots` copies fresh frames from
 `design/frames/`); `.github/workflows/pages.yml` publishes it on GitHub Pages at every push to `main` that touches it
 (Settings → Pages → Source: *GitHub Actions*).
 
@@ -297,25 +316,25 @@ Measured with [`scripts/bench.sh`](scripts/bench.sh) (`--clean` adds a cold buil
 can move size or speed** (rule in `CLAUDE.md`); older numbers stay in the history table.
 
 Machine: AMD Ryzen 5 5600H (12 threads) + RTX 3050 Mobile, Ubuntu, kernel 7.0.0-44, GNOME Shell 50.1 on Wayland.
-Last measured: 2026-11-25, at `37e4cd3` plus the change that starts every window's shell in a systemd scope of its own (ADR 0038: +4.6 KB of binary, the idle numbers and the flood unchanged, 1-8 ms more to a window's first shell); the notes that follow come from the build before it, measured at `c16281a` plus the change that makes the window the same as the reference, cleaner (ADR 0036: the UI font for the title, the panel and the tabs, its character map narrowed; no status bar by default; quiet chips; the reference's margins) and the one that docks the prompt at the bottom (ADR 0037), the flood and the spinners timed against a build of the same tree drawing the rows flat, in turn under the same load (ADR 0036 was timed against `c16281a`): everything since `02c3490` (mouse reporting, the config file, the prompt chips, the blur request, the sub-pixel text rasterizer, the UI after `terminal.html`) plus the second reference: windows and groups (side panel or top tabs), split panes, the overlay kit, the docked settings panel, the command palette, the overview of windows, the group dialog, context menus, inline rename, toasts with undo, drag and drop, status icons, and the fixes after the review. The machine was not idle (a browser held the load average at 1-2.5).
+Last measured: 2026-11-25, at `870aa8e`, the Windows port (ADR 0039: the app runs over the `plat.rs` seam; `win.rs` and the Windows-only code are not in the Linux binary, which is +18.8 KB, the seam, the self-test and the PowerShell hook text; idle, memory and the flood as before, on a quiet machine: load average 0.1-0.7). The table of windows, groups and screens and the notes under the tables come from the builds before it (ADR 0036-0038, measured at `37e4cd3` and `c16281a` plus their changes) and were not measured again: nothing in the port touches them. **Windows** has its own line below: it is measured by the self-test on a GitHub Actions runner, not on this machine.
 
 **Build**
 
 | Binary | Cold release build |
 |---|---|
-| 7.9 MiB (8,319,736 bytes) | 101 s (before ADR 0036) |
+| 8.0 MiB (8,338,544 bytes) | 101 s (before ADR 0036) |
 
 **Idle memory and CPU** (`AXON_BACKEND` selects the backend; `wl` is the own Wayland client with the CPU renderer and the
 default on Wayland, `winit` is the `winit` + `wgpu` fallback)
 
 | Backend | Font | RSS | PSS | Private (anon) | CPU |
 |---|---|---|---|---|---|
-| `wl` | JetBrains Mono (default) | **19 MB** | 14 MB | 8 MB | 0 ticks / 3 s |
-| `wl` | DejaVu Sans Mono | 25 MB | 20 MB | 14 MB | 0 ticks / 3 s |
-| `wl` | Cascadia Mono NF | 61 MB | 57 MB | 50 MB | 0 ticks / 3 s |
-| `winit` | JetBrains Mono (default) | 151 MB | 58 MB | 31 MB | 0 ticks / 3 s |
-| `winit` | DejaVu Sans Mono | 156 MB | 64 MB | 37 MB | 0 ticks / 3 s |
-| `winit` | Cascadia Mono NF | 193 MB | 100 MB | 74 MB | 0 ticks / 3 s |
+| `wl` | JetBrains Mono (default) | **18 MB** | 14 MB | 8 MB | 0 ticks / 3 s |
+| `wl` | DejaVu Sans Mono | 24 MB | 19 MB | 14 MB | 0 ticks / 3 s |
+| `wl` | Cascadia Mono NF | 60 MB | 55 MB | 50 MB | 0 ticks / 3 s |
+| `winit` | JetBrains Mono (default) | 150 MB | 61 MB | 31 MB | 0 ticks / 3 s |
+| `winit` | DejaVu Sans Mono | 156 MB | 67 MB | 37 MB | 0 ticks / 3 s |
+| `winit` | Cascadia Mono NF | 192 MB | 103 MB | 74 MB | 0 ticks / 3 s |
 
 The idle target is under 50 MB of RSS. `wl` meets it with the default font (the 4 MB over the 15 MB of before are the UI
 font: 2.7 MB of its parsed outlines, narrowed to the characters an interface draws, and ~1.5 MB more of the binary's own code
@@ -342,8 +361,8 @@ A shell killed with `SIGKILL` closes only its own window; when the last one goes
 
 | Backend | Time | RSS afterwards |
 |---|---|---|
-| `wl` | 2.01 s | 40 MB |
-| `winit` | 1.28 s | 179 MB |
+| `wl` | 1.83 s | 39 MB |
+| `winit` | 1.30 s | 179 MB |
 
 For ADR 0038 (a scope per window), four rounds with the scope on and off, in turn, at load 1.0-1.3: `wl` 2.39, 1.94, 1.89 and 1.93 s on against 1.78, 1.93, 1.78 and 2.07 s off (the first pair had a cold file cache; the rest average 1.92 against 1.93 s): the same within the noise, as it must be, since the scope changes where the shell is accounted and not what it does. The `scripts/bench.sh` run above, 2.01 s, is inside that spread. Startup to a window's first shell process, six launches in turn: 57, 59 and 59 ms without the scope, 65, 61 and 60 ms with it (the `systemd-run` that makes the scope runs in the shell's own process, and its probe overlaps the window's creation).
 
@@ -357,10 +376,22 @@ run-to-run noise is about 0.1 s, and the last two are within it of the first two
 
 Not measured yet: startup time to the first frame, input latency, and a comparison with Alacritty, Ghostty and foot (not installed here).
 
+**Windows** (the self-test on GitHub's `windows-latest` runner: a 4-core VM, 1024x768, pwsh 7; idle shell, window 972x640; `.github/workflows/windows.yml`,
+ADR 0039; not this machine, and a VM's numbers move from run to run)
+
+| What | Value |
+|---|---|
+| `axon.exe` | 1.6 MiB (1,635,840 bytes): no `wgpu` or `winit` in it |
+| The release zip | 0.83 MB (`axon-x86_64-windows.zip`) |
+| Idle CPU | 0 ms in 3 s (the self-test fails above 150 ms) |
+| Idle memory (working set, the process alone) | 30 MB: Windows counts the pages of `user32`, `gdi32` and the other system libraries the window needs |
+| The self-test (a command typed and its output read, a directory change, clipboard, maximize and restore) | passes in under 2 s of steps |
+
 **History** (binary size and idle RSS with the default font; newest first)
 
 | Date | Change | Binary | Idle RSS `winit` | Idle RSS `wl` |
 |---|---|---|---|---|
+| 2026-11-25 | The Windows port (ADR 0039): `plat.rs` seam, `win.rs`, PowerShell hook, `fallback.rs` split out of `main.rs`, the self-test; Linux numbers as before (flood 1.83 s, 0 ticks idle); Windows exe 1.6 MiB, 30 MB idle, 0 CPU (CI runner) | 8,338,544 B (+18.8 KB) | 150 MB | 18 MB |
 | 2026-11-25 | Every window's shell in a systemd scope of its own (ADR 0038, `[windows] scope`): `systemd-run --user --scope` execs in place, a probe runs while the window is made, off where the user manager does not answer; +4.6 KB; flood and idle the same (A/B); 1-8 ms more to a window's first shell | 8,319,736 B | 151 MB | 19 MB |
 | 2026-11-25 | The prompt docked at the bottom below a hairline (ADR 0037): `view::Fold` lays the lines on the rows, `Soft::band` draws them; +0.9 KB; flood and spinners the same as the rows drawn flat (A/B); one or two rows fewer for every program (the composer's gaps are kept) | 8,315,096 B | 151 MB | 19 MB |
 | 2026-11-25 | The same as the reference, cleaner (ADR 0036): the UI font (Inter) for the title, the panel and the tabs, its character map narrowed to ~900 characters (`cmap.rs`: 2.7 MB parsed, not ~8.5); no status bar by default; quiet chips on the live prompt, a command's status at the end of its line; 22 px margins; +11.4 KB; settings open 22 MB (was 23), overview open 18.5 MB (was 20) | 8,314,200 B | 151 MB | 19 MB |
@@ -428,9 +459,13 @@ src/
 ├─ overview.rs  the overview of windows (`Alt+O`): cards, sections, filter, keyboard and pointer, an overlay
 ├─ config.rs    the settings file: parser, writer, `axon config`, `axon shell-init`
 ├─ view.rs      grid → cells for any renderer (damage, cursor, selection); `Fold`: the prompt docked at the bottom
-├─ session.rs   Term + PTY thread
-├─ wl.rs        own Wayland client: wire protocol, window, shm buffers
-├─ wlapp.rs     the default app on wl.rs + soft.rs: windows (a group's are shown split), keyboard, pointer, clipboard, one poll loop
+├─ session.rs   Term + PTY thread; the shell of each OS (`pwsh`, `powershell`, `cmd` on Windows)
+├─ plat.rs      the platform seam: `Event`, `Key`, `Mods`, cursor shapes, `Wake`; `Plat` is `wl::Wl` or `win::Win`
+├─ wl.rs        own Wayland client: wire protocol, window, shm buffers (Linux)
+├─ win.rs       own Win32 window: layered, per-pixel alpha, own move/resize, keys, clipboard (Windows, ADR 0039)
+├─ fallback.rs  the `winit` + `wgpu` app, the X11 fallback (Linux)
+├─ wlapp.rs     the app on plat + soft.rs, on both systems: windows (a group's are shown split), keyboard, pointer, clipboard, one wait loop
+│  ├─ selftest.rs          `AXON_SELFTEST`: the app tests itself in CI
 │  ├─ groups_ui.rs         windows, groups, menus, rename and undo: what owns the shells
 │  └─ windows_overview.rs  the app's side of the overview: cards from the windows, the terminals' text for the previews
 ├─ xkb.rs       keyboard layouts through libxkbcommon (dlopen)
@@ -442,7 +477,7 @@ design/board.html   the design board (frames from scripts/design.sh)
 site/index.html     the website (GitHub Pages), built by scripts/site.sh
 ```
 
-Flow: `wl_keyboard → xkb → input → PTY → Term (alacritty) → coalesced Wakeup → View::build → soft → wl_shm buffer`.
+Flow: `wl_keyboard → xkb → input → PTY → Term (alacritty) → coalesced Wakeup → View::build → soft → wl_shm buffer` (Linux); on Windows the keys come from `win.rs` (`ToUnicodeEx`), the PTY is ConPTY and the buffer goes out with `UpdateLayeredWindow`.
 
 The architecture, dependency rules, performance budgets and modularization roadmap are documented
 as Claude Code skills in [`.claude/skills/`](.claude/skills):
@@ -466,7 +501,8 @@ Plan, decisions (ADRs), risks and measurements live in the knowledge tree at
 - Blur: a request to the compositor, not our own effect; GNOME (Mutter) offers none, so there it does nothing. Settings: fonts, opacity, blur, the prompt chips and the windows' panel (settings panel or `config.toml`); colours, shortcuts and themes are not configurable yet. The weight is synthesized.
 - Input: the chips sit above the prompt, but the line is still edited by the shell. An own input editor (Warp's "Input type") is the next step, not built yet. The chip colours are fixed; the chips are `wl` only, and zsh and fish need the `axon shell-init` line (and keep their own prompt text).
 - Windows, groups and their names are not saved between runs; a split's panes cannot be resized by dragging yet; the overview has no context menus (ADR 0033 lists what is left out on purpose).
-- Tested only on Linux/Wayland.
+- Windows (ADR 0039): not there yet are background blur, display scaling above 100 % (the window is then blurry, as on Wayland today) and prompt chips in PowerShell; `[windows] scope` is systemd's. It is verified by the self-test on a GitHub Actions runner (a real window, a real PowerShell, the installers), not yet by hand on real hardware: expect rough edges.
+- Linux is tested by hand on Wayland (GNOME); X11 only through the `winit` fallback.
 
 ## License
 

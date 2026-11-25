@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title data-i18n="meta.title">axon · a native terminal for Linux and Windows</title>
-<meta data-i18n-content="meta.desc" name="description" content="A native terminal emulator for Linux and Windows, written in Rust: its own window layer (Wayland, Win32) and a CPU renderer, 15 MB of memory and 0 % CPU when idle on Linux, windows in groups shown side by side, a command palette and prompt chips.">
+<meta data-i18n-content="meta.desc" name="description" content="A native terminal emulator for Linux and Windows, written in Rust: its own window layer (Wayland, Win32) and a CPU renderer, 18 MB of memory and 0 % CPU when idle on Linux, windows in groups shown side by side, a command palette and prompt chips.">
 <meta name="theme-color" content="#09090a">
 <meta property="og:type" content="website">
 <meta property="og:title" content="axon · a native terminal for Linux and Windows">
@@ -284,7 +284,7 @@ footer nav { font-size: 13.5px; }
   <div class="hero">
     <div class="wrap">
       <p data-i18n="hero.eyebrow" class="eyebrow">Native terminal · Linux · Windows · Rust</p>
-      <h1 data-i18n="hero.h1">A terminal that idles at <em>15&nbsp;MB</em>.</h1>
+      <h1 data-i18n="hero.h1">A terminal that idles at <em>18&nbsp;MB</em>.</h1>
       <p data-i18n="hero.lede" class="lede">axon draws itself: its own window layer (a Wayland client on Linux, a Win32 window on Windows) and a CPU
         renderer that paints only the rows that changed, with no GPU stack loaded. Windows in groups shown side by side,
         a command palette, prompt chips, and 0&nbsp;% CPU while nothing happens.</p>
@@ -325,12 +325,13 @@ footer nav { font-size: 13.5px; }
 
   <div class="wrap" id="numbers">
     <div class="stats">
-      <div class="stat"><b>15<small>MB</small></b><span data-i18n="stat.mem">memory with an idle shell</span></div>
+      <div class="stat"><b>18<small>MB</small></b><span data-i18n="stat.mem">memory with an idle shell</span></div>
       <div class="stat"><b>0<small>%</small></b><span data-i18n="stat.cpu">CPU when idle: it paints only on events</span></div>
-      <div class="stat"><b>7.9<small>MiB</small></b><span data-i18n="stat.bin">one binary: fat LTO, stripped</span></div>
-      <div class="stat"><b>1.65<small>s</small></b><span data-i18n="stat.speed">to print 100 MB of text</span></div>
+      <div class="stat"><b>8.0<small>MiB</small></b><span data-i18n="stat.bin">one binary: fat LTO, stripped</span></div>
+      <div class="stat"><b>1.83<small>s</small></b><span data-i18n="stat.speed">to print 100 MB of text</span></div>
     </div>
-    <p data-i18n="stats.note" class="stats-note">RSS on the default Wayland backend with JetBrains Mono; Ryzen 5 5600H, GNOME 50, 2026-11-25. Method and history in the
+    <p data-i18n="stats.note" class="stats-note">RSS on the default Wayland backend with JetBrains Mono; Ryzen 5 5600H, GNOME 50, 2026-11-25. On Windows, measured on a GitHub
+      runner: a 1.6&nbsp;MiB exe, 30&nbsp;MB in use and 0&nbsp;% CPU when idle. Method and history in the
       <a href="https://github.com/Iv44n/axon#benchmarks">README's benchmarks</a>.</p>
   </div>
 
@@ -603,7 +604,7 @@ footer nav { font-size: 13.5px; }
 (function () {
   var ES = {
   "meta.title": "axon · una terminal nativa para Linux y Windows",
-  "meta.desc": "Un emulador de terminal nativo para Linux y Windows, escrito en Rust: su propia capa de ventanas (Wayland, Win32) y un renderizador por CPU, 15 MB de memoria y 0 % de CPU en reposo en Linux, ventanas en grupos mostradas lado a lado, una paleta de comandos y chips en el prompt.",
+  "meta.desc": "Un emulador de terminal nativo para Linux y Windows, escrito en Rust: su propia capa de ventanas (Wayland, Win32) y un renderizador por CPU, 18 MB de memoria y 0 % de CPU en reposo en Linux, ventanas en grupos mostradas lado a lado, una paleta de comandos y chips en el prompt.",
   "nav.sections": "Secciones",
   "nav.features": "Funciones",
   "nav.numbers": "Cifras",
@@ -611,7 +612,7 @@ footer nav { font-size: 13.5px; }
   "nav.shortcuts": "Atajos",
   "lang.group": "Idioma",
   "hero.eyebrow": "Terminal nativa · Linux · Windows · Rust",
-  "hero.h1": "Una terminal que en reposo usa <em>15&nbsp;MB</em>.",
+  "hero.h1": "Una terminal que en reposo usa <em>18&nbsp;MB</em>.",
   "os.group": "Sistema operativo",
   "hero.lede": "axon se dibuja a sí mismo: su propia capa de ventanas (un cliente Wayland en Linux, una ventana Win32 en Windows) y un renderizador por CPU que pinta solo las filas que cambiaron, sin cargar ninguna pila de GPU. Ventanas en grupos mostradas lado a lado, una paleta de comandos, chips en el prompt y 0&nbsp;% de CPU mientras no pasa nada.",
   "hero.bar": "instalación",
@@ -624,7 +625,7 @@ footer nav { font-size: 13.5px; }
   "stat.cpu": "de CPU en reposo: solo pinta ante eventos",
   "stat.bin": "un solo binario: LTO completo, sin símbolos",
   "stat.speed": "para imprimir 100 MB de texto",
-  "stats.note": "RSS con el backend Wayland por defecto y JetBrains Mono; Ryzen 5 5600H, GNOME 50, 2026-11-25. Método e historial en los <a href=\"https://github.com/Iv44n/axon#benchmarks\">benchmarks del README</a>.",
+  "stats.note": "RSS con el backend Wayland por defecto y JetBrains Mono; Ryzen 5 5600H, GNOME 50, 2026-11-25. En Windows, medido en un runner de GitHub: un exe de 1,6&nbsp;MiB, 30&nbsp;MB en uso y 0&nbsp;% de CPU en reposo. Método e historial en los <a href=\"https://github.com/Iv44n/axon#benchmarks\">benchmarks del README</a>.",
   "feat.eyebrow": "Funciones",
   "feat.h2": "Cristal tranquilo, un acento ámbar y las herramientas que buscas.",
   "feat.lede": "Cristal oscuro translúcido con líneas finas en lugar de paneles; cada píxel del marco se calcula, sin imágenes. El resto va de moverte rápido entre muchas shells.",

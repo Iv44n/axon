@@ -9,7 +9,7 @@ related: [../decisions/core/0002-text-fontdue-atlas.md, ../performance/measureme
 **Risk 1, portability:** `gpu.rs` looks for the primary font in `AXON_FONT`,
 `~/.local/share/fonts` and hardcoded Debian/Ubuntu paths. Fallback fonts (DejaVu, Noto
 Symbols, Noto CJK) are only looked up in hardcoded paths (`/usr/share/fonts/...`). On other
-distributions, macOS or Windows they are not found. `fontdue` does not render color emoji.
+distributions or macOS they are not found (Windows has its own list since 0039: `%SystemRoot%\Fonts`, Segoe UI Symbol, MS Gothic, Microsoft YaHei, Malgun Gothic). `fontdue` does not render color emoji.
 
 **Risk 2, cost of a font:** `fontdue` parses every glyph when a font is loaded. Measured
 2026-11-22: Cascadia Mono NF 45 MB, Noto Sans CJK 314 MB and 624 ms. Loading all fonts at

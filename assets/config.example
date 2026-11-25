@@ -58,7 +58,8 @@
 # What goes on the line above your prompt. "shell" leaves the prompt as your shell draws it. "chips" puts a
 # row of context chips (time, user, directory, git branch...) there, right above where you type: the shell
 # still edits the line, axon adds the chips. axon starts bash with the hook it needs; for zsh and fish (or a
-# bash whose rc file replaces PROMPT_COMMAND) add one line to the shell's rc file:
+# bash whose rc file replaces PROMPT_COMMAND) add one line to the shell's rc file (on Windows, in PowerShell, the
+# chips are not there yet: the setting is kept but draws nothing):
 #   eval "$(axon shell-init bash)"        # zsh: eval "$(axon shell-init zsh)"; fish: axon shell-init fish | source
 # mode = "shell"
 

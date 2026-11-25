@@ -40,7 +40,7 @@ Done for the `wl` backend: `mouse.rs` is the pure encoder (`encode(mode, Event, 
 `TermEvent` arrives through `Ev::Term` in `user_event`. Add an arm there; keep the action off the PTY thread.
 
 ## New platform
-- Windows/macOS: `alacritty_terminal::tty` already abstracts the PTY; put `platform::wayland` in `main.rs` behind `#[cfg]`, and adjust the font list in `Fonts::new`.
+- Windows is done ([0039](../../../knowledge/decisions/core/0039-windows-port.md)): `win.rs` is the window layer, `plat.rs` the seam. macOS: the same: a window layer that gives `wlapp.rs` the `Plat` methods, a `Wake`, the keys as `plat::Key` (X11 keysyms for the special ones), the shell in `session.rs`, the font folders in `font.rs`; `alacritty_terminal::tty` already abstracts the PTY. Check `cargo check --target <triple>` first; a platform you cannot run needs a CI job that runs `AXON_SELFTEST` (`.github/workflows/windows.yml`).
 - Change `PresentMode`/alpha only with evidence.
 
 ## Definition of done for any change

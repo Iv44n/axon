@@ -28,7 +28,10 @@ poll wakes wlapp ─► View::build ─► soft.rs rows ─► wl_shm buffer ─
 
 | Module | Responsibility | May depend on |
 |---|---|---|
-| `main.rs` | winit app, `State` (window+session+mouse); picks the backend | all |
+| `main.rs` | entry: `config` commands, then the platform's app: `wlapp::run` (Windows; Linux on Wayland) or `fallback::run` (Linux, X11 or no Wayland) | all |
+| `fallback.rs` | the `winit` + `wgpu` app (`State`: window+session+mouse), Linux only, until X11 has its own client | all |
+| `plat.rs` | the platform seam ([0039](../../../knowledge/decisions/core/0039-windows-port.md)): `Event`, `Key`, `Mods`, cursor shapes, `Wake`, and `Plat` = `wl::Wl` or `win::Win`; `wlapp.rs` sees only these | `xkb`/`win` (aliased) |
+| `win.rs` | own Win32 window (Windows): layered, per-pixel alpha (`UpdateLayeredWindow`), own move/resize/maximize, `ToUnicodeEx` keys, clipboard, `MsgWaitForMultipleObjectsEx` loop; also `process_cwd`, `locale_name`, `attach_console` | `windows-sys`, `chrome`, `plat` |
 | `cell.rs` | `Cell`, `F_*` flags, `T_*` special tiles, `pack`, the `Glyphs` trait | bytemuck |
 | `font.rs` | `Fonts` (fallbacks, rasterizing), `GlyphTable`, special tile bitmaps; `UiFont::shared` hands the window (`Soft`, which holds it from its first frame), the settings panel and the overlays one parsed proportional font, read through `cmap::narrow` ([0036](../../../knowledge/decisions/interface/0036-the-reference-cleaner.md)) | fontdue, `cmap` |
 | `cmap.rs` | a font file with its character map narrowed to what an interface draws (`narrow`, `ui_char`): own reader of `cmap` formats 4 and 12, writes one format 12 table, so `fontdue` parses ~900 outlines instead of ~2 900 (Inter) | - |
@@ -63,7 +66,8 @@ poll wakes wlapp ─► View::build ─► soft.rs rows ─► wl_shm buffer ─
 | `view.rs` | grid -> cells: `View::build(term, focused, &mut impl Backend)`, damage, cursor and selection rows; `Fold` lays the lines on the rows (the composer docked at the bottom, ADR 0037; flat for the alternate screen and for a backend that does not dock) and maps rows to lines and back | `cell`, `palette`, alacritty |
 | `session.rs` | `Term` + PTY thread (`spawn`, `resize`), `grid_size`; the shell in a systemd scope of its own (`scope_args`, `scope_probe` / `ScopeProbe::works`, ADR 0038: `systemd-run --user --scope` execs in place, so the pid is the shell's) | alacritty |
 | `wl.rs` | own Wayland client: wire protocol, `xdg_toplevel`, `wl_shm` buffers, frame callbacks, `wl_seat` pointer + keyboard, cursor shape, `wl_data_device` clipboard | `rustix` |
-| `wlapp.rs` | the default app on `wl.rs` + `soft.rs` + `session.rs`: windows (`Win`, one `Pane` = one shell each; a group's windows are shown side by side, `Shown`/`shown()`: ADR 0034), keyboard to the focused pane, pointer to the pane under it, selection, clipboard; one blocking `poll` loop; routes keys, pointer and wheel to `overlay::Stack` first (`overlay_owns`, `overlay_reply`). `wlapp/groups_ui.rs` (child module) is `impl App` for windows, groups, menus, rename and undo: `spawn_win`, `close_wins`, `open_group_dialog`, `menu_ran`, `start_rename` | all of the above |
+| `wlapp.rs` | the app on `plat::Plat` (`wl.rs` on Linux, `win.rs` on Windows) + `soft.rs` + `session.rs`: windows (`Win`, one `Pane` = one shell each; a group's windows are shown side by side, `Shown`/`shown()`: ADR 0034), keyboard to the focused pane, pointer to the pane under it, selection, clipboard; one blocking `poll` loop; routes keys, pointer and wheel to `overlay::Stack` first (`overlay_owns`, `overlay_reply`). `wlapp/groups_ui.rs` (child module) is `impl App` for windows, groups, menus, rename and undo: `spawn_win`, `close_wins`, `open_group_dialog`, `menu_ran`, `start_rename` | all of the above |
+| `wlapp/selftest.rs` | `AXON_SELFTEST=<dir>`: the app tests itself (shell, directory, clipboard, maximize, idle CPU and memory) and writes a report and its frame; CI uses it | `wlapp` |
 | `wlapp/windows_overview.rs` | the app's side of the overview, a child of `wlapp.rs` (sees `App`, `Win`, `Pane`): `Alt+O`, `sync_overview` (cards from the windows each frame), `overview_ran` (what a click asked), `AppGrid` (the `overlay::Grid` that reads a pane's last rows with `try_lock_unfair`, so a frame never waits for a terminal that is not on screen, and paints them in the grid's font) | `wlapp`, `overview`, `overlay` |
 | `xkb.rs` | keyboard layouts: `libxkbcommon` through `dlopen`, keymap text → keysym + text, compose | libc only |
 | `input.rs` | `encode_key(xkb key)` and the winit `encode` → xterm bytes | `xkb`, winit (until stage E), alacritty `TermMode` |
@@ -101,8 +105,7 @@ Planned features and where they live:
 - Mouse reporting (xterm 1000/1006): `mouse.rs` (encoding, done) + `wlapp.rs` (capture).
 - Ligatures/color emoji: `axon-render` (second RGBA atlas); `Cell` gains a flag bit.
 - Scrollback search, hyperlinks (OSC 8): `view` (highlighting) + `session` (queries to `Term`).
-- Cross-platform: only `app` (winit) and `session` (`tty` already abstracts Windows/Unix). `wayland` in
-  `main.rs` (`with_name`) must sit behind `#[cfg(target_os = "linux")]`.
+- Cross-platform: done for Windows ([0039](../../../knowledge/decisions/core/0039-windows-port.md)): the app is platform-neutral over `plat.rs`; a new platform is a new `Plat` (a window layer with the methods `wlapp.rs` calls: `wait_wake`, `read_events`, `framebuffer`, `present`, `set_clipboard`, ...), its `Wake`, and the shell in `session.rs`. Nothing but `win.rs`, `wl.rs`, `xkb.rs`, `fallback.rs`, `gpu.rs` and a few `#[cfg]` blocks in `session.rs`, `context.rs`, `font.rs`, `config.rs`, `i18n.rs` knows the system.
 
 ## When to update this skill
 Every time a module is added or a dependency rule changes. Keep the table and the diagram up to date.
