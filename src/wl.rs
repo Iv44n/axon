@@ -44,6 +44,7 @@ pub mod cursor {
     pub const DEFAULT: u32 = 1;
     pub const POINTER: u32 = 4;
     pub const TEXT: u32 = 9;
+    pub const GRABBING: u32 = 17;
     pub const E_RESIZE: u32 = 18;
     pub const N_RESIZE: u32 = 19;
     pub const NE_RESIZE: u32 = 20;

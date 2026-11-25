@@ -28,7 +28,7 @@ use crate::{
     i18n::{self, Lang},
     palette, panes, session,
     settings::{self, Settings},
-    side::Status,
+    side::{self, Status},
     soft::{Dock, Slot, Soft, Target, UNFOCUSED},
     view::View,
 };
@@ -151,6 +151,42 @@ fn prefs(page: settings::Page, sel: usize, hover: settings::Hit) -> Option<Prefs
     Some(Prefs { page, sel, hover, typing: "", hold: None, blur: (false, true), windows: WindowsCfg::default(), scroll: 0, focus: true, tabs: false })
 }
 
+/// Where the pointer is in a drag scene: over a window's row or tab, or a group's header or chip, at a fraction of
+/// its box (across the panel, along the tabs), or past the last of the list.
+#[derive(Clone, Copy)]
+enum Over {
+    Win(usize, f32),
+    Group(usize, f32),
+    Blank,
+}
+
+/// A window or group being dragged in the list, and where the pointer is: the drop's mark is what the real
+/// `Layout::target` and `mark` say of that spot.
+#[derive(Clone, Copy)]
+struct DragScene {
+    grab: crate::dnd::Grab,
+    over: Over,
+}
+
+/// What the scenes of the list of windows add to the board's made-up session (arcton: three windows, servidor
+/// and pruebas among them; "~" in none; docs: one): the tabs list the groups, the first group is folded, what
+/// each window says about its commands, how far the spinners have turned, and a drag in progress.
+#[derive(Clone, Copy)]
+struct ListScene {
+    grouped_tabs: bool,
+    fold0: bool,
+    status: [Status; 5],
+    phase: f32,
+    drag: Option<DragScene>,
+    /// After painting the list at `phase`, turn the spinners to this phase the way the app does between full paints.
+    respin: Option<f32>,
+}
+
+const NO_LIST: ListScene = ListScene { grouped_tabs: false, fold0: false, status: [Status::Idle; 5], phase: 0.125, drag: None, respin: None };
+
+/// The reference's session: servidor runs a command, pruebas failed one.
+const BUSY: [Status; 5] = [Status::Idle, Status::Running, Status::Failed, Status::Idle, Status::Idle];
+
 struct Scene {
     name: &'static str,
     label: &'static str,
@@ -178,6 +214,7 @@ struct Scene {
     /// A window's name being edited in its row: the window, the text, and whether it is all selected (else the caret
     /// is at its end).
     edit: Option<(usize, &'static str, bool)>,
+    list: ListScene,
 }
 
 /// What the bar says in the board's scenes: made-up values, the same on every machine.
@@ -219,6 +256,7 @@ fn scenes() -> Vec<Scene> {
         folded: false,
         panes: None,
         edit: None,
+        list: NO_LIST,
         lang: Lang::En,
     };
     let bar = |chips: &[Chip]| Some((sample_context(), chips.to_vec()));
@@ -325,6 +363,19 @@ fn scenes() -> Vec<Scene> {
         Scene { panes: split(4, panes::Kind::Cols, 2, None), side: Some((TabsPos::Top, Some(crate::side::Part::Row(0)))), bar: chips3(), ..base("panes-tabs-top", "Windows as tabs: the first says how many panes it has", "panes", Ui { side: 0, ..Ui::IDLE }) },
         Scene { panes: split(3, panes::Kind::Grid, 1, None), side: Some((TabsPos::Left, None)), bar: chips3(), lang: Lang::Es, ..base("panes-es", "Panes in Spanish: the rows of the panel say Panel n", "panes", side_ui) },
         Scene { panes: split(2, panes::Kind::Cols, 0, None), bar: chips3(), ..base("panes-no-panel", "Two panes with the panel hidden (Alt+B)", "panes", Ui { side: 1, ..Ui::IDLE }) },
+        Scene { side: Some((TabsPos::Left, None)), list: ListScene { status: BUSY, ..NO_LIST }, ..base("status-side", "Status icons in the panel: the prompt (idle), a ring that turns (a command runs), a red dot (the last command failed); the cyan dot is output that came while it was hidden", "status", side_ui) },
+        Scene { side: Some((TabsPos::Left, None)), list: ListScene { status: BUSY, phase: 0.6, ..NO_LIST }, ..base("status-side-turned", "The same a little later: the ring's bright quarter has gone round", "status", side_ui) },
+        Scene { side: Some((TabsPos::Left, Some(side::Part::Head(0)))), folded: true, list: ListScene { fold0: true, status: BUSY, ..NO_LIST }, ..base("status-folded", "A folded group shows the window on screen, and its dot turns while a window in it runs a command (the other group is folded too, idle)", "status", side_ui) },
+        Scene { side: Some((TabsPos::Top, None)), list: ListScene { grouped_tabs: true, status: BUSY, ..NO_LIST }, ..base("tabs-top-groups", "Groups in the tabs: a container tinted with the group's colour, its chip (dot, name, count), the tab on screen at 16 % of the colour; status icons in the tabs", "tabs", Ui { side: 0, ..Ui::IDLE }) },
+        Scene { side: Some((TabsPos::Top, Some(side::Part::Head(0)))), list: ListScene { grouped_tabs: true, fold0: true, status: BUSY, ..NO_LIST }, ..base("tabs-top-folded", "A folded group at the top keeps only the window on screen; the pointer is over its chip; the ring turns because a hidden window runs a command", "tabs", Ui { side: 0, ..Ui::IDLE }) },
+        Scene { panes: split(2, panes::Kind::Cols, 1, None), side: Some((TabsPos::Top, Some(side::Part::Row(1)))), list: ListScene { grouped_tabs: true, status: BUSY, ..NO_LIST }, ..base("tabs-top-badge", "A window of two panes says so in its tab at the top (the panel lists them as rows instead)", "tabs", Ui { side: 0, ..Ui::IDLE }) },
+        Scene { side: Some((TabsPos::Left, None)), list: ListScene { drag: Some(DragScene { grab: crate::dnd::Grab::Win(3), over: Over::Win(1, 0.2) }), ..NO_LIST }, ..base("dnd-side-before", "Dragging a window in the panel: it stays at 40 %, its ghost follows the pointer, a 2 px accent line says it would go before servidor, in its group", "drag", side_ui) },
+        Scene { side: Some((TabsPos::Left, None)), list: ListScene { drag: Some(DragScene { grab: crate::dnd::Grab::Win(3), over: Over::Group(0, 0.5) }), ..NO_LIST }, ..base("dnd-side-into", "Over a group's header: a 2 px ring in the group's colour, the window would go into the group", "drag", side_ui) },
+        Scene { side: Some((TabsPos::Left, None)), list: ListScene { drag: Some(DragScene { grab: crate::dnd::Grab::Group(0), over: Over::Group(1, 0.9) }), ..NO_LIST }, ..base("dnd-side-group", "Dragging a group: its header is dimmed and the line is after the block of the group it is over", "drag", side_ui) },
+        Scene { side: Some((TabsPos::Left, None)), list: ListScene { drag: Some(DragScene { grab: crate::dnd::Grab::Win(0), over: Over::Blank }), ..NO_LIST }, ..base("dnd-side-end", "Over the empty part of the panel: out of its group, last", "drag", side_ui) },
+        Scene { side: Some((TabsPos::Top, None)), list: ListScene { grouped_tabs: true, drag: Some(DragScene { grab: crate::dnd::Grab::Win(3), over: Over::Win(1, 0.2) }), ..NO_LIST }, ..base("dnd-tabs-before", "Dragging a tab: a vertical accent line before the tab it is over, which would take its group", "drag", Ui { side: 0, ..Ui::IDLE }) },
+        Scene { side: Some((TabsPos::Top, None)), list: ListScene { grouped_tabs: true, drag: Some(DragScene { grab: crate::dnd::Grab::Win(3), over: Over::Group(0, 0.5) }), ..NO_LIST }, ..base("dnd-tabs-into", "A tab over a group's chip: the ring in the group's colour", "drag", Ui { side: 0, ..Ui::IDLE }) },
+        Scene { side: Some((TabsPos::Top, None)), list: ListScene { grouped_tabs: true, drag: Some(DragScene { grab: crate::dnd::Grab::Group(0), over: Over::Group(1, 0.8) }), ..NO_LIST }, ..base("dnd-tabs-group", "Dragging a group by its chip: the line is after the group it is over", "drag", Ui { side: 0, ..Ui::IDLE }) },
         Scene { font: font(300, 0.0, 1.0), ..base("font-light", "Weight 300 (light)", "font", Ui::IDLE) },
         Scene { font: font(500, 0.0, 1.0), ..base("font-medium", "Weight 500 (medium)", "font", Ui::IDLE) },
         Scene { font: font(400, 1.0, 1.0), ..base("font-spaced", "Letter spacing +1 px", "font", Ui::IDLE) },
@@ -385,8 +436,11 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
         bar::Chips::default().frame(s.bar.is_some(), true, &demo_history(&ctx), &chips, &mut term, &mut View::new(), &mut soft, &mut fb, (w, h), s.ui.focused);
     }
     if let Some((pos, hover)) = s.side {
-        let item = |title: &str, selected, unread| crate::side::Item { title: title.to_string(), selected, unread, badge: 0, panes: Vec::new() };
+        let item = |title: &str, selected, unread| crate::side::Item { title: title.to_string(), selected, unread, badge: 0, status: Status::Idle, panes: Vec::new() };
         let mut items = [item("arcton", true, false), item("servidor", false, false), item("pruebas", false, true), item("~", false, false), item("notas", false, false)];
+        for (it, st) in items.iter_mut().zip(s.list.status) {
+            it.status = st;
+        }
         // The first window's panes: rows under it in the panel, a number in its tab at the top.
         let pane_n = s.panes.map_or(1, |p| p.n);
         if let Some(ps) = s.panes.filter(|p| p.n > 1) {
@@ -394,29 +448,70 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
             items[0].badge = if pos == TabsPos::Top { ps.n } else { 0 };
         }
         // The reference's session: a group of three windows, one in none, and a folded group of one.
-        let group = |name: &str, color, collapsed, count| crate::side::GroupItem { name: name.to_string(), color, collapsed, count };
-        let groups = [group("arcton", 1, false, 2 + pane_n), group("docs", 3, s.folded, 1)];
-        let entries = crate::side::entries(&[Some(0), Some(0), Some(0), None, Some(1)], &[false, s.folded], &[pane_n, 1, 1, 1, 1]);
+        let group = |name: &str, color, collapsed, count, busy| crate::side::GroupItem { name: name.to_string(), color, collapsed, count, busy };
+        // A folded group is busy while a window in it runs a command: the windows 0 to 2 are in the first, 4 in the second.
+        let running = |ws: &[usize]| ws.iter().any(|&w| s.list.status[w] == Status::Running);
+        let groups = [group("arcton", 1, s.list.fold0, 2 + pane_n, s.list.fold0 && running(&[0, 1, 2])), group("docs", 3, s.folded, 1, s.folded && running(&[4]))];
+        let win_group = [Some(0), Some(0), Some(0), None, Some(1)];
+        let folds = [s.list.fold0, s.folded];
         let (ox, oy) = soft.origin();
         // A window being renamed has no title under its field.
         if let Some((wi, ..)) = s.edit {
             items[wi].title.clear();
         }
         let edit = s.edit.map(|(wi, text, all)| (wi, text, text.chars().count(), all.then(|| (0, text.chars().count()))));
-        if let (TabsPos::Top, _) | (_, None) = (pos, soft.side_rect()) {
-            let (x0, x1) = (chrome::TITLE_CLEAR as i32 - 8, W as i32 - 50);
+        let top = matches!((pos, soft.side_rect()), (TabsPos::Top, _) | (_, None));
+        let entries = if top && !s.list.grouped_tabs {
+            // The older scenes: one tab for each window, none grouped.
+            (0..items.len()).map(|win| crate::side::Entry::Row { win, grouped: false }).collect()
+        } else if top {
+            crate::side::top_entries(&win_group, &folds, 0)
+        } else {
+            crate::side::entries(&win_group, &folds, &[pane_n, 1, 1, 1, 1], Some(0))
+        };
+        let (x0, x1) = (chrome::TITLE_CLEAR as i32 - 8, W as i32 - 50);
+        let panel = soft.side_rect().map(|rect| (rect, ((rect.0 - ox) as i32, (rect.1 - oy) as i32, (rect.2 - rect.0) as i32, (rect.3 - rect.1) as i32)));
+        // The drag, if any: the pointer at its place in the list, and what the real layout makes of it.
+        let layout = match panel {
+            Some((_, b)) if !top => crate::side::Layout::Side { x0: b.0, y0: b.1, w: b.2, entries: &entries },
+            _ => crate::side::Layout::Top { x0, x1, entries: &entries, groups: &groups, cw: crate::side::chip_cw(&soft) },
+        };
+        let drag = s.list.drag.and_then(|d| {
+            let r = layout.grab_box(d.grab)?;
+            let at = |b: (i32, i32, i32, i32), f: f32| if top { (b.0 as f32 + b.2 as f32 * f, b.1 as f32 + b.3 as f32 / 2.0) } else { (b.0 as f32 + b.2 as f32 / 2.0, b.1 as f32 + b.3 as f32 * f) };
+            let pointer = match d.over {
+                Over::Win(w, f) => at(layout.grab_box(crate::dnd::Grab::Win(w))?, f),
+                Over::Group(g, f) => at(layout.grab_box(crate::dnd::Grab::Group(g))?, f),
+                Over::Blank => match panel {
+                    Some((_, b)) if !top => ((b.0 + b.2 / 2) as f32, (b.1 + b.3 - 60) as f32),
+                    _ => ((x1 - 40) as f32, r.1 as f32 + 10.0),
+                },
+            };
+            let target = layout.target(d.grab, pointer.0, pointer.1);
+            let region = match panel {
+                Some((_, b)) if !top => b,
+                _ => (x0, r.1, x1 - x0, r.3),
+            };
+            let off = (24.0f32.min(r.2 as f32 / 2.0), r.3 as f32 / 2.0);
+            Some(side::Dragging { grab: d.grab, target, at: side::ghost_at(region, (r.2, r.3), pointer, off) })
+        });
+        let look = side::Look { hover, drag, phase: s.list.phase };
+        if top {
             soft.clear_rect(&mut fb, (ox + x0 as usize, oy, ox + x1 as usize, oy + chrome::TITLE_H));
-            crate::side::paint_top(&soft, &mut fb, (x0, x1), &items, hover, &mut Vec::new());
+            crate::side::paint_top(&soft, &mut fb, (x0, x1), &entries, &groups, &items, look, &mut Vec::new());
             if let Some((wi, text, caret, sel)) = edit {
-                crate::side::paint_rename(&soft, &mut fb, crate::side::Layout::Top { x0, x1, n: items.len() }, wi, &crate::side::Edit { text, caret, sel }, hover, &mut Vec::new());
+                crate::side::paint_rename(&soft, &mut fb, layout, wi, &crate::side::Edit { text, caret, sel }, hover, &mut Vec::new());
             }
-        } else if let Some(rect) = soft.side_rect() {
-            let b = ((rect.0 - ox) as i32, (rect.1 - oy) as i32, (rect.2 - rect.0) as i32, (rect.3 - rect.1) as i32);
+        } else if let Some((rect, b)) = panel {
             soft.clear_rect(&mut fb, rect);
-            crate::side::paint(&soft, &mut fb, b, pos == TabsPos::Left, &i18n::tr(i18n::Str::Windows), &entries, &groups, &items, hover, &mut Vec::new());
+            crate::side::paint(&soft, &mut fb, b, pos == TabsPos::Left, &i18n::tr(i18n::Str::Windows), &entries, &groups, &items, look, &mut Vec::new());
             if let Some((wi, text, caret, sel)) = edit {
-                crate::side::paint_rename(&soft, &mut fb, crate::side::Layout::Side { x0: b.0, y0: b.1, w: b.2, entries: &entries }, wi, &crate::side::Edit { text, caret, sel }, hover, &mut Vec::new());
+                crate::side::paint_rename(&soft, &mut fb, layout, wi, &crate::side::Edit { text, caret, sel }, hover, &mut Vec::new());
             }
+        }
+        if let Some(phase) = s.list.respin {
+            let bottom = panel.map_or(0, |(_, b)| b.1 + b.3);
+            side::paint_spin(&soft, &mut fb, layout, bottom, &entries, &groups, &items, side::Look { phase, ..look });
         }
     }
     if let (Some(pf), Some(rect), Some(b)) = (&s.prefs, soft.prefs_rect(), soft.prefs_box((W, H))) {
@@ -490,6 +585,27 @@ fn incremental_repaint_matches_a_full_one() {
         View::new().build(&mut fresh_term, ui.focused, &mut Target { soft: &mut fresh, fb: &mut full, w, h });
         let diff = fb.iter().zip(&full).filter(|(a, b)| a != b).count();
         assert_eq!(diff, 0, "step {n}: {diff} pixels differ from a full repaint");
+    }
+}
+
+/// The spinners turn between full paints by painting only the rings (`side::paint_spin`): whatever the list shows,
+/// that is the frame painting everything at the new phase would give.
+#[test]
+fn turning_the_spinners_matches_painting_the_list_again() {
+    let names: Vec<&str> = scenes().iter().filter(|s| s.list.status.contains(&Status::Running) || s.panes.is_some_and(|p| p.n > 1)).map(|s| s.name).collect();
+    assert!(names.len() >= 5, "{names:?}");
+    for name in names {
+        for (from, to) in [(0.0, 0.3), (0.125, 0.7), (0.9, 0.05)] {
+            let scene = |phase, respin| {
+                let mut s = scenes().into_iter().find(|s| s.name == name).unwrap();
+                (s.list.phase, s.list.respin) = (phase, respin);
+                render(&s)
+            };
+            let (again, whole) = (scene(from, Some(to)), scene(to, None));
+            assert_eq!((again.1, again.2), (whole.1, whole.2));
+            let diff = again.0.iter().zip(&whole.0).filter(|(a, b)| a != b).count();
+            assert_eq!(diff, 0, "{name}: {diff} pixels differ after turning the spinners from {from} to {to}");
+        }
     }
 }
 

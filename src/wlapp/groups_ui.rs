@@ -564,13 +564,7 @@ impl App {
     fn rename_box(&self) -> Option<(overlay::Rect, usize, i32)> {
         let r = self.rename.as_ref()?;
         let wi = self.win_index(r.win)?;
-        let lay = if self.tabs_on_top() {
-            let (x0, x1) = tabs_span(self.w);
-            side::Layout::Top { x0, x1, n: self.wins.len() }
-        } else {
-            let (bx, by, bw, _) = self.side_box()?;
-            side::Layout::Side { x0: bx, y0: by, w: bw, entries: &self.entries }
-        };
+        let (lay, _) = self.list_layout()?;
         let b = lay.edit_rect(wi)?;
         let cw = self.soft.small(0.85).cell_w as i32;
         Some((b, side::edit_cols(b.2, cw), cw))

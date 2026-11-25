@@ -216,7 +216,7 @@ pub fn sample() -> (Vec<WinInfo>, Vec<GroupItem>) {
     let win = |title: &str, place: &str, group| WinInfo { title: title.into(), place: place.into(), group };
     (
         vec![win("arcton", "~/lab/apps/arcton", Some(0)), win("servidor", "~/lab/apps/arcton", Some(0)), win("pruebas", "~/lab/apps/arcton", Some(0)), win("~", "~", None)],
-        vec![GroupItem { name: "arcton".into(), color: 1, collapsed: false, count: 3 }],
+        vec![GroupItem { name: "arcton".into(), color: 1, collapsed: false, count: 3, busy: false }],
     )
 }
 
@@ -348,7 +348,7 @@ mod tests {
         let tenth = (0..l.total()).find(|&e| l.id(e) == Cmd::Window(9).id()).unwrap();
         assert_eq!(l.keys(tenth), "");
         // A group of one says "1 window".
-        let one = [GroupItem { name: "solo".into(), color: 0, collapsed: false, count: 1 }];
+        let one = [GroupItem { name: "solo".into(), color: 0, collapsed: false, count: 1, busy: false }];
         let l = build(&state(&wins, &one));
         let g = (0..l.total()).find(|&e| l.id(e) == Cmd::Group(0).id()).unwrap();
         assert_eq!(l.desc(g), "1 window");

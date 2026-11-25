@@ -7,6 +7,7 @@ mod config;
 mod context;
 mod ctxmenu;
 mod design;
+mod dnd;
 mod field;
 mod font;
 mod gpu;
