@@ -1,9 +1,9 @@
 # axon
 
 Native terminal emulator: **simple, minimalist, high-performance and futuristic**.
-Written in Rust, for Wayland (own client, CPU-rendered into `wl_shm`, no GPU stack) with a `winit` + `wgpu` fallback for X11 until it gets its own client (see `knowledge/decisions/0011-software-render-wl-shm.md`).
+Written in Rust, for Wayland (own client, CPU-rendered into `wl_shm`, no GPU stack) with a `winit` + `wgpu` fallback for X11 until it gets its own client (see `knowledge/decisions/core/0011-software-render-wl-shm.md`).
 
-![axon: black-and-white glass window with its shadow](assets/screenshot.png)
+![axon: a dark glass window with its shadow](assets/screenshot.png)
 
 <sub>A frame from the real renderer (`scripts/design.sh`), with alpha: what you see behind it is this page.</sub>
 
@@ -11,8 +11,10 @@ Written in Rust, for Wayland (own client, CPU-rendered into `wl_shm`, no GPU sta
 - **Zero idle usage**: no continuous redraw; it only paints when there are events (the one timer is the time chip's clock, once a minute, and only while that chip is shown).
 - **Full VT emulation** thanks to [`alacritty_terminal`](https://crates.io/crates/alacritty_terminal).
 - **Dark glass look** (after the `terminal.html` reference, ADR 0021): one rounded translucent pane with a soft shadow; a title bar and a status bar divided from the grid by hairlines, grey window buttons that turn red/yellow/green on hover, one amber accent and six clear hues (also the ANSI colours), outline chip icons and a settings panel docked beside the terminal. The frame is computed per pixel (`src/chrome.rs`), no images. On the default backend; the `winit` fallback only has the black-and-white colours.
+- **Windows, groups and panes**: one shell per window, listed in a panel at the left or right or as tabs in the title bar; windows can be put in coloured groups (a dialog with templates that open real windows with their commands typed in), renamed in place, split into panes (columns, rows or a grid), reordered and regrouped by dragging, and closed with an *Undo*; each row says what its shell is doing (the prompt, a turning ring while a command runs, a red dot when the last one failed). Right click opens the menu of whatever is under the pointer. See [Shortcuts](#shortcuts).
+- **Command palette and overview**: `Ctrl+K` lists actions, windows and groups (ranked as you type, each with its shortcut); `Alt+O` shows every window as a card with the last rows of its terminal, in a section per group, with a filter and drag and drop between groups.
 - **Prompt chips** (opt-in): a row of context chips on the line above your prompt (time, user, directory, git branch and changes, conda/venv, pyenv, Kubernetes), chosen and ordered by you. See [Prompt chips](#prompt-chips).
-- **Design board**: `design/board.html` shows frames from the real renderer over different desktops, zoomed to the pixel and compared with a baseline (see [Design](#design)).
+- **Design board**: `design/board.html` shows frames of every screen (the window, the settings panel, the panes, the palette, the overview, the group dialog and menus, in English and Spanish) from the real renderer over different desktops, zoomed to the pixel and compared with a baseline (see [Design](#design)).
 - **Small binary** (7.3 MiB, see [Benchmarks](#benchmarks)) with LTO, `panic=abort` and `strip`.
 
 ## Requirements
@@ -67,7 +69,7 @@ Always use `--release`: debug mode is much slower.
 | `Ctrl+Shift+Q` | Quit |
 | `Ctrl` + `+` / `-` / `0` | Increase / decrease / reset font size |
 | `Shift+PageUp/PageDown/Home/End` | Navigate the scrollback |
-| `Ctrl+Shift+R` | Reload `config.toml` (fonts, spacing, opacity, blur, prompt chips) |
+| `Ctrl+Shift+R` | Reload `config.toml` (fonts, spacing, opacity, blur, status bar, language, cursor, prompt chips, the windows' panel) |
 | Mouse wheel | Scroll (sends arrow keys on the alternate screen; wheel reports when the program asks for the mouse); over the tabs at the top it scrolls them, a group or a window at a time |
 | Middle click on a window's row or tab | Close the window (with the *Undo* toast) |
 | Mouse in vim, tmux, htop, less | Clicks, drags, motion and wheel go to the program; hold `Shift` to select text anyway (`wl` backend) |
@@ -198,6 +200,11 @@ clock = "12h"               # "12h" (03:48 pm) or "24h"
 cursor = "block"            # "block", "bar" or "underline" until a program asks for another (it does not blink)
 autosuggest = true          # suggest the rest of a command while typing (read and saved; the editor that shows it comes later)
 chips = ["time", "user", "env", "pyenv", "host", "dir", "branch", "changes", "kube"]   # shown left to right
+
+[windows]
+tabs = "left"               # where the list of windows lives: "left" or "right" (a panel), or "top" (tabs in the title bar)
+side = true                 # whether the panel is shown (Alt+B toggles it)
+side_width = 220            # the panel's width in pixels, 160 to 320
 ```
 
 The file is a small subset of TOML read by our own parser (`src/config.rs`): sections, `key = value`, `#` comments,
@@ -213,8 +220,15 @@ axis of a font like `JetBrainsMono[wght].ttf`; the own font reader (task 12) wil
 | `AXON_OPACITY` | `0.93` (`winit`), `0.88` (`wl`) | Opacity of the glass body (if the compositor supports transparency) |
 | `AXON_DECORATIONS` | off | `1` to use the system title bar (`winit` fallback only) |
 | `AXON_BACKEND` | `wl` on Wayland, else `winit` | `wl`: own Wayland client + CPU renderer (~14 MB idle). `winit`: `winit` + `wgpu` (~150 MB idle), also the automatic fallback if `wl` cannot start |
+| `AXON_SETTINGS` | — | A debugging aid: start with the settings panel open (screenshots, measurements) |
+| `AXON_WINDOWS` | `1` | A debugging aid: start with *n* windows (up to 9) |
+| `AXON_PANES` | `1` | A debugging aid: start with *n* panes in the first window (up to 12) |
+| `AXON_GROUPS` | — | A debugging aid: set (any value) with `AXON_WINDOWS` of 2 or more, the first two windows start in one group |
+| `AXON_RUNNING` | — | A debugging aid: every pane counts as running a command (the turning ring, the folded groups' dots) |
 | `AXON_OVERVIEW` | — | A debugging aid: start with the overview of windows open |
+| `AXON_LIST_UI` | — | A debugging aid: start with one of the window list's screens open: `dialog`, `edit`, `menu`, `group-menu`, `pane-menu`, `strip-menu`, `rename`, `close` or `toast` (`edit` and `group-menu` need `AXON_GROUPS`) |
 | `AXON_DEMO_OVERLAY` | — | A debugging aid: start with one of the overlay kit's screens open (`field`, `list`, `menu`, `toast`, `modal`), or `palette` for the real command palette |
+| `AXON_WL_DEBUG` | — | A debugging aid: trace the Wayland protocol on stderr |
 
 ## Design
 
@@ -315,6 +329,9 @@ src/
 ├─ soft.rs      CPU renderer into an ARGB framebuffer
 ├─ chrome.rs    window frame: glass look, rounded corners, title bar, buttons, shadow, hit testing
 ├─ palette.rs   the colour tokens (amber accent, six hues) and ANSI resolution
+├─ side.rs      the list of windows (panel or tabs): layout, groups, status icons, drag marks, painting
+├─ dnd.rs       drag and drop in that list: what a drop means and the new order (pure)
+├─ panes.rs     split panes of a window: layouts, focus order, the 20 x 5 minimum (pure)
 ├─ paint.rs     antialiased shapes composited into the framebuffer (settings panel, prompt chips)
 ├─ bar.rs       the prompt chips: layout, icons, painting over the reserved prompt line (grid's own font)
 ├─ i18n.rs      the interface's strings in English and Spanish (`tr`), the language setting
@@ -326,8 +343,11 @@ src/
 ├─ list.rs      filtered, scrolling list model and its painting (the palette's)
 ├─ commands.rs  what the command palette lists (actions, windows, groups) and what each entry means; pure
 ├─ picker.rs    the command palette's overlay: input row, list, footer (`Ctrl+K`)
+├─ groups.rs    groups of windows: the dialog's form check, names, colours, what a close puts back, templates (pure)
+├─ group_dialog.rs  the group dialog (`Alt+G`), an overlay
+├─ ctxmenu.rs   the context menus of a window, a group, a pane and the empty list
 ├─ menu.rs      the context menu
-├─ toast.rs     the toast
+├─ toast.rs     the toast (with an *Undo* button)
 ├─ icons.rs     the overlays' outline icons
 ├─ overlay_demo.rs  the kit's debug screens (`AXON_DEMO_OVERLAY`)
 ├─ overview.rs  the overview of windows (`Alt+O`): cards, sections, filter, keyboard and pointer, an overlay
@@ -335,12 +355,12 @@ src/
 ├─ view.rs      grid → cells for any renderer (damage, cursor, selection)
 ├─ session.rs   Term + PTY thread
 ├─ wl.rs        own Wayland client: wire protocol, window, shm buffers
-├─ wlapp.rs     the default app on wl.rs + soft.rs: keyboard, pointer, clipboard, one poll loop
+├─ wlapp.rs     the default app on wl.rs + soft.rs: windows made of panes, keyboard, pointer, clipboard, one poll loop
+│  ├─ groups_ui.rs         windows, groups, menus, rename and undo: what owns the shells
 │  └─ windows_overview.rs  the app's side of the overview: cards from the windows, the terminals' text for the previews
 ├─ xkb.rs       keyboard layouts through libxkbcommon (dlopen)
 ├─ input.rs     Keys → xterm sequences (pure)
 ├─ mouse.rs     mouse reports for programs (xterm 1000/1002/1003, SGR, UTF-8, classic; pure)
-├─ palette.rs   Black-and-white palette and ANSI color resolution
 ├─ design.rs    (tests) design board frames, own PNG encoder, incremental-repaint check
 └─ shader.wgsl  Cell and background shaders
 design/board.html   the design board (frames from scripts/design.sh)
@@ -369,6 +389,7 @@ Plan, decisions (ADRs), risks and measurements live in the knowledge tree at
 - Synthesized bold; no italics or ligatures; no color emoji.
 - Blur: a request to the compositor, not our own effect; GNOME (Mutter) offers none, so there it does nothing. Settings: fonts, opacity, blur, the prompt chips and the windows' panel (settings panel or `config.toml`); colours, shortcuts and themes are not configurable yet. The weight is synthesized.
 - Input: the chips sit above the prompt, but the line is still edited by the shell. An own input editor (Warp's "Input type") is the next step, not built yet. The chip colours are fixed; the chips are `wl` only, and zsh and fish need the `axon shell-init` line (and keep their own prompt text).
+- Windows, groups and their names are not saved between runs; panes cannot be resized by dragging yet; the overview has no context menus (ADR 0033 lists what is left out on purpose).
 - Tested only on Linux/Wayland.
 
 ## License

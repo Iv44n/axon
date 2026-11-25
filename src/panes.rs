@@ -391,6 +391,18 @@ mod tests {
     }
 
     #[test]
+    fn a_pane_of_exactly_the_minimum_is_allowed() {
+        // The smallest pane of each layout is the limit: it fits at its own size and not a pixel more either way.
+        for (kind, n) in [(Kind::Cols, 3), (Kind::Rows, 4), (Kind::Grid, 5), (Kind::Grid, 9)] {
+            let min_w = (0..n).map(|i| rect(kind, n, i, AREA).w).min().unwrap();
+            let min_h = (0..n).map(|i| rect(kind, n, i, AREA).h).min().unwrap();
+            assert!(fits(kind, n, AREA, min_w, min_h), "{kind:?} {n}: exactly the smallest");
+            assert!(!fits(kind, n, AREA, min_w + 1, min_h), "{kind:?} {n}: one pixel wider");
+            assert!(!fits(kind, n, AREA, min_w, min_h + 1), "{kind:?} {n}: one pixel taller");
+        }
+    }
+
+    #[test]
     fn the_cross_sits_at_the_top_right_inside_the_pane() {
         let r = rect(Kind::Cols, 2, 1, AREA);
         let b = close_box(r);

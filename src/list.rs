@@ -13,8 +13,6 @@
 //! (at most 60), one whose letters are found in order scores `20`, anything else is out; best first, ties in
 //! the order the entries were given, at most 40 shown (70 when there is no query). **Highlighting** is ours:
 //! the positions of the characters that matched, in the text above (`hits`), so a row can colour them.
-// The kit's API is wider than what the app uses yet: the palette, the overview and the dialogs are built on it next (ADR 0025).
-#![allow(dead_code)]
 
 use crate::{
     icons::{self, Icon},
@@ -245,11 +243,13 @@ impl List {
         self.items.len() - 1
     }
 
-    /// How many entries there are, and how many the query shows.
+    /// How many entries there are (`len` is how many the query shows).
+    #[cfg(test)]
     pub fn total(&self) -> usize {
         self.items.len()
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.shown.len()
     }
@@ -386,11 +386,13 @@ impl List {
     }
 
     /// Whether the content is taller than the viewport (a scrollbar shows).
+    #[cfg(test)]
     pub fn overflows(&self) -> bool {
         self.content_h() > self.view
     }
 
     /// The thumb of the scrollbar, `(top, height)` from the viewport's top, when there is one.
+    #[cfg(test)]
     pub fn thumb(&self) -> Option<(i32, i32)> {
         self.thumb_in(self.view)
     }

@@ -8,7 +8,7 @@ description: axon's visual language (dark glass after the terminal.html referenc
 **Principles:** dark translucent glass, rounded, one amber accent and six clear hues, hairlines instead of panes.
 The look is the `terminal.html` reference the user supplied (ADR 0021, which supersedes the black-and-white
 identity of 0012 and the no-separators rule of 0015): title bar and status bar share the glass of the grid, divided from it
-by a 1 px hairline. Decision records: `knowledge/decisions/0021` (this look), `0020` (text), `0015`, `0014` (shadow, design
+by a 1 px hairline. Decision records: `knowledge/decisions/interface/0021` (this look), `0020` (text), `0015`, `0014` (shadow, design
 board). The frame lives in `src/chrome.rs` and `src/soft.rs`; the tokens in `src/palette.rs`. **Look before and after every
 visual change** on the design board: `scripts/design.sh --baseline` (keeps the current frames), change the code,
 `scripts/design.sh`, open `design/board.html` (backdrops, 1x/2x/4x pixel zoom, baseline/split compare). Its frames come
@@ -18,7 +18,7 @@ from the real renderer.
 - Glass body `#0b0b0c` at `AXON_OPACITY` (`chrome::OPACITY` = 0.88 on `wl`); the desktop shows through. No compositor blur
   on GNOME: below ~0.85 the text of a window behind is readable through ours.
 - Text `#d9d9de`; secondary (`DIM`) `#74747d`; cursor `#f4f4f5`; selection `#4a3d27`; default background cells transparent.
-- One accent, amber `#ffb454` (`ACCENT`): the prompt `$`, slider fill, switch on, the chosen radio, "Unsaved changes", focus.
+- One accent, amber `#ffb454` (`ACCENT`): the prompt `$`, slider fill, switch on, the chosen radio, focus.
 - Hues: green `#3ddc84`, red `#ff5d5d`, magenta `#d86bdc`, yellow `#f6b73c`, blue `#6aa9ff`, cyan `#4fd6d0`: the ANSI 1-6 slots and the
   chip colours. ANSI grey (8) is `#7e7e87` (4.5:1 on the glass; `DIM` is 4.25:1, fine for chrome only).
 

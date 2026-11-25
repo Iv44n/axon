@@ -12,7 +12,7 @@ description: axon's performance budgets and rules (latency, idle CPU, throughput
 | Startup to first frame | < 100 ms |
 | Key-to-pixel latency | ≤ 1 vsync frame |
 | Throughput, `cat` of 100 MB | bound by the VT parser, not by rendering |
-| Idle RAM | < 50 MB (the metric is RSS, PSS as a second column; see `knowledge/decisions/0011`) |
+| Idle RAM | < 50 MB (the metric is RSS, PSS as a second column; see `knowledge/decisions/core/0011`) |
 | Release binary | < 10 MB |
 
 ## Hot-path rules

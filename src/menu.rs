@@ -6,8 +6,6 @@
 //!
 //! The geometry is pure (`size`, `place`, `item_at`) and tested with a fake font; the strings live in one
 //! pool with spans and the items are one flat array of small structs.
-// The kit's API is wider than what the app uses yet: the palette, the overview and the dialogs are built on it next (ADR 0025).
-#![allow(dead_code)]
 
 use std::time::Instant;
 
@@ -124,15 +122,18 @@ impl Menu {
         self
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.items.len()
     }
 
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
+    /// What each item runs and how it is flagged, in order (separators and headings are not items).
+    #[cfg(test)]
+    pub fn entries(&self) -> Vec<(u32, u8)> {
+        self.items.iter().filter(|i| i.kind == Kind::Item).map(|i| (i.id, i.flags)).collect()
     }
 
+    #[cfg(test)]
     pub fn selected(&self) -> Option<usize> {
         self.sel
     }

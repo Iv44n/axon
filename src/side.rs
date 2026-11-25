@@ -1453,10 +1453,10 @@ pub fn paint_rename(soft: &Soft, fb: &mut [u32], lay: Layout, win: usize, ed: &E
         }
         let x = b.0 + EDIT_PAD + (ed.caret - first.min(ed.caret)) as i32 * cw;
         p.shape(x, cy - ch / 2, x + 1, cy - ch / 2 + ch, palette::unit(palette::FG), 1.0, &|_, _| 1.0);
-        if !over_row(hover, win) {
-            if let Some(k) = lay.entries().iter().position(|e| matches!(e, Entry::Row { win: w, .. } if *w == win)) {
-                cross(&mut p, close_box(lay.rect(k)), false);
-            }
+        if !over_row(hover, win)
+            && let Some(k) = lay.entries().iter().position(|e| matches!(e, Entry::Row { win: w, .. } if *w == win))
+        {
+            cross(&mut p, close_box(lay.rect(k)), false);
         }
     }
     let shown: String = ed.text.chars().skip(first).take(cols).collect();
@@ -1606,7 +1606,7 @@ mod tests {
         let tight = Layout::Top { x0: 118, x1: 700, entries: &e8, groups: &[], cw: 8, first: 0 };
         assert!(tight.rect(0).2 < TAB_W && tight.rect(0).2 >= TAB_MIN);
         // Tabs sit inside the title bar, above its hairline.
-        assert!(a.1 >= 0 && a.1 + a.3 <= TITLE_H as i32 - 1);
+        assert!(a.1 >= 0 && a.1 + a.3 < TITLE_H as i32);
         assert_eq!(wide.hit((a.0 + 20) as f32, (a.1 + 10) as f32), Some(Part::Row(0)));
         assert_eq!(wide.hit((a.0 + 20) as f32, 1.0), None);
     }

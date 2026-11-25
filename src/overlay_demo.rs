@@ -1,10 +1,9 @@
 //! The kit's own screens: a dialog with a field (`AXON_DEMO_OVERLAY=modal`), the three looks of a field
 //! (`field`), a palette-shaped picker (`list`), a context menu (`menu`) and a toast (`toast`). They exist to
 //! see and try each primitive in the real window and on the design board, and they are the usage example
-//! for the next screens: the palette is the `Picker` with real entries (`commands::build`, ADR 0027), the group
-//! dialog is a `Dialog` with more rows, a window's menu is a `Menu` with its commands (ADR 0025).
-// The kit's API is wider than what the app uses yet: the palette, the overview and the dialogs are built on it next (ADR 0025).
-#![allow(dead_code)]
+//! for new screens: the palette is the `Picker` with real entries (`commands::build`, ADR 0027), the group dialog
+//! is a `Dialog` with more rows (`group_dialog.rs`, ADR 0029), a window's menu is a `Menu` with its commands
+//! (`ctxmenu.rs`).
 
 use std::time::Instant;
 
@@ -15,7 +14,7 @@ use crate::{
     input::sym,
     list::{Entry, List, Mark},
     menu::{self, Menu},
-    overlay::{BTN_H, Click, Clicks, Cx, Cursor, Fade, Geo, Ink, Modal, Out, Overlay, PX_HINT, PX_TITLE, Rect, Stack, button, button_width, dim, fg, inside},
+    overlay::{BTN_H, Click, Clicks, Cx, Cursor, Geo, Ink, Modal, Out, Overlay, PX_HINT, PX_TITLE, Rect, Stack, button, button_width, dim, fg, inside},
     paint::{Paint, WHITE},
     picker::Picker,
     xkb::Key,
@@ -95,8 +94,9 @@ impl Dialog {
     }
 
     /// Already faded in (the design board's frames).
+    #[cfg(test)]
     pub fn shown(mut self) -> Dialog {
-        self.modal.fade = Fade::full();
+        self.modal.fade = crate::overlay::Fade::full();
         self
     }
 

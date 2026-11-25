@@ -1,4 +1,4 @@
-//! The app's side of the overview of windows (`overview.rs`, [0028](../../knowledge/decisions/0028-overview.md)): open
+//! The app's side of the overview of windows (`overview.rs`, [0028](../../knowledge/decisions/workspace/0028-overview.md)): open
 //! it (`Alt+O`), bring the cards up to date from the windows every frame while it is open, run what it asks for
 //! (`Cmd`), and give it the terminal's text and the grid's font at draw time (`AppGrid`, an `overlay::Grid`).
 //! A child of `wlapp.rs` so that it sees `App`, `Win` and `Pane` without making them public.

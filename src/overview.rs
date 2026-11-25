@@ -1,4 +1,4 @@
-//! The overview of windows (`Alt+O`, [0028](../knowledge/decisions/0028-overview.md)), after the reference's
+//! The overview of windows (`Alt+O`, [0028](../knowledge/decisions/workspace/0028-overview.md)), after the reference's
 //! "Vista general de ventanas": over the workspace (the panel of windows beside it stays live), a header with the
 //! count, a filter, two buttons and a cross; under it every window as a card, in a section per group (a tinted
 //! box with the group's dot and name) and one for the windows in none; at the end a dashed tile that makes a group.
@@ -405,10 +405,10 @@ impl Overview {
         self.over = over.map(Hit::Card);
         // `i32::MIN`: scrolled to the selected card; a large number: to the end.
         self.scroll = if scroll == i32::MIN { 0 } else { scroll };
-        if scroll == i32::MIN {
-            if let Some(ci) = self.sel_card() {
-                self.reveal(ci);
-            }
+        if scroll == i32::MIN
+            && let Some(ci) = self.sel_card()
+        {
+            self.reveal(ci);
         }
         self.settle();
         self
@@ -629,10 +629,10 @@ impl Overview {
             Item::Sec(s, r) => {
                 if let Some(g) = s.group.filter(|_| inside(self.add_box(t, r), x, yc)) {
                     hit = Some(Hit::Add(g));
-                } else if let Some((g, group)) = s.group.and_then(|g| Some((g, self.groups.get(g)?))) {
-                    if inside(self.chip(t, r, group).0, x, yc) {
-                        hit = Some(Hit::Chip(g));
-                    }
+                } else if let Some((g, group)) = s.group.and_then(|g| Some((g, self.groups.get(g)?)))
+                    && inside(self.chip(t, r, group).0, x, yc)
+                {
+                    hit = Some(Hit::Chip(g));
                 }
             }
             Item::Tile(r) if inside(r, x, yc) => hit = Some(Hit::Tile),
@@ -1074,6 +1074,7 @@ fn dashed(p: &mut Paint, (x, y, w, h): Rect, r: i32, c: [f32; 3], a: f32) {
 
 /// A ghost button (`.ghost-btn`): a 7 % outline, an icon and, when `label` is given, its words; lit under the
 /// pointer. Without words it is just the icon, centred.
+#[allow(clippy::too_many_arguments)]
 fn ghost(p: &mut Paint, t: &Text, (x, y, w, h): Rect, icon: Icon, label: Option<&str>, px: f32, lit: bool, r: f32) {
     if lit {
         p.rrect(x, y, w, h, r, WHITE, 0.07);
@@ -1292,7 +1293,7 @@ mod tests {
         for w in 210..2000 {
             let c = columns(w);
             assert!(c == 1 || column_width(w, c) >= MIN_COL, "{w}");
-            assert!(c as i32 * column_width(w, c) + (c - 1) * GAP <= w.max(MIN_COL));
+            assert!(c * column_width(w, c) + (c - 1) * GAP <= w.max(MIN_COL));
         }
         // The grid is the area less the body's 2 x 20, the section's border and its 2 x 10 of padding.
         assert_eq!(grid_width(899), 899 - 40 - 2 - 20);
@@ -1306,19 +1307,19 @@ mod tests {
         let mut heights = Vec::new();
         let o = Overview::new(vec![card(1, "a", Some(0)), card(2, "b", Some(0)), card(3, "c", Some(0))], vec![Group { name: "g".into(), color: 1 }], (0, 42, 900, 550));
         o.layout(|it| {
-            if let Item::Sec(s, r) = it {
-                if s.group.is_some() {
-                    heights.push(r.3);
-                }
+            if let Item::Sec(s, r) = it
+                && s.group.is_some()
+            {
+                heights.push(r.3);
             }
         });
         assert_eq!(heights, [236], "three cards in the three columns of a wide body");
         let narrow = Overview { area: (0, 42, 600, 550), ..o };
         narrow.layout(|it| {
-            if let Item::Sec(s, r) = it {
-                if s.group.is_some() {
-                    heights = vec![r.3];
-                }
+            if let Item::Sec(s, r) = it
+                && s.group.is_some()
+            {
+                heights = vec![r.3];
             }
         });
         assert_eq!(heights, [236 + 178 + 12], "the third card goes to a second row");
@@ -1349,7 +1350,7 @@ mod tests {
         assert_eq!(total, tile.1 + TILE_H + BODY_BOTTOM);
         // The cards are inside their sections' padding.
         assert_eq!(cards[0].1.0, secs[0].1.0 + 1 + SEC_PAD);
-        assert!(cards[2].1.1 + CARD_H <= secs[0].1.1 + secs[0].1.3 - 12 - 1);
+        assert!(cards[2].1.1 + CARD_H < secs[0].1.1 + secs[0].1.3 - 12);
     }
 
     #[test]
@@ -1473,10 +1474,10 @@ mod tests {
         let card_bottom = {
             let mut b = 0;
             o.layout(|it| {
-                if let Item::Card(ci, r) = it {
-                    if o.cards[ci].id == 5 {
-                        b = r.1 + r.3;
-                    }
+                if let Item::Card(ci, r) = it
+                    && o.cards[ci].id == 5
+                {
+                    b = r.1 + r.3;
                 }
             });
             b
@@ -1592,10 +1593,10 @@ mod tests {
         let mut o = sample().shown();
         let mut card1 = None;
         o.layout(|it| {
-            if let Item::Card(ci, r) = it {
-                if o.cards[ci].id == 2 {
-                    card1 = Some(r);
-                }
+            if let Item::Card(ci, r) = it
+                && o.cards[ci].id == 2
+            {
+                card1 = Some(r);
             }
         });
         let r = card1.unwrap();
@@ -1642,10 +1643,10 @@ mod tests {
         // A group's own add button.
         let mut sec0 = None;
         o.layout(|it| {
-            if let Item::Sec(s, r) = it {
-                if s.group == Some(0) {
-                    sec0 = Some(r);
-                }
+            if let Item::Sec(s, r) = it
+                && s.group == Some(0)
+            {
+                sec0 = Some(r);
             }
         });
         let b = o.add_box(&text, sec0.unwrap());
@@ -1740,10 +1741,10 @@ mod tests {
     fn find_card(o: &Overview, id: u32) -> Rect {
         let mut r = (0, 0, 0, 0);
         o.layout(|it| {
-            if let Item::Card(ci, b) = it {
-                if o.cards[ci].id == id {
-                    r = b;
-                }
+            if let Item::Card(ci, b) = it
+                && o.cards[ci].id == id
+            {
+                r = b;
             }
         });
         r

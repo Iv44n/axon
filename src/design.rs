@@ -505,7 +505,7 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
             }
         } else if let Some((rect, b)) = panel {
             soft.clear_rect(&mut fb, rect);
-            crate::side::paint(&soft, &mut fb, b, pos == TabsPos::Left, &i18n::tr(i18n::Str::Windows), &entries, &groups, &items, look, &mut Vec::new());
+            crate::side::paint(&soft, &mut fb, b, pos == TabsPos::Left, i18n::tr(i18n::Str::Windows), &entries, &groups, &items, look, &mut Vec::new());
             if let Some((wi, text, caret, sel)) = edit {
                 crate::side::paint_rename(&soft, &mut fb, layout, wi, &crate::side::Edit { text, caret, sel }, hover, &mut Vec::new());
             }
@@ -736,7 +736,8 @@ fn chips_repaint_incrementally_like_a_full_frame() {
     other.text[Chip::Dir as usize] = "~/elsewhere".into();
     let chips = [Chip::Time, Chip::Dir, Chip::Branch, Chip::Changes];
     // (what the terminal prints, chips on, a prompt that came with the status of the command before it, the newest chips change)
-    let steps: Vec<(String, bool, Option<(u32, i32)>, bool)> = vec![
+    type Step = (String, bool, Option<(u32, i32)>, bool);
+    let steps: Vec<Step> = vec![
         (format!("first\r\n{}", prompt(1)), true, Some((1, 0)), false),
         ("ls -la".into(), true, None, false),
         (format!("\r\nout-a\r\nout-b\r\n{}", prompt(2)), true, Some((2, 0)), false),

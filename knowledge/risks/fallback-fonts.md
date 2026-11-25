@@ -2,7 +2,7 @@
 type: risk
 status: open
 updated: 2026-11-22
-related: [../decisions/0002-text-fontdue-atlas.md, ../performance/measurements.md]
+related: [../decisions/core/0002-text-fontdue-atlas.md, ../performance/measurements.md]
 ---
 # Fallback fonts
 
@@ -24,6 +24,6 @@ stall and a RAM jump when CJK text first appears.
 **Mitigation options:**
 - Load the CJK font on a background thread and draw blanks until it is ready (keeps fontdue).
 - Replace the rasterizer with one that parses lazily (e.g. `ab_glyph`/`ttf-parser`): needs a new
-  ADR superseding [0002](../decisions/0002-text-fontdue-atlas.md) and a dependency check.
+  ADR superseding [0002](../decisions/core/0002-text-fontdue-atlas.md) and a dependency check.
 - Discover fonts through fontconfig / system APIs, weighing hard rule #2. Color emoji through a
   second RGBA atlas.

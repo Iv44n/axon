@@ -219,13 +219,16 @@ fn find_in(dirs: Vec<PathBuf>, name: &str) -> Option<PathBuf> {
     find_any(dirs, &[name])
 }
 
+/// A candidate file and the rank that orders it (`find_any`).
+type Ranked = ((bool, bool, usize), PathBuf);
+
 /// The font file of the first of `names` (families, in order of preference) that has one, as `find_family` ranks
 /// them: the directories are walked once for all of them, not once for each.
 fn find_any(dirs: Vec<PathBuf>, names: &[&str]) -> Option<PathBuf> {
     // The name asked for does not say "mono": a file that goes on with it ("Ubuntu Sans" and `UbuntuSansMono[wght]`) is
     // another family, whatever the length of its name.
     let wants: Vec<(String, bool)> = names.iter().map(|n| squash(n)).filter(|w| !w.is_empty()).map(|w| (w.clone(), !w.contains("mono"))).collect();
-    let mut best: Vec<Option<((bool, bool, usize), PathBuf)>> = vec![None; wants.len()];
+    let mut best: Vec<Option<Ranked>> = vec![None; wants.len()];
     let mut stack: Vec<(PathBuf, u8)> = dirs.into_iter().map(|d| (d, 0)).collect();
     while let Some((dir, depth)) = stack.pop() {
         let Ok(rd) = std::fs::read_dir(&dir) else { continue };

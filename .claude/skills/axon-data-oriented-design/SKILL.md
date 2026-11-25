@@ -6,8 +6,8 @@ description: axon's data-oriented design rules and the questions to ask of every
 # Data-oriented design in axon
 
 axon exists to use less RAM and CPU than other terminals, and to reinvent the wheel to get there:
-a dependency is scaffolding with an exit plan ([0010](../../../knowledge/decisions/0010-own-implementations.md)),
-and a cache is a symptom, not a feature ([0009](../../../knowledge/decisions/0009-data-oriented-no-caches.md)).
+a dependency is scaffolding with an exit plan ([0010](../../../knowledge/decisions/core/0010-own-implementations.md)),
+and a cache is a symptom, not a feature ([0009](../../../knowledge/decisions/core/0009-data-oriented-no-caches.md)).
 The data layout is the design; the code is what walks it.
 
 ## Rules
@@ -61,7 +61,7 @@ cache: redesign instead.
 Not caches:
 - authoritative state (the terminal grid);
 - dirty bits and damage over authoritative state: the protocol that says which rows to rewrite
-  ([0005](../../../knowledge/decisions/0005-damage-tracking.md));
+  ([0005](../../../knowledge/decisions/core/0005-damage-tracking.md));
 - a table baked once up front by a deterministic pass, with no miss path (an atlas of every glyph of a font,
   tile = glyph id);
 - scratch that is dead when the call returns (`Gpu.stage`).
@@ -76,7 +76,7 @@ Not caches:
 | Lazy fallback fonts (`OnceCell`) | memoized load | Memory-mapped font, tables read in place, nothing parsed up front | pending |
 | `fontdue` (parses every glyph on load: 45 MB, CJK 314 MB) | dependency | Own TrueType/CFF reader and rasterizer | pending |
 | `alacritty_terminal` `Term` (AoS cells, converted to GPU cells every frame) | dependency + mirror | Own VT parser and grid: SoA arrays the GPU can read directly | pending |
-| `Rgba16Float` swapchain (8 bytes per pixel, chosen by accident) | oversized | `Bgra8Unorm` if the look allows; moot: the GPU path goes away ([0011](../../../knowledge/decisions/0011-software-render-wl-shm.md)) | pending |
+| `Rgba16Float` swapchain (8 bytes per pixel, chosen by accident) | oversized | `Bgra8Unorm` if the look allows; moot: the GPU path goes away ([0011](../../../knowledge/decisions/core/0011-software-render-wl-shm.md)) | pending |
 | `winit` + `wgpu` (GPU stack floor: ~94 MB RSS; spike without it: 8.7 MB) | dependency | Own Wayland client + CPU renderer into `wl_shm` ([plan](../../../knowledge/plan/software-renderer.md)) | accepted, pending |
 | `dirty`, `last_cursor`, `last_sel` in `State` | damage protocol | Keep | n/a |
 

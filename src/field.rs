@@ -7,8 +7,6 @@
 //! without a window or a font. The caret is solid, never blinking: a blinking caret would wake the process
 //! (idle is 0 % CPU). Where the text starts when it is longer than the field is a function of the caret, not
 //! state: the caret is kept in view by showing the text's end up to it.
-// The kit's API is wider than what the app uses yet: the palette, the overview and the dialogs are built on it next (ADR 0025).
-#![allow(dead_code)]
 
 use crate::{
     icons::{self, Icon},
@@ -62,17 +60,20 @@ impl Field {
     }
 
     /// The field takes only the characters `accept` says yes to (typed or pasted).
+    #[cfg(test)]
     pub fn only(mut self, accept: fn(char) -> bool) -> Field {
         self.accept = Some(accept);
         self
     }
 
     /// A field for a number: digits, a point or comma, a minus.
+    #[cfg(test)]
     pub fn number(self) -> Field {
         self.only(|c| c.is_ascii_digit() || matches!(c, '.' | ',' | '-'))
     }
 
     /// The field starting with `s`, the caret after it.
+    #[cfg(test)]
     pub fn with_text(mut self, s: &str) -> Field {
         self.set(s);
         self

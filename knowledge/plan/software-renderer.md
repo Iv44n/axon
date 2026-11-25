@@ -2,7 +2,7 @@
 type: task
 status: in-progress
 updated: 2026-11-22
-related: [next-steps.md, own-implementations.md, ../decisions/0011-software-render-wl-shm.md, ../performance/measurements.md]
+related: [next-steps.md, own-implementations.md, ../decisions/core/0011-software-render-wl-shm.md, ../performance/measurements.md]
 ---
 # Software renderer and own Wayland client (task 15)
 
@@ -24,7 +24,7 @@ alive until stage E, so the app never stops working.
 - **Still a cache-like thing:** tiles are baked lazily like the GPU atlas; task 12 removes it.
 
 ## B. Own Wayland client, one window - `src/wl.rs`, `src/wlapp.rs` (done 2026-11-22)
-- **Decided:** own wire code ([0010](../decisions/0010-own-implementations.md)), not `wayland-client`.
+- **Decided:** own wire code ([0010](../decisions/core/0010-own-implementations.md)), not `wayland-client`.
   `rustix` is the syscall layer (`sendmsg`/`recvmsg` with `SCM_RIGHTS`, `memfd`, `mmap`, `poll`,
   `eventfd`); it was already in the dependency tree.
 - **Done:** `wl.rs` speaks the wire protocol over `$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY`: objects are
@@ -42,14 +42,14 @@ alive until stage E, so the app never stops working.
   with no error; resize by maximize/restore cycles; exit when the shell ends; idle 0% CPU. Numbers in
   [software-renderer](../performance/software-renderer.md).
 
-## C. Input and clipboard (done 2026-11-23, [0013](../decisions/0013-wayland-default-xkb-dlopen.md))
+## C. Input and clipboard (done 2026-11-23, [0013](../decisions/core/0013-wayland-default-xkb-dlopen.md))
 - **Done:** `wl_keyboard` (keymap text to `xkb.rs`, raw keys, modifiers, repeat info), client-side key repeat in the
   `poll` loop, keysym encoder in `input.rs` (`encode_key`), shortcuts, wheel (`axis` + `axis_discrete`), selection
   (click, word, line), clipboard through `wl_data_device` (replaces `arboard` on this path), OSC 52 store only (reads are refused on purpose).
   `libxkbcommon` is loaded with `dlopen`; the backend is the default on Wayland and falls back to `winit`.
 - **Left:** own keymap parser (then no `libxkbcommon`), `text-input-v3` for IMEs, primary selection, drag and drop.
   Mouse reporting is done (`mouse.rs`, 2026-11-23). The plan below is the original scope.
-- **Pointer done 2026-11-22** (for the window chrome, [0012](../decisions/0012-glass-chrome-black-white.md)): `wl_seat`
+- **Pointer done 2026-11-22** (for the window chrome, [0012](../decisions/interface/0012-glass-chrome-black-white.md)): `wl_seat`
   + `wl_pointer` (enter, leave, motion, button) and `wp_cursor_shape_v1` in `wl.rs`; `wlapp.rs` hit-tests with
   `chrome::hit` for the title-bar buttons, move, double-click maximize and resize edges. Still missing: wheel
   (axis), selection, mouse reporting, and everything below.
@@ -60,7 +60,7 @@ key repeat (client side), `wl_pointer` (selection, wheel, buttons), cursor shape
 
 ## D. Window behaviour
 - **Chrome done 2026-11-22:** client-side title bar, buttons, rounded corners and glass look (`chrome.rs`), maximize
-  and minimize through `xdg_toplevel`. **Shadow done 2026-11-23** ([0014](../decisions/0014-client-shadow-design-board.md)):
+  and minimize through `xdg_toplevel`. **Shadow done 2026-11-23** ([0014](../decisions/interface/0014-client-shadow-design-board.md)):
   margin outside the window geometry, input region, square and shadowless when maximized, fullscreen or tiled.
   Left: HiDPI (the margin scales with it), the second buffer on a holding compositor.
 Resize and the buffer lifecycle (release-wait single buffer, second buffer only if a compositor needs

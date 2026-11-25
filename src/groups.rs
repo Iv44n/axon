@@ -1,4 +1,4 @@
-//! Groups of windows, the pure part ([0029](../knowledge/decisions/0029-group-dialog-menus-rename-toasts.md)):
+//! Groups of windows, the pure part ([0029](../knowledge/decisions/workspace/0029-group-dialog-menus-rename-toasts.md)):
 //! what a group is, how the form of the group dialog is checked, how names and colours are suggested, how
 //! windows leave a group, how a close is undone, and what the dialog's templates open. Nothing here knows a
 //! window, a shell or a screen: the app (`wlapp/groups_ui.rs`) hands in plain numbers and strings, so every
@@ -353,6 +353,9 @@ mod tests {
         assert_eq!(after_close(1, &[1, 2, 3], 5), 1);
         assert_eq!(after_close(3, &[1, 3, 4], 5), 1);
         assert_eq!(after_close(1, &[1, 2, 3, 4], 5), 0);
+        // Not clamped: the first of the closed ones is the place, not the last (two of six leave four).
+        assert_eq!(after_close(1, &[1, 2], 6), 1);
+        assert_eq!(after_close(2, &[1, 2], 6), 1);
         // Nothing left: the caller made a placeholder first; 0 is as good as any.
         assert_eq!(after_close(0, &[0], 1), 0);
     }

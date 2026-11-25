@@ -5,8 +5,6 @@
 //! Its look over time is a pure function of the moment (`alpha`): it fades in over 0.18 s while it rises 6 px,
 //! stays, and fades out over the last 0.25 s. While it stays nothing runs: the app's `poll` wakes at
 //! `deadline`, once to start the fade and once to take it away; there is no timer while no toast is shown.
-// The kit's API is wider than what the app uses yet: the palette, the overview and the dialogs are built on it next (ADR 0025).
-#![allow(dead_code)]
 
 use std::time::{Duration, Instant};
 

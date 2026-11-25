@@ -6,7 +6,7 @@
 //! outline, the three window buttons and the title floating on it, and a soft shadow in a margin
 //! around the window (Mutter draws none for client-decorated windows).
 //!
-//! One glass for the whole window (`knowledge/decisions/0015`), now with the structure of the
+//! One glass for the whole window (`knowledge/decisions/interface/0015`), now with the structure of the
 //! `terminal.html` reference (ADR 0021): a hairline under the title bar and above the status bar,
 //! a faint top-light on the title bar, grey window buttons that take their traffic-light colour
 //! when the pointer is over them, and a sliders icon for the settings. Nothing on the edge changes

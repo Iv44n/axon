@@ -138,17 +138,32 @@
 
 <main id="main">
   <section><h2>Window</h2>
-    <p>The default look: one continuous near-black glass, rounded, with a faint uniform edge; the title bar is the same surface (integrated, like Ghostty, WezTerm or Warp), the three monochrome buttons and the title float on it; a soft shadow is cast downward (drawn by axon: Mutter draws none for client-decorated windows). Try the backdrops: the window has to read on a bright wallpaper, a dark one and on busy content.</p>
+    <p>The default look: one continuous near-black glass, rounded, with a faint uniform edge; the title bar is the same surface (integrated, like Ghostty, WezTerm or Warp), the three window buttons (grey, they colour on hover) and the title float on it, a 1 px hairline closes the title bar; a soft shadow is cast downward (drawn by axon: Mutter draws none for client-decorated windows). Try the backdrops: the window has to read on a bright wallpaper, a dark one and on busy content.</p>
     <div class="grid wide" data-group="window"></div></section>
   <section><h2>States</h2>
-    <p>Pointer over the button group shows the glyphs; the button under it turns near white, darker while held. Unfocused windows dim the buttons, the title and the cursor (hollow). Maximized, fullscreen and tiled windows have square corners, no outline and no shadow.</p>
+    <p>Pointer over the button group turns the three discs red, yellow and green and shows their glyphs; the one pressed goes dimmer. Unfocused windows dim the buttons, the title and the cursor (hollow). Maximized, fullscreen and tiled windows have square corners, no outline and no shadow.</p>
     <div class="grid" data-group="states"></div></section>
   <section><h2>Opacity</h2>
     <p>No compositor blur on GNOME (no <code>ext-background-effect</code>): whatever is behind shows through sharp. Lower opacity reads as glass on smooth wallpapers and as tinted plastic on busy ones; try the <i>Page</i> backdrop. The default is 0.88.</p>
     <div class="grid" data-group="opacity"></div></section>
-  <section><h2>Settings screen</h2>
-    <p>Opened with the gear at the right end of the title bar or <code>Ctrl+,</code>. A modal glass panel over the dimmed grid; the title bar stays live. Values change the window as they are dragged; <b>Save</b> writes <code>config.toml</code> (comments kept), <b>Cancel</b> or <kbd>Esc</kbd> puts everything back. The panel's own text is fixed at 13 px so it does not move while the font size is edited.</p>
+  <section><h2>Settings panel</h2>
+    <p>Opened with the gear at the right end of the title bar or <code>Ctrl+,</code>. Not modal: a panel docked beside the grid (372 px; at the edge opposite the windows' panel), so the terminal gets narrower and stays usable, and so does the title bar. Three pages (Font, Input, Windows). Every change shows on the real terminal at once and is saved by the app when it settles; there is no Save and no Cancel, and <b>Reset to defaults</b> also saves. The body scrolls under its header; the panel's own text is fixed at 13 px so it does not move while the font size is edited.</p>
     <div class="grid" data-group="settings"></div></section>
+  <section><h2>Settings in Spanish</h2>
+    <p>The window's text is in English or Spanish (<code>[ui] language</code>, ADR 0022): the three pages of the panel and the status bar's hints. Labels that do not fit their column wrap and the row grows.</p>
+    <div class="grid" data-group="language"></div></section>
+  <section><h2>Windows and the panel</h2>
+    <p>One shell per window, listed in a panel at the left or right of the grid (<code>Alt+B</code> hides it) or as tabs in the title bar (<code>[windows] tabs</code>). A row is 28 px: status icon, name, a dot for output that came while it was hidden, a cross on hover; a group is a header with its count and a chevron that folds it, its windows indented under a bar in its colour. The two buttons of the header open a window and a group.</p>
+    <div class="grid" data-group="windows"></div></section>
+  <section><h2>Split panes</h2>
+    <p>A window holds several shells (<code>Ctrl+Space</code>, <code>Alt+\</code>, <code>Alt+-</code>). The focused pane has the accent border and a ring, the others are dimmer with a hollow cursor, and the pane under the pointer shows its cross. A split that would leave a pane under 20 columns by 5 rows is refused. The panel lists a window's panes under it; at the top a tab says how many a window has.</p>
+    <div class="grid" data-group="panes"></div></section>
+  <section><h2>Overlays and the command palette</h2>
+    <p>The kit the dialogs, menus and screens are built from (ADR 0025): fields, filtered lists, menus, toasts and the modal frame (a scrim under the title bar, a glass card), and the command palette (<code>Ctrl+K</code>, ADR 0027) made of them: actions, windows and groups, ranked as you type with the matched letters lit. English and Spanish.</p>
+    <div class="grid" data-group="overlays"></div></section>
+  <section><h2>Group dialog, menus, rename and toasts</h2>
+    <p>The window list's interactions (ADR 0029): <code>Alt+G</code> opens the group dialog (name, colour, windows, templates), a right click opens the menu of a window, a group, a pane or the empty list, a double click or <kbd>F2</kbd> renames a row in place, and a close leaves a toast with <i>Undo</i> while the windows stay alive.</p>
+    <div class="grid" data-group="groups"></div></section>
   <section><h2>Prompt chips</h2>
     <p><code>[input] mode = "chips"</code> draws a row of context chips on the line above the prompt you are typing at: time, user, conda or venv environment, pyenv, user@host, directory, git branch, git changes (files, lines added, lines removed) and the Kubernetes context. The shell reserves that line (a concealed space in its first column) and axon draws the pills over it, so they sit exactly where you type, move with the prompt and disappear while a program runs. They use the grid's own font, so they cost no memory. The chips listed in <code>chips = [...]</code> appear in that order; one with nothing to say is skipped, one that does not fit is shortened with an ellipsis and then dropped. The pills are two pixels shorter than the row so they never touch the lines around them. The colours are the one splash of colour in the chrome, and opt-in.</p>
     <div class="grid" data-group="prompt chips"></div></section>
@@ -168,7 +183,7 @@
     <p>Press on a row, a tab or a group's header and move 5 px: the row stays at 40 %, its ghost follows the pointer, and a mark says where the drop would go: a 2 px accent line before or after (a window takes the group of the one it is next to), a 2 px ring in the group's colour round a header or chip (into the group), a line at the end of the list (out of its group). <kbd>Esc</kbd> cancels.</p>
     <div class="grid" data-group="drag"></div></section>
   <section><h2>Colour</h2>
-    <p>Black and white chrome; colour comes only from programs. The ANSI hues are muted so a coloured prompt does not shout. Contrast is measured against the glass body over a black and over a white desktop (rule: 4.5:1 for text and for ANSI 8).</p>
+    <p>Dark chrome with one amber accent and six clear hues (ADR 0021); the hues are also the ANSI 1 to 6 slots, so a program's colours match the window. A coloured prompt must not shout. Contrast is measured against the glass body over a black and over a white desktop (rule: 4.5:1 for text and for ANSI 8).</p>
     <div class="grid wide" data-group="colour"></div>
     <div class="swatches" id="swatches"></div></section>
   <section><h2>Metrics</h2>
@@ -176,8 +191,8 @@
     <table id="metrics"></table></section>
   <section><h2>Rules</h2>
     <ul class="rules">
-      <li>Continuous: one glass, the title bar is part of it; no separators, and the edge is the same all the way round, so no line gathers in the corners.</li>
-      <li>Neutral chrome: no accent colour. Any colour on screen is one a program or the user asked for.</li>
+      <li>Continuous: one glass, the title bar and the status bar are part of it, divided by 1 px hairlines and faint tints, and the edge is the same all the way round, so no line gathers in the corners.</li>
+      <li>One accent (amber) and six hues, all from <code>palette.rs</code>; a new colour needs a reason the user gave.</li>
       <li>Every frame pixel is a function of position, window size and a few bits of UI state: no textures, masks or caches.</li>
       <li>Crisp edges: anything meant to be sharp sits on pixel centres (<code>n + 0.5</code>); text is plain source-over with a 0.70 coverage curve.</li>
       <li>Animations only under 200 ms and back to idle; idle stays at 0% CPU.</li>
@@ -246,6 +261,24 @@
     }
   };
 
+  // Where a frame goes: the grid of its group. A group the page has no text for still gets a section (before
+  // Colour), so frames the renderer writes are never dropped without a word.
+  const grids = new Map([...document.querySelectorAll('[data-group]')].map(g => [g.dataset.group, g]));
+  const grid = name => {
+    if (!grids.has(name)) {
+      const sec = document.createElement('section');
+      const h = document.createElement('h2'), p = document.createElement('p'), g = document.createElement('div');
+      h.textContent = name;
+      p.textContent = 'Frames of a group this page has no text for yet.';
+      g.className = 'grid';
+      sec.append(h, p, g);
+      const colour = grids.get('colour')?.closest('section');
+      if (colour) colour.before(sec); else document.getElementById('main').append(sec);
+      grids.set(name, g);
+    }
+    return grids.get(name);
+  };
+
   const figures = [];
   for (const f of D.frames) {
     const fig = document.createElement('figure');
@@ -257,7 +290,7 @@
       <figcaption><b>${f.label}</b><span class="mono">${f.w}×${f.h}${bf && (bf.w !== f.w || bf.h !== f.h) ? ` (was ${bf.w}×${bf.h})` : ''}</span></figcaption>`;
     const entry = { fig, f, bf, hasBase: !!bf };
     figures.push(entry);
-    document.querySelector(`[data-group="${f.group}"]`)?.append(fig);
+    grid(f.group).append(fig);
   }
 
   function apply() {

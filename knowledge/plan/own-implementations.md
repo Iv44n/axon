@@ -2,7 +2,7 @@
 type: task
 status: in-progress
 updated: 2026-11-22
-related: [next-steps.md, ../decisions/0009-data-oriented-no-caches.md, ../decisions/0010-own-implementations.md, ../performance/measurements.md]
+related: [next-steps.md, ../decisions/core/0009-data-oriented-no-caches.md, ../decisions/core/0010-own-implementations.md, ../performance/measurements.md]
 ---
 # Own implementations: order and designs
 
@@ -13,9 +13,9 @@ in the `axon-data-oriented-design` skill; measure before and after; log it in
 ## 0. Spike: what does the GPU stack cost? (decides item 4) - done 2026-11-22
 The Vulkan loader plus Mesa/NVIDIA libraries map ~94 MB (RSS floor, measured). A throwaway window
 drew the same kind of scene into a `wl_shm` buffer with the CPU: **8.7 MB idle RSS** at 1000x640,
-14 MB at 1080p (axon today: 191 MB). The 50 MB target ([0008](../decisions/0008-idle-ram-50mb.md))
+14 MB at 1080p (axon today: 191 MB). The 50 MB target ([0008](../decisions/core/0008-idle-ram-50mb.md))
 is reachable only without the GPU stack, so item 4 becomes an own Wayland client with a software
-renderer: accepted in [0011](../decisions/0011-software-render-wl-shm.md); stages in [software-renderer](software-renderer.md).
+renderer: accepted in [0011](../decisions/core/0011-software-render-wl-shm.md); stages in [software-renderer](software-renderer.md).
 Numbers and caveats: [measurements](../performance/measurements.md).
 
 ## 1. Font reader and rasterizer (replaces `fontdue`)
@@ -48,7 +48,7 @@ the parser's input buffer. Small; do it together with item 3.
 ## 4. Window and GPU stack (`winit`, `wgpu`)
 Item 0 measured the outcomes: `wgpu` with one Vulkan driver is still 119 MB; a window with a CPU
 renderer on `wl_shm` is 9-14 MB. Decided: an own Wayland client (xdg-shell, `wl_shm`) and a CPU cell
-renderer, X11 later (MIT-SHM) ([0011](../decisions/0011-software-render-wl-shm.md)). Keep `winit` and
+renderer, X11 later (MIT-SHM) ([0011](../decisions/core/0011-software-render-wl-shm.md)). Keep `winit` and
 `wgpu` until the software path matches the pixels, then delete them.
 
 ## Not on this list

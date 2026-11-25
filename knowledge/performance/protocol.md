@@ -2,7 +2,7 @@
 type: reference
 status: current
 updated: 2026-11-22
-related: [measurements.md, ../decisions/0008-idle-ram-50mb.md]
+related: [measurements.md, ../decisions/core/0008-idle-ram-50mb.md]
 ---
 # Comparison protocol
 
@@ -23,7 +23,7 @@ compositor.
 | Startup to first frame | Temporary timestamp: process start → first `present()` |
 | Key-to-pixel latency | Typometer or 240 fps recording |
 | Throughput | `time cat /tmp/big.txt` with `seq 1 12300000 > /tmp/big.txt` (99.6 MB); vtebench as a second reference |
-| Idle RAM | RSS (`ps -o rss= -p <pid>`) and PSS (`smem -P <name>`); see [0008](../decisions/0008-idle-ram-50mb.md) |
+| Idle RAM | RSS (`ps -o rss= -p <pid>`) and PSS (`smem -P <name>`); see [0008](../decisions/core/0008-idle-ram-50mb.md) |
 | RAM per session | PSS delta when opening each session and filling the scrollback (once panes exist) |
 | Render latency | Temporary counter `Event::Wakeup` → `present()` |
 | GPU | `intel_gpu_top`, `nvtop` or `radeontop` during the throughput run |

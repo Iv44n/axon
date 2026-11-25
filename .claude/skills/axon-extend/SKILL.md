@@ -12,16 +12,16 @@ Before any change: read `axon-architecture` (dependency rules) and, if it touche
 2. Implement the action as an `App` method (`copy`, `paste`, `zoom`, …), not inline.
 3. If a redraw is needed: `self.dirty = true` (the loop draws on the next frame callback).
 4. Document the shortcut in `CLAUDE.md` or the README.
-5. A shortcut that does something the command palette could list also gets an entry in `commands.rs` (`build`, with the shortcut text, a `Cmd` variant and its arm in `App::run_cmd` that calls the same method as step 2; [0027](../../../knowledge/decisions/0027-command-palette.md)).
+5. A shortcut that does something the command palette could list also gets an entry in `commands.rs` (`build`, with the shortcut text, a `Cmd` variant and its arm in `App::run_cmd` that calls the same method as step 2; [0027](../../../knowledge/decisions/workspace/0027-command-palette.md)).
 
 ## New key/sequence sent to the PTY
 Add it in `input.rs` (`encode_key`, a pure function of a resolved xkb key). Cover modifiers with the parameter `mods = 1+shift+2·alt+4·ctrl`. Add a unit test with the expected sequence.
 
 ## Config option
-1. `config.rs` is the file (`~/.config/axon/config.toml`, own parser, [0016](../../../knowledge/decisions/0016-config-file-font-settings.md)). Add the field to `Config` / `FontCfg`, its range constant, a line in `apply`, a test in `config.rs`, and a commented line in `assets/config.example` and the README.
+1. `config.rs` is the file (`~/.config/axon/config.toml`, own parser, [0016](../../../knowledge/decisions/interface/0016-config-file-font-settings.md)). Add the field to `Config` / `FontCfg`, its range constant, a line in `apply`, a test in `config.rs`, and a commented line in `assets/config.example` and the README.
 2. Never read config on the hot path: it loads at startup and on `Ctrl+Shift+R` (`App::reload` in `wlapp.rs`); a setting that changes the glyph bitmaps goes through `Fonts` (`set_px` / `raster`), so tiles are rebuilt and the renderers stay unchanged.
 3. The environment variables win over the file (`env_overrides`).
-4. A setting the user should change also gets a row in the settings panel (`settings.rs`, [0026](../../../knowledge/decisions/0026-docked-settings-panel.md)): a `Row` variant in `FONT_ROWS`, `INPUT_ROWS` or `WINDOWS_ROWS`, its `kind()` (picker, slider, switch, radios, chips), `label`, and for a slider `range`, `limits`, `Draft::get` / `store` / `text`; radios also `options`, `choose`, `chosen`; switches `flip` and their arm in `draw_body`; and a line in `changes()` with its file key. The panel applies each change at once and the app writes it (`wlapp.rs`: `apply`, `flush_save`), so the setting needs its effect in `App::apply`. Its tests need the new row.
+4. A setting the user should change also gets a row in the settings panel (`settings.rs`, [0026](../../../knowledge/decisions/workspace/0026-docked-settings-panel.md)): a `Row` variant in `FONT_ROWS`, `INPUT_ROWS` or `WINDOWS_ROWS`, its `kind()` (picker, slider, switch, radios, chips), `label`, and for a slider `range`, `limits`, `Draft::get` / `store` / `text`; radios also `options`, `choose`, `chosen`; switches `flip` and their arm in `draw_body`; and a line in `changes()` with its file key. The panel applies each change at once and the app writes it (`wlapp.rs`: `apply`, `flush_save`), so the setting needs its effect in `App::apply`. Its tests need the new row.
 5. `axon config` writes `assets/config.example` as is (a test parses it with every line uncommented): keep it in step, and add the key to `describe` (`config show`).
 
 ## New chip for the prompt chips

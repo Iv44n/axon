@@ -2,7 +2,7 @@
 type: log
 status: current
 updated: 2026-11-22
-related: [protocol.md, ../decisions/0008-idle-ram-50mb.md, ../decisions/0009-data-oriented-no-caches.md]
+related: [protocol.md, ../decisions/core/0008-idle-ram-50mb.md, ../decisions/core/0009-data-oriented-no-caches.md]
 ---
 # Measurements
 
@@ -57,7 +57,7 @@ exists yet (task 1 in [next-steps](../plan/next-steps.md)).
   `wgpu`; CPU output within 1/255 of the GPU. Details in [software-renderer](software-renderer.md).
 
 
-- **Cell buffer redesign** ([0009](../decisions/0009-data-oriented-no-caches.md)): the renderer output is
+- **Cell buffer redesign** ([0009](../decisions/core/0009-data-oriented-no-caches.md)): the renderer output is
   byte-identical to the previous one on 5 fixed scenes (block, beam and underline cursors, hollow cursor,
   hidden cursor; every SGR attribute, wide characters, box drawing), and a long incremental run matches a full
   rebuild every frame, both at 0 differing bytes of 2.56 MB. Idle RSS and the 100 MB `cat` time are unchanged
@@ -80,5 +80,5 @@ exists yet (task 1 in [next-steps](../plan/next-steps.md)).
 - **Floor from the graphics stack:** ~94 MB of file-backed pages (libLLVM from lavapipe, NVIDIA
   and Mesa libraries mapped by the Vulkan loader), even with only the Radeon ICD enabled. This
   is why 50 MB of RSS is not reachable here; the revisit condition of
-  [0008](../decisions/0008-idle-ram-50mb.md) is met. The private heap (`anon`) is 24-31 MB
+  [0008](../decisions/core/0008-idle-ram-50mb.md) is met. The private heap (`anon`) is 24-31 MB
   with a small font.

@@ -88,8 +88,6 @@ strings! {
     Windows: "Windows", "Ventanas";
     GroupName: "group", "grupo";
     Pane: "Pane", "Panel";
-    DndMoved: "moved to", "movida a";
-    DndOut: "out of the group", "fuera del grupo";
     TabFont: "Font", "Fuente";
     TabInput: "Input", "Entrada";
     TabWindows: "Windows", "Ventanas";

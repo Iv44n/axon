@@ -1,8 +1,6 @@
 //! The small outline icons of the overlays (palette rows, menu checks, search fields, key caps), after the
 //! `terminal.html` reference: each one is a few strokes on the reference's 16-unit grid, drawn as coverage
 //! per pixel with a round stroke (the chip icons of `bar.rs` are drawn the same way). No images, no cache.
-// The kit's API is wider than what the app uses yet: the palette, the overview and the dialogs are built on it next (ADR 0025).
-#![allow(dead_code)]
 
 use crate::{
     chrome::rounded_rect,
@@ -22,7 +20,6 @@ pub enum Icon {
     Gear,
     Cross,
     Prompt,
-    Term,
     Check,
     Up,
     Down,
@@ -30,7 +27,9 @@ pub enum Icon {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 15] = [
+    /// Every icon (the test that draws each one).
+    #[cfg(test)]
+    pub const ALL: [Icon; 14] = [
         Icon::Search,
         Icon::Plus,
         Icon::Group,
@@ -41,7 +40,6 @@ impl Icon {
         Icon::Gear,
         Icon::Cross,
         Icon::Prompt,
-        Icon::Term,
         Icon::Check,
         Icon::Up,
         Icon::Down,
@@ -77,7 +75,6 @@ fn coverage(icon: Icon, x: f32, y: f32, u: f32, t: f32) -> f32 {
             .max(circle(6.0, 11.5, 1.5)),
         Icon::Cross => poly(&[(4.0, 4.0), (12.0, 12.0)]).max(poly(&[(12.0, 4.0), (4.0, 12.0)])),
         Icon::Prompt => poly(&[(4.5, 5.0), (8.0, 8.0), (4.5, 11.0)]).max(poly(&[(9.0, 11.5), (12.0, 11.5)])),
-        Icon::Term => rect(2.0, 3.0, 12.0, 10.0, 2.0).max(poly(&[(5.0, 7.0), (7.0, 8.5), (5.0, 10.0)])).max(poly(&[(8.5, 10.5), (11.0, 10.5)])),
         Icon::Check => poly(&[(3.5, 8.5), (6.5, 11.5), (12.5, 4.5)]),
         Icon::Up => poly(&[(8.0, 12.5), (8.0, 3.5)]).max(poly(&[(4.5, 7.0), (8.0, 3.5), (11.5, 7.0)])),
         Icon::Down => poly(&[(8.0, 3.5), (8.0, 12.5)]).max(poly(&[(4.5, 9.0), (8.0, 12.5), (11.5, 9.0)])),

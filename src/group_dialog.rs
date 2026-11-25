@@ -1,4 +1,4 @@
-//! The group dialog ([0029](../knowledge/decisions/0029-group-dialog-menus-rename-toasts.md)), after the reference's
+//! The group dialog ([0029](../knowledge/decisions/workspace/0029-group-dialog-menus-rename-toasts.md)), after the reference's
 //! `#gdialog` and `openGroupDialog`: a name, one of the eight colours, the windows to put in the group, the
 //! templates that open new windows with it, an error line, a summary, Cancel and Create; in edit mode (`Edit group`)
 //! only the name and the colour. It is an overlay built from the kit (`Modal`, `Field`, `button`): a pure

@@ -523,7 +523,7 @@ fn edit_of(f: &field::Field) -> side::Edit<'_> {
 fn paint_side(soft: &Soft, fb: &mut [u32], items: &side::Items, groups: &[side::GroupItem], entries: &[side::Entry], right: bool, look: side::Look, edit: Editing, scratch: &mut Vec<u8>) {
     let (Some(rect), Some(b)) = (soft.side_rect(), side_box(soft)) else { return };
     soft.clear_rect(fb, rect);
-    side::paint(soft, fb, b, !right, &tr(Str::Windows), entries, groups, items, look, scratch);
+    side::paint(soft, fb, b, !right, tr(Str::Windows), entries, groups, items, look, scratch);
     if let Some((wi, f)) = edit {
         side::paint_rename(soft, fb, side::Layout::Side { x0: b.0, y0: b.1, w: b.2, entries }, wi, &edit_of(f), look.hover, scratch);
     }
@@ -795,16 +795,16 @@ impl App {
             app.toggle_overview();
         }
         // Another: start with one of the window list's screens open (the group dialog, a menu, a rename, a close with its toast).
-        if let Ok(kind) = std::env::var("AXON_LIST_UI") {
-            if !app.list_ui(&kind) {
-                eprintln!("axon: AXON_LIST_UI is one of dialog, edit, menu, group-menu, pane-menu, strip-menu, rename, close, toast (edit and group-menu need AXON_GROUPS=1)");
-            }
+        if let Ok(kind) = std::env::var("AXON_LIST_UI")
+            && !app.list_ui(&kind)
+        {
+            eprintln!("axon: AXON_LIST_UI is one of dialog, edit, menu, group-menu, pane-menu, strip-menu, rename, close, toast (edit and group-menu need AXON_GROUPS=1)");
         }
         // Another: start with one of the overlay kit's screens open (`field`, `list`, `menu`, `toast`, `modal`) or the palette.
-        if let Ok(kind) = std::env::var("AXON_DEMO_OVERLAY") {
-            if !app.demo_overlay(&kind) {
-                eprintln!("axon: AXON_DEMO_OVERLAY is one of {}, palette", overlay_demo::KINDS.join(", "));
-            }
+        if let Ok(kind) = std::env::var("AXON_DEMO_OVERLAY")
+            && !app.demo_overlay(&kind)
+        {
+            eprintln!("axon: AXON_DEMO_OVERLAY is one of {}, palette", overlay_demo::KINDS.join(", "));
         }
         Ok(app)
     }
@@ -2547,10 +2547,10 @@ impl App {
             }
             self.selecting = false;
             // The cross of a pane closes it when the button comes up over it too.
-            if let Some(pi) = self.cross_down.take() {
-                if self.close_hot && self.pane_hover == Some(pi) {
-                    self.close_pane_asked(self.cur, pi);
-                }
+            if let Some(pi) = self.cross_down.take()
+                && self.close_hot && self.pane_hover == Some(pi)
+            {
+                self.close_pane_asked(self.cur, pi);
             }
             if self.ui.down {
                 self.ui.down = false;
@@ -2800,9 +2800,10 @@ impl App {
         if let (Some((title, was)), dnd::Grab::Win(w)) = (moved, grab) {
             let now = a.order.iter().position(|&i| i == w).and_then(|at| a.group[at]).map(|g| self.groups[g].name.clone());
             if was != now {
+                // The same sentences as the menu's move, so both ways of moving a window say it alike.
                 let msg = match now {
-                    Some(g) => format!("\u{ab}{title}\u{bb} {} \u{ab}{g}\u{bb}", tr(Str::DndMoved)),
-                    None => format!("\u{ab}{title}\u{bb} {}", tr(Str::DndOut)),
+                    Some(g) => groups::fill(tr(Str::ToastMoved), &[&title, &g]),
+                    None => groups::fill(tr(Str::ToastUngrouped), &[&title]),
                 };
                 self.overlays.toast(&msg, None, 0, Instant::now());
             }

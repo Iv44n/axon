@@ -2,11 +2,11 @@
 type: log
 status: current
 updated: 2026-11-23
-related: [measurements.md, ../decisions/0011-software-render-wl-shm.md, ../plan/software-renderer.md]
+related: [measurements.md, ../decisions/core/0011-software-render-wl-shm.md, ../plan/software-renderer.md]
 ---
 # Software renderer measurements
 
-Findings for [0011](../decisions/0011-software-render-wl-shm.md); the idle RSS rows are in
+Findings for [0011](../decisions/core/0011-software-render-wl-shm.md); the idle RSS rows are in
 [measurements](measurements.md). Newest first.
 
 - **Sharper text and chrome** (2026-11-23, user: "a bit pixelated"; the screen is at scale 1.0, so not compositor
@@ -16,7 +16,7 @@ Findings for [0011](../decisions/0011-software-render-wl-shm.md); the idle RSS r
   (3) button centres moved from pixel borders to pixel centres. Binary 7,362,960 B, idle 14 MB, 0 ticks, flood
   1.81 s, 25 tests pass. The shader got the same formula but was not compared byte for byte with `soft.rs`.
 
-- **Stage C: keyboard, clipboard, wheel, selection** ([0013](../decisions/0013-wayland-default-xkb-dlopen.md)): binary
+- **Stage C: keyboard, clipboard, wheel, selection** ([0013](../decisions/core/0013-wayland-default-xkb-dlopen.md)): binary
   +30 KB (7,332,888 -> 7,363,488 B), idle RSS 14 MB with JetBrains Mono (was 13: `libxkbcommon` and the compose
   table), 0 ticks idle (a held key makes `poll` wake at the repeat rate, nothing else does), flood 1.78 s and 39 MB.
   Checked: 22 unit tests, among them AltGr+Q = `@` and dead acute + `a` = `a` with an acute on a latam layout through the
@@ -30,7 +30,7 @@ Findings for [0011](../decisions/0011-software-render-wl-shm.md); the idle RSS r
   (10k x 108 columns x 24 B per `alacritty_terminal` cell). JetBrains Mono has no Nerd/Powerline icons; a
   Nerd Font stays one `AXON_FONT` away at the price measured above.
 
-- **Glass chrome** ([0012](../decisions/0012-glass-chrome-black-white.md), `src/chrome.rs`): binary +7.6 KB
+- **Glass chrome** ([0012](../decisions/interface/0012-glass-chrome-black-white.md), `src/chrome.rs`): binary +7.6 KB
   (7,325,272 -> 7,332,888 B), idle RSS 55 MB on `wl` with Cascadia (was 54), 0 ticks idle, flood 1.70 s and
   80 MB. The frame is computed per pixel, nothing stored; rows away from the edges are one fill. Checked
   headless in a temp copy: 5 scenes (rest, hover, pressed, unfocused, maximized) composited over light and
@@ -62,7 +62,7 @@ Findings for [0011](../decisions/0011-software-render-wl-shm.md); the idle RSS r
   repaint (flood or scroll frames), naive integer code, no SIMD. Temporary harness under `/tmp`, not in
   the repo; the tests in `soft.rs` cover the pixel maths only.
 
-- **Experiment 0: the GPU stack is the whole problem** ([0011](../decisions/0011-software-render-wl-shm.md)).
+- **Experiment 0: the GPU stack is the whole problem** ([0011](../decisions/core/0011-software-render-wl-shm.md)).
   Throwaway program in `/tmp/axon-spike` (not in the repo): `wayland-client` 0.31 with its pure-Rust
   backend, `xdg_toplevel`, one `memfd` + `wl_shm` buffer (`Argb8888`, premultiplied, opacity 0.93),
   ASCII atlas of JetBrains Mono 15 px baked once with `fontdue` and the parser dropped, same kind of

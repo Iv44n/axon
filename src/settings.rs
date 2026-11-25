@@ -741,6 +741,13 @@ impl Settings {
         if d.font.bold != o.font.bold {
             out.push(("font.bold", Some(d.font.bold.to_string())));
         }
+        // No control edits these two yet, but *Reset to defaults* puts them back on screen, so it must write them too.
+        if d.font.smoothing != o.font.smoothing {
+            out.push(("font.smoothing", Some(format!("{:?}", d.font.smoothing.name()))));
+        }
+        if d.font.hinting != o.font.hinting {
+            out.push(("font.hinting", Some(d.font.hinting.to_string())));
+        }
         if d.input.inline != o.input.inline {
             out.push(("input.mode", Some(format!("{:?}", if d.input.inline { "chips" } else { "shell" }))));
         }
@@ -1397,11 +1404,11 @@ impl Settings {
             }
         }
         // Typing a number on a slider row starts typing it.
-        if row.is_number() && !self.inert(row) && !k.mods.ctrl && !k.mods.alt {
-            if k.text.chars().next().is_some_and(|c| c.is_ascii_digit() || matches!(c, '.' | ',' | '-')) {
-                self.start_edit(row, Some(&k.text));
-                return Effect::Redraw;
-            }
+        if row.is_number() && !self.inert(row) && !k.mods.ctrl && !k.mods.alt
+            && k.text.chars().next().is_some_and(|c| c.is_ascii_digit() || matches!(c, '.' | ',' | '-'))
+        {
+            self.start_edit(row, Some(&k.text));
+            return Effect::Redraw;
         }
         let big = if k.mods.shift { 5.0 } else { 1.0 };
         match k.sym {
@@ -1493,10 +1500,10 @@ impl Settings {
     fn commit_edit(&mut self) -> Option<(Row, bool)> {
         let e = self.edit.take()?;
         let before = self.draft.get(e.row);
-        if let Ok(v) = e.text.replace(',', ".").parse::<f32>() {
-            if v.is_finite() {
-                self.draft.set_exact(e.row, v);
-            }
+        if let Ok(v) = e.text.replace(',', ".").parse::<f32>()
+            && v.is_finite()
+        {
+            self.draft.set_exact(e.row, v);
         }
         Some((e.row, self.draft.get(e.row) != before))
     }
@@ -2394,6 +2401,31 @@ mod tests {
         assert_eq!(s.draft, Draft::defaults());
         assert_eq!(s.family_label(), "Default (JetBrains Mono)");
         assert!(s.changes().iter().any(|c| c.0 == "font.weight"), "reset values count as changes against the saved ones");
+    }
+
+    #[test]
+    fn reset_writes_the_smoothing_and_hinting_it_puts_back() {
+        // A file with grey text and no hinting: Reset shows RGB and hinted at once, so the file has to follow.
+        let cfg = FontCfg { smoothing: crate::config::Smoothing::Gray, hinting: false, ..FontCfg::default() };
+        let mut s = Settings::new(&cfg, 0.88, fams());
+        assert!(s.changes().is_empty());
+        let b = s.button_rect();
+        assert_eq!(click(&mut s, b.0 + 3, b.1 + 3), Effect::Apply);
+        assert_eq!(s.draft.font.smoothing, crate::config::Smoothing::Rgb);
+        let c = s.changes();
+        let get = |k: &str| c.iter().find(|x| x.0 == k).and_then(|x| x.1.clone());
+        assert_eq!(get("font.smoothing").as_deref(), Some("\"rgb\""));
+        assert_eq!(get("font.hinting").as_deref(), Some("true"));
+        // Written and read back, the file says what the screen shows.
+        let mut text = String::new();
+        for (full, v) in &c {
+            let (sec, key) = full.split_once('.').unwrap();
+            text = config::set_key(&text, sec, key, v.as_deref());
+        }
+        let mut w = Vec::new();
+        let back = config::parse(&text, &mut w);
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!((back.font.smoothing, back.font.hinting), (crate::config::Smoothing::Rgb, true));
     }
 
     #[test]

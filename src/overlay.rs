@@ -1,4 +1,4 @@
-//! The overlay kit ([0025](../knowledge/decisions/0025-overlay-kit.md)): what the command palette, the
+//! The overlay kit ([0025](../knowledge/decisions/workspace/0025-overlay-kit.md)): what the command palette, the
 //! overview, the dialogs, the context menus and the toasts are built from.
 //!
 //! * [`Overlay`] is what a screen over the grid implements: a key, the pointer, a wheel, a draw. The app holds
@@ -15,8 +15,6 @@
 //! Like the settings screen, nothing here is kept between frames: an overlay is a pure function of its state
 //! and the window size, painted over a complete grid on every redraw while it is open; its coordinates are
 //! window pixels (the origin is the window's top-left corner, not the shadow's).
-// The kit's API is wider than what the app uses yet: the palette, the overview and the dialogs are built on it next (ADR 0025).
-#![allow(dead_code)]
 
 use std::{any::Any, borrow::Cow, cell::RefCell, rc::Rc, time::Instant};
 
@@ -240,6 +238,7 @@ impl Fade {
     }
 
     /// Already fully shown.
+    #[cfg(test)]
     pub const fn full() -> Fade {
         Fade { t: 1.0, clock: None, secs: 0.0 }
     }
@@ -251,6 +250,7 @@ impl Fade {
         self.t < 1.0
     }
 
+    #[cfg(test)]
     pub fn animating(&self) -> bool {
         self.t < 1.0
     }
@@ -402,8 +402,10 @@ pub trait Grid {
 }
 
 /// No terminal: the previews are left out (the kit's own tests and screens).
+#[cfg(test)]
 pub struct NoGrid;
 
+#[cfg(test)]
 impl Grid for NoGrid {
     fn tail(&mut self, _id: u32, _rows: usize, _out: &mut String) -> bool {
         false
@@ -670,6 +672,7 @@ impl Stack {
 
     /// Paints everything open over a finished frame: the overlays bottom to top, then the toast. `(w, h)` is
     /// the framebuffer and `(ox, oy)` where the window starts in it. True while an animation wants another frame.
+    #[cfg(test)]
     pub fn draw(&mut self, fb: &mut [u32], size: (usize, usize), origin: (usize, usize), g: Geo, now: Instant) -> bool {
         self.draw_with(fb, size, origin, g, now, &mut NoGrid)
     }

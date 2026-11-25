@@ -10,7 +10,8 @@ needs by reading 3 small files (root → branch → leaf), not the whole tree.
 - Leaf ≤ 80 lines. If it grows past that, turn it into a branch: a folder with the same name,
   an `INDEX.md` and smaller leaves. Update the links that pointed to it.
 - Index ≤ 25 entries. If it grows past that, group the children into sub-branches.
-- Lowercase names with hyphens (`fallback-fonts.md`). ADRs: `NNNN-title.md`.
+- Lowercase names with hyphens (`fallback-fonts.md`). ADRs: `NNNN-title.md`, in the sub-branch of their topic under
+  `decisions/` (`core`, `interface`, `workspace`); the number is global.
 
 ## Leaf header
     ---

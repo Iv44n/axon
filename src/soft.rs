@@ -1,11 +1,10 @@
-//! CPU renderer ([0011](../knowledge/decisions/0011-software-render-wl-shm.md)): paints the cell
+//! CPU renderer ([0011](../knowledge/decisions/core/0011-software-render-wl-shm.md)): paints the cell
 //! grid straight into a premultiplied `Argb8888` framebuffer, the memory a `wl_shm` buffer maps.
 //!
 //! The framebuffer is the retained state: only damaged rows are repainted into it, so there is no
 //! cell buffer and no copy. Cells, text coverage and overlays match shader.wgsl; the frame around
 //! them (glass body, rounded corners, title bar and buttons) is `chrome.rs` and exists only here.
 //! Driven by `wlapp.rs` (`AXON_BACKEND=wl`); see `knowledge/plan/software-renderer.md`.
-#![allow(dead_code)]
 
 use crate::cell::{
     Cell, Glyphs, MAX_TILES, T_BAR, T_BEAM, T_BOX, T_FIRST_GLYPH, T_STRIKE, T_UNDER, pack,
@@ -344,10 +343,6 @@ impl Soft {
         }
     }
 
-    fn tile_len(&self) -> usize {
-        (self.fonts.cell_w * self.fonts.cell_h) as usize * 3
-    }
-
     fn bake_specials(&mut self) {
         let f = &self.fonts;
         for data in special_tiles(f.cell_w, f.cell_h, f.px, f.ascent) {
@@ -646,13 +641,6 @@ impl Soft {
         self.touched.get(row).copied().unwrap_or(false)
     }
 
-    /// Where the selected pane's grid starts, in framebuffer pixels: its left edge (after the padding) and the top of row 0.
-    pub fn grid_origin(&self) -> (usize, usize) {
-        let (ox, oy) = self.origin();
-        let (x, y, _) = self.content_box();
-        (ox + x, oy + y)
-    }
-
     /// The framebuffer size of the last frame.
     pub fn fb_size(&self) -> (usize, usize) {
         (self.w, self.h)
@@ -889,6 +877,7 @@ fn div255(x: u32) -> u32 {
 /// shader.wgsl `fs_cell` before the overlays: the glyph (`fg` at coverage `c`) over the cell
 /// background, premultiplied. Plain source-over, so a cell with no background (alpha 0) keeps the
 /// glyph at full strength: `fg * c`, alpha `c`.
+#[cfg(test)]
 fn text_px(fg: [u32; 4], bg: [u32; 4], c: u32) -> [u32; 4] {
     let a = bg[3] + div255((255 - bg[3]) * c);
     let m = |i: usize| (fg[i] * c * 255 + bg[i] * bg[3] * (255 - c) + 32512) / 65025;

@@ -1,4 +1,4 @@
-//! Own Wayland client ([0011](../knowledge/decisions/0011-software-render-wl-shm.md)): the wire
+//! Own Wayland client ([0011](../knowledge/decisions/core/0011-software-render-wl-shm.md)): the wire
 //! protocol over the compositor's unix socket, and one window, an `xdg_toplevel` whose pixels are a
 //! `wl_shm` buffer.
 //!

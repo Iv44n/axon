@@ -858,7 +858,16 @@ mod tests {
     #[test]
     fn what_show_prints_reads_back_as_the_same_settings() {
         let c = parsed("[font]\nfamily = \"JetBrains Mono\"\nweight = 600\nletter_spacing = 1.5\n[window]\nopacity = 0.9\n").0;
-        for c in [c, Config::default()] {
+        // Every section away from its defaults, the windows' and the input's too (what `axon config show` prints).
+        let every = parsed(
+            "[font]\nsmoothing = \"gray\"\nhinting = false\nbold = false\n[window]\nblur = true\nstatus_bar = false\n[ui]\nlanguage = \"es\"\n\
+             [input]\nmode = \"chips\"\nclock = \"24h\"\ncursor = \"underline\"\nautosuggest = false\nchips = [\"dir\", \"kube\"]\n\
+             [windows]\ntabs = \"top\"\nside = false\nside_width = 300\n",
+        )
+        .0;
+        assert_ne!(every.windows, WindowsCfg::default());
+        assert_ne!(every.input, InputCfg::default());
+        for c in [c, every, Config::default()] {
             let (back, warnings) = parsed(&describe(&c));
             assert_eq!(back, c);
             assert!(warnings.is_empty(), "{warnings:?}");
@@ -915,7 +924,7 @@ mod tests {
         assert_eq!(
             c,
             Config {
-                font: FontCfg { family: Some("Fira Code".into()), size: 20.0, weight: 700, bold: false, letter_spacing: 1.5, line_height: 1.25, smoothing: Smoothing::Bgr, hinting: false, ..FontCfg::default() },
+                font: FontCfg { family: Some("Fira Code".into()), size: 20.0, weight: 700, bold: false, letter_spacing: 1.5, line_height: 1.25, smoothing: Smoothing::Bgr, hinting: false },
                 opacity: Some(0.7),
                 input: InputCfg { inline: true, chips: vec![Chip::Dir, Chip::Time], clock24: true, cursor: CursorKind::Bar, autosuggest: false },
                 windows: WindowsCfg { tabs: TabsPos::Right, side: false, side_w: 260 },

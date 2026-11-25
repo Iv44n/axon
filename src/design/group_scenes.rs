@@ -1,4 +1,4 @@
-//! The design board's frames of the window list's screens ([0029](../../knowledge/decisions/0029-group-dialog-menus-rename-toasts.md)):
+//! The design board's frames of the window list's screens ([0029](../../knowledge/decisions/workspace/0029-group-dialog-menus-rename-toasts.md)):
 //! the group dialog (new, with its error lines, with the windows ticked, the development template, edit mode, in
 //! Spanish), the context menus of a window, a group, a pane and the empty list, a window's name being edited in its
 //! row or tab, and the toasts of a close and of a group made. Each is painted over the real window and panel by

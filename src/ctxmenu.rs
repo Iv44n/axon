@@ -1,4 +1,4 @@
-//! The context menus of the window list ([0029](../knowledge/decisions/0029-group-dialog-menus-rename-toasts.md)),
+//! The context menus of the window list ([0029](../knowledge/decisions/workspace/0029-group-dialog-menus-rename-toasts.md)),
 //! after the reference's `tabMenu`, `groupMenu`, `paneMenu` and `stripMenu`: what each has, in which order, with
 //! which shortcut and which danger colour. They are `menu::Menu`s (the kit's overlay); this module only decides
 //! their items and numbers the commands, so the app and the design board build the same menus.
@@ -172,6 +172,29 @@ mod tests {
         assert_eq!(m.len(), 4 + 1 + 1 + 2 + 1 + 1 + 2);
         // No groups at all: the heading stays with the new-group item under it.
         assert_eq!(window_menu((0, 0), &[], None, true).len(), 4 + 1 + 1 + 1 + 1 + 2);
+    }
+
+    #[test]
+    fn the_items_of_a_windows_menu_run_these_commands_with_these_marks() {
+        let m = window_menu((100, 100), &groups(), Some(9), true);
+        let ids = |ids: &[Cmd]| ids.iter().map(|c| c.id()).collect::<Vec<_>>();
+        let run: Vec<u32> = m.entries().iter().map(|e| e.0).collect();
+        assert_eq!(
+            run,
+            ids(&[
+                Cmd::Rename, Cmd::Duplicate, Cmd::SplitCols, Cmd::SplitRows, Cmd::MoveTo(7), Cmd::MoveTo(9), Cmd::NewGroupWith,
+                Cmd::RemoveFromGroup, Cmd::CloseWin, Cmd::CloseOthers,
+            ])
+        );
+        // The window's own group is checked; closing is red; the others are plain.
+        let flags: Vec<u8> = m.entries().iter().map(|e| e.1).collect();
+        assert_eq!(flags, [0, 0, 0, 0, 0, menu::CHECKED, 0, 0, menu::DANGER, menu::DANGER]);
+        // Alone, and in no group: nothing to remove, and the last item is red and cannot be chosen.
+        let m = window_menu((100, 100), &groups(), None, false);
+        let e = m.entries();
+        assert!(!e.iter().any(|x| x.0 == Cmd::RemoveFromGroup.id()));
+        assert_eq!(e.last(), Some(&(Cmd::CloseOthers.id(), menu::DANGER | menu::DISABLED)));
+        assert!(e.iter().all(|x| x.1 & menu::CHECKED == 0));
     }
 
     #[test]

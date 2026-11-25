@@ -1,5 +1,5 @@
 //! The app's side of groups, context menus, inline rename and toasts
-//! ([0029](../../knowledge/decisions/0029-group-dialog-menus-rename-toasts.md)): what the screens in `group_dialog.rs`
+//! ([0029](../../knowledge/decisions/workspace/0029-group-dialog-menus-rename-toasts.md)): what the screens in `group_dialog.rs`
 //! and `ctxmenu.rs` and the rename field in `side.rs` do to the windows. The rules (names, colours, what a close
 //! takes out and puts back) are `groups.rs`, pure and tested; this is the part that owns the shells.
 //!
