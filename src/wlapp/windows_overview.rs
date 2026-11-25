@@ -8,6 +8,7 @@ use alacritty_terminal::{
     term::cell::Flags,
 };
 
+use super::groups_ui::Spawn;
 use super::*;
 use crate::overview::{self, Card, Cmd, Overview};
 
@@ -158,40 +159,25 @@ impl App {
         ov.settle();
     }
 
-    /// The index of the window numbered `id`, if it is still there.
-    fn win_index(&self, id: u32) -> Option<usize> {
-        self.wins.iter().position(|w| w.id as u32 == id)
-    }
-
     /// What the overview asked for (`overview::Cmd`). `Go` came with the overview closed; the others left it open.
     pub(super) fn overview_ran(&mut self, id: u32) {
         let Some(cmd) = Cmd::decode(id) else { return };
         match cmd {
             Cmd::Go(id) => {
-                if let Some(i) = self.win_index(id) {
+                if let Some(i) = self.win_index(id as u64) {
                     self.switch_to(i);
                 }
             }
-            Cmd::Close(id) => {
-                if let Some(i) = self.win_index(id) {
-                    self.close_win(i);
-                }
-            }
+            Cmd::Close(id) => self.close_wins(&[id as u64], None),
             Cmd::NewWindow => {
-                self.open_win();
+                self.spawn_win(Spawn::default());
                 self.overlays.toast(tr(Str::OvToastNewWindow), None, 0, Instant::now());
             }
-            Cmd::NewGroup(id) => {
-                let i = id.and_then(|id| self.win_index(id)).unwrap_or(self.cur);
-                self.new_group_for(i);
-            }
+            // The group dialog, over the overview, with the selected card ticked.
+            Cmd::NewGroup(id) => self.open_group_dialog(None, id.into_iter().map(u64::from).collect()),
             Cmd::AddTo(g) => {
                 if (g as usize) < self.groups.len() {
-                    let id = self.open_win();
-                    if let Some(w) = self.wins.iter_mut().find(|w| w.id == id) {
-                        w.group = Some(g as usize);
-                    }
-                    self.rebuild_side();
+                    self.spawn_win(Spawn { group: Some(g as usize), ..Spawn::default() });
                     self.overlays.toast(tr(Str::OvToastAdded), None, 0, Instant::now());
                 }
             }

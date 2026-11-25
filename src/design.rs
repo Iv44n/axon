@@ -33,6 +33,7 @@ use crate::{
     view::View,
 };
 
+mod group_scenes;
 mod overlay_scenes;
 mod overview_scenes;
 
@@ -174,6 +175,9 @@ struct Scene {
     folded: bool,
     /// The first window is split into panes (`side` lists them, or shows their number in its tab).
     panes: Option<PaneScene>,
+    /// A window's name being edited in its row: the window, the text, and whether it is all selected (else the caret
+    /// is at its end).
+    edit: Option<(usize, &'static str, bool)>,
 }
 
 /// What the bar says in the board's scenes: made-up values, the same on every machine.
@@ -214,6 +218,7 @@ fn scenes() -> Vec<Scene> {
         side: None,
         folded: false,
         panes: None,
+        edit: None,
         lang: Lang::En,
     };
     let bar = |chips: &[Chip]| Some((sample_context(), chips.to_vec()));
@@ -393,14 +398,25 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
         let groups = [group("arcton", 1, false, 2 + pane_n), group("docs", 3, s.folded, 1)];
         let entries = crate::side::entries(&[Some(0), Some(0), Some(0), None, Some(1)], &[false, s.folded], &[pane_n, 1, 1, 1, 1]);
         let (ox, oy) = soft.origin();
+        // A window being renamed has no title under its field.
+        if let Some((wi, ..)) = s.edit {
+            items[wi].title.clear();
+        }
+        let edit = s.edit.map(|(wi, text, all)| (wi, text, text.chars().count(), all.then(|| (0, text.chars().count()))));
         if let (TabsPos::Top, _) | (_, None) = (pos, soft.side_rect()) {
             let (x0, x1) = (chrome::TITLE_CLEAR as i32 - 8, W as i32 - 50);
             soft.clear_rect(&mut fb, (ox + x0 as usize, oy, ox + x1 as usize, oy + chrome::TITLE_H));
             crate::side::paint_top(&soft, &mut fb, (x0, x1), &items, hover, &mut Vec::new());
+            if let Some((wi, text, caret, sel)) = edit {
+                crate::side::paint_rename(&soft, &mut fb, crate::side::Layout::Top { x0, x1, n: items.len() }, wi, &crate::side::Edit { text, caret, sel }, hover, &mut Vec::new());
+            }
         } else if let Some(rect) = soft.side_rect() {
             let b = ((rect.0 - ox) as i32, (rect.1 - oy) as i32, (rect.2 - rect.0) as i32, (rect.3 - rect.1) as i32);
             soft.clear_rect(&mut fb, rect);
             crate::side::paint(&soft, &mut fb, b, pos == TabsPos::Left, &i18n::tr(i18n::Str::Windows), &entries, &groups, &items, hover, &mut Vec::new());
+            if let Some((wi, text, caret, sel)) = edit {
+                crate::side::paint_rename(&soft, &mut fb, crate::side::Layout::Side { x0: b.0, y0: b.1, w: b.2, entries: &entries }, wi, &crate::side::Edit { text, caret, sel }, hover, &mut Vec::new());
+            }
         }
     }
     if let (Some(pf), Some(rect), Some(b)) = (&s.prefs, soft.prefs_rect(), soft.prefs_box((W, H))) {
@@ -719,6 +735,14 @@ fn frames() {
         std::fs::write(dir.join(format!("{}.png", f.name)), png(&f.fb, f.w, f.h)).unwrap();
         list += &format!(
             "    {{ name: {:?}, label: {:?}, group: \"overview\", w: {}, h: {}, ox: {ox}, oy: {oy}, opacity: {OPACITY} }},\n",
+            f.name, f.label, f.w, f.h
+        );
+    }
+    // The group dialog, the context menus, the rename field and the toasts of the window list (`design/group_scenes.rs`).
+    for f in group_scenes::frames() {
+        std::fs::write(dir.join(format!("{}.png", f.name)), png(&f.fb, f.w, f.h)).unwrap();
+        list += &format!(
+            "    {{ name: {:?}, label: {:?}, group: \"groups\", w: {}, h: {}, ox: {ox}, oy: {oy}, opacity: {OPACITY} }},\n",
             f.name, f.label, f.w, f.h
         );
     }

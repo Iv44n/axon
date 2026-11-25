@@ -9,6 +9,7 @@ use alacritty_terminal::vte::ansi::Rgb;
 use crate::{
     cell::pack,
     chrome::TITLE_H,
+    icons::{self, Icon},
     paint::{Paint, WHITE, seg},
     palette,
     soft::Soft,
@@ -66,6 +67,8 @@ pub enum Part {
     Close(usize),
     /// The `+`: a new window.
     New,
+    /// The group button beside it (the panel's header only): the dialog for a new group.
+    NewGroup,
     /// A group's header: fold or unfold it.
     Head(usize),
     /// A pane's row under its window: go to the window and focus the pane `(window, pane)`.
@@ -208,10 +211,18 @@ impl Layout<'_> {
         (room / n.max(1) as i32 - TAB_GAP).clamp(TAB_MIN, TAB_W)
     }
 
-    /// The box of the `+`.
+    /// The box of the group button in the panel's header: the right-most, 6 px from the edge. The tabs at the top have none.
+    fn group_box(self) -> Option<Rect> {
+        match self {
+            Layout::Side { x0, y0, w, .. } => Some((x0 + w - 6 - BTN, y0 + (HEAD_H - BTN) / 2 + 2, BTN, BTN)),
+            Layout::Top { .. } => None,
+        }
+    }
+
+    /// The box of the `+`: left of the group button with 2 px between them in the panel, after the last tab at the top.
     fn new_box(self) -> Rect {
         match self {
-            Layout::Side { x0, y0, w, .. } => (x0 + w - 6 - BTN, y0 + (HEAD_H - BTN) / 2 + 2, BTN, BTN),
+            Layout::Side { x0, y0, w, .. } => (x0 + w - 6 - 2 * BTN - 2, y0 + (HEAD_H - BTN) / 2 + 2, BTN, BTN),
             Layout::Top { n, .. } => {
                 let last = self.rect(n.saturating_sub(1));
                 (if n == 0 { last.0 } else { last.0 + last.2 + TAB_GAP }, last.1, TAB_NEW, TAB_H)
@@ -221,6 +232,9 @@ impl Layout<'_> {
 
     /// What is at window pixel `(px, py)`.
     pub fn hit(self, px: f32, py: f32) -> Option<Part> {
+        if self.group_box().is_some_and(|b| inside(b, px, py)) {
+            return Some(Part::NewGroup);
+        }
         if inside(self.new_box(), px, py) {
             return Some(Part::New);
         }
@@ -274,6 +288,15 @@ fn plus(p: &mut Paint, b: Rect, hot: bool) {
         let d = seg(px, py, (cx - 4.5, cy), (cx + 4.5, cy)).min(seg(px, py, (cx, cy - 4.5), (cx, cy + 4.5)));
         (1.2 - d).clamp(0.0, 1.0)
     });
+}
+
+/// The new-group button: a rounded box with a plus in it, lit under the pointer.
+fn group_button(p: &mut Paint, b: Rect, hot: bool) {
+    if hot {
+        p.rrect(b.0, b.1, b.2, b.3, 8.0, WHITE, 0.07);
+    }
+    let c = palette::unit(if hot { palette::FG } else { palette::DIM });
+    icons::paint(p, Icon::Group, b.0 as f32 + b.2 as f32 / 2.0, b.1 as f32 + b.3 as f32 / 2.0, 14.0, 1.5, c, 1.0);
 }
 
 /// The width of the box that says how many panes a tab has (10 px of padding round the digits), or 0.
@@ -334,17 +357,21 @@ fn row_shapes(p: &mut Paint, b: Rect, it: &Item, over: bool, cross_hot: bool, gr
     }
     // The cross, on hover.
     if over {
-        let c = close_box(b);
-        if cross_hot {
-            p.rrect(c.0, c.1, c.2, c.3, 5.0, WHITE, 0.12);
-        }
-        let (cx, cy) = (c.0 as f32 + c.2 as f32 / 2.0, c.1 as f32 + c.3 as f32 / 2.0);
-        let col = palette::unit(if cross_hot { palette::FG } else { palette::DIM });
-        p.shape(c.0, c.1, c.0 + c.2, c.1 + c.3, col, 1.0, &|px, py| {
-            let d = seg(px, py, (cx - 3.0, cy - 3.0), (cx + 3.0, cy + 3.0)).min(seg(px, py, (cx + 3.0, cy - 3.0), (cx - 3.0, cy + 3.0)));
-            (1.0 - d).clamp(0.0, 1.0)
-        });
+        cross(p, close_box(b), cross_hot);
     }
+}
+
+/// A cross in its box `c`, lit when the pointer is on it.
+fn cross(p: &mut Paint, c: Rect, hot: bool) {
+    if hot {
+        p.rrect(c.0, c.1, c.2, c.3, 5.0, WHITE, 0.12);
+    }
+    let (cx, cy) = (c.0 as f32 + c.2 as f32 / 2.0, c.1 as f32 + c.3 as f32 / 2.0);
+    let col = palette::unit(if hot { palette::FG } else { palette::DIM });
+    p.shape(c.0, c.1, c.0 + c.2, c.1 + c.3, col, 1.0, &|px, py| {
+        let d = seg(px, py, (cx - 3.0, cy - 3.0), (cx + 3.0, cy + 3.0)).min(seg(px, py, (cx + 3.0, cy - 3.0), (cx - 3.0, cy + 3.0)));
+        (1.0 - d).clamp(0.0, 1.0)
+    });
 }
 
 /// The shapes of a pane's row in box `b`: background (lit when it is the focused pane of the window on
@@ -491,6 +518,9 @@ pub fn paint(soft: &Soft, fb: &mut [u32], (x0, y0, w, h): Rect, grid_on_right: b
             p.put(hx, y, WHITE, 0.07);
         }
         plus(&mut p, lay.new_box(), hover == Some(Part::New));
+        if let Some(b) = lay.group_box() {
+            group_button(&mut p, b, hover == Some(Part::NewGroup));
+        }
         for (k, e) in entries.iter().enumerate() {
             let b = lay.rect(k);
             if b.1 + b.3 > bottom {
@@ -548,6 +578,92 @@ pub fn paint_top(soft: &Soft, fb: &mut [u32], (x0, x1): (i32, i32), items: &[Ite
     }
 }
 
+// ------------------------------------------------------------------ rename --
+
+/// A window's name being edited in its row (the reference's `.t-edit`): the text, the caret and the selection
+/// (characters). The row is painted with no title and `paint_rename` puts the field over it.
+pub struct Edit<'a> {
+    pub text: &'a str,
+    pub caret: usize,
+    pub sel: Option<(usize, usize)>,
+}
+
+/// The field's height, and how far its text is from its left edge (1 px of border and 6 of padding).
+const EDIT_H: i32 = 22;
+pub const EDIT_PAD: i32 = 7;
+
+/// The field in a row's box `b`: where the title was, up to where the cross is (`flex: 1`).
+fn edit_box((x, y, w, h): Rect) -> Rect {
+    let left = 9 + 13 + 7;
+    (x + left, y + (h - EDIT_H) / 2, (w - left - 5 - CLOSE - 7).max(2 * EDIT_PAD), EDIT_H)
+}
+
+/// How many characters of `cw` pixels fit in a field `w` pixels wide: the text's own padding on the left and a
+/// hairline of room on the right, where a caret after the last character sits.
+pub fn edit_cols(w: i32, cw: i32) -> usize {
+    ((w - EDIT_PAD - 2) / cw.max(1)).max(1) as usize
+}
+
+/// The first character shown when the caret is at `caret` and `cols` fit: the text scrolls just far enough to
+/// keep the caret in view (a function of the caret, nothing is stored).
+pub fn edit_first(caret: usize, cols: usize) -> usize {
+    (caret + 1).saturating_sub(cols)
+}
+
+impl Layout<'_> {
+    /// The field of window `win`'s row or tab, when it is listed.
+    pub fn edit_rect(self, win: usize) -> Option<Rect> {
+        let k = match self {
+            Layout::Side { entries, .. } => entries.iter().position(|e| matches!(e, Entry::Row { win: w, .. } if *w == win))?,
+            Layout::Top { n, .. } if win < n => win,
+            Layout::Top { .. } => return None,
+        };
+        Some(edit_box(self.rect(k)))
+    }
+}
+
+/// Paints the field over window `win`'s row or tab (painted with an empty title): a box with a hairline, the text in
+/// the grid's font, the selection, a solid caret, and the row's cross, which stays while the field has the focus.
+pub fn paint_rename(soft: &Soft, fb: &mut [u32], lay: Layout, win: usize, ed: &Edit, hover: Option<Part>, scratch: &mut Vec<u8>) {
+    let (fw, fh) = soft.fb_size();
+    let (ox, oy) = soft.origin();
+    let Some(b) = lay.edit_rect(win) else { return };
+    if fb.len() < fw * fh {
+        return;
+    }
+    let m = soft.small(0.85);
+    let cw = m.cell_w as i32;
+    let cols = edit_cols(b.2, cw);
+    let first = edit_first(ed.caret, cols);
+    let cy = b.1 + b.3 / 2;
+    let ch = (m.cell_h as i32).min(b.3 - 6);
+    {
+        let mut p = Paint { fb: &mut *fb, w: fw, h: fh, ox: ox as i32, oy: oy as i32, fade: 1.0 };
+        p.rrect(b.0, b.1, b.2, b.3, 6.0, [0.0; 3], 0.45);
+        p.outline(b.0, b.1, b.2, b.3, 6.0, WHITE, 0.25);
+        if let Some((a, z)) = ed.sel {
+            let (a, z) = (a.saturating_sub(first).min(cols), z.saturating_sub(first).min(cols));
+            if z > a {
+                p.rrect(b.0 + EDIT_PAD + a as i32 * cw, cy - ch / 2, (z - a) as i32 * cw, ch, 2.0, palette::unit(palette::ACCENT), 0.30);
+            }
+        }
+        let x = b.0 + EDIT_PAD + (ed.caret - first.min(ed.caret)) as i32 * cw;
+        p.shape(x, cy - ch / 2, x + 1, cy - ch / 2 + ch, palette::unit(palette::FG), 1.0, &|_, _| 1.0);
+        if !over_row(hover, win) {
+            let row = match lay {
+                Layout::Side { entries, .. } => entries.iter().position(|e| matches!(e, Entry::Row { win: w, .. } if *w == win)).map(|k| lay.rect(k)),
+                Layout::Top { .. } => Some(lay.rect(win)),
+            };
+            if let Some(row) = row {
+                cross(&mut p, close_box(row), false);
+            }
+        }
+    }
+    let shown: String = ed.text.chars().skip(first).take(cols).collect();
+    let c = palette::FG;
+    soft.paint_text(fb, ox + (b.0 + EDIT_PAD) as usize, oy + cy as usize, shown.chars(), pack(c.r, c.g, c.b, 255), false, &m, scratch);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -566,6 +682,12 @@ mod tests {
         assert_eq!(lay.hit((c.0 + 3) as f32, (c.1 + 3) as f32), Some(Part::Close(1)));
         let b = lay.new_box();
         assert_eq!(lay.hit((b.0 + 3) as f32, (b.1 + 3) as f32), Some(Part::New));
+        // The group button is the right-most of the two, 2 px from the `+`, the same size; the tabs have none.
+        let g = lay.group_box().unwrap();
+        assert_eq!(lay.hit((g.0 + 3) as f32, (g.1 + 3) as f32), Some(Part::NewGroup));
+        assert_eq!((g.0 - (b.0 + b.2), g.1, g.2, g.3), (2, b.1, b.2, b.3));
+        assert_eq!(g.0 + g.2, 220 - 6, "6 px from the panel's edge");
+        assert!(Layout::Top { x0: 118, x1: 900, n: 3 }.group_box().is_none());
         // The margin, and rows that are not there.
         assert_eq!(lay.hit(2.0, (n.1 + 5) as f32), None);
         let few = rows(1);
@@ -668,6 +790,43 @@ mod tests {
         assert!(a.1 >= 0 && a.1 + a.3 <= TITLE_H as i32 - 1);
         assert_eq!(wide.hit((a.0 + 20) as f32, (a.1 + 10) as f32), Some(Part::Row(0)));
         assert_eq!(wide.hit((a.0 + 20) as f32, 1.0), None);
+    }
+
+    #[test]
+    fn the_rename_field_sits_where_the_title_was_and_stops_before_the_cross() {
+        let e = entries(&[Some(0), None], &[false], &[1, 1]);
+        let lay = Layout::Side { x0: 0, y0: 42, w: 220, entries: &e };
+        // [Head 0, Row 0 (grouped), Row 1]: window 1 is entry 2.
+        let (row, f) = (lay.rect(2), lay.edit_rect(1).unwrap());
+        assert_eq!((f.0 - row.0, f.3), (9 + 13 + 7, 22), "after the icon, 22 px tall as the reference's input");
+        assert_eq!(f.1 - row.1, (ROW_H - 22) / 2, "centred in the row");
+        assert!(f.0 + f.2 <= close_box(row).0, "it ends before the cross");
+        assert_eq!(f.2, 220 - 2 * PAD - 29 - 30, "the reference's flex: 1 between the icon and the cross");
+        // A window the panel does not list (folded away) has no field; nor has one past the tabs.
+        let folded = entries(&[Some(0), None], &[true], &[1, 1]);
+        assert!(Layout::Side { x0: 0, y0: 42, w: 220, entries: &folded }.edit_rect(0).is_none());
+        let top = Layout::Top { x0: 118, x1: 900, n: 2 };
+        assert!(top.edit_rect(1).is_some() && top.edit_rect(2).is_none());
+        let t = top.rect(1);
+        assert_eq!(top.edit_rect(1).unwrap().0, t.0 + 29);
+    }
+
+    #[test]
+    fn the_rename_text_scrolls_just_far_enough_to_keep_the_caret_in_view() {
+        // A field 120 px wide with 8 px characters: (120 - 7 - 2) / 8 = 13 columns.
+        assert_eq!(edit_cols(120, 8), 13);
+        assert_eq!(edit_cols(78, 7), 9, "a name of eight letters fits a narrow tab with its caret after it, with no scrolling");
+        assert_eq!(edit_first(8, 9), 0);
+        assert_eq!(edit_cols(5, 8), 1, "never none");
+        assert_eq!(edit_first(0, 13), 0);
+        assert_eq!(edit_first(12, 13), 0, "the caret at the last column: no scroll yet");
+        assert_eq!(edit_first(13, 13), 1, "one past: scrolled by one");
+        assert_eq!(edit_first(20, 13), 8);
+        // The caret is always inside the window it asks for.
+        for caret in 0..60 {
+            let first = edit_first(caret, 13);
+            assert!(caret >= first && caret - first < 13, "{caret}");
+        }
     }
 
     #[test]

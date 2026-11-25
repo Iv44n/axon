@@ -39,7 +39,9 @@ use crate::{
     commands::{self, Cmd},
     config::{self, Chip, Config, FontCfg},
     context::{self, Context, Probe},
-    input, mouse,
+    ctxmenu,
+    group_dialog, groups::{self, Group},
+    field, input, mouse,
     overlay::{self, Click, Geo, Overlay, Ran, Reply, Stack},
     paint::Paint,
     overlay_demo, overview, palette, panes, picker::Picker, session,
@@ -50,6 +52,8 @@ use crate::{
     xkb::{Key, Xkb},
 };
 use windows_overview::AppGrid;
+
+mod groups_ui;
 
 /// How long a redraw may wait for the compositor's frame callback or buffer release before axon
 /// assumes it was lost (suspend and resume, a hidden window) and draws anyway.
@@ -200,6 +204,8 @@ struct Win {
     /// The number the window was given when it opened, and the group it is in (an index into `App::groups`).
     id: u64,
     group: Option<usize>,
+    /// The name the user gave it (empty: the automatic one, `auto_title`).
+    name: String,
 }
 
 impl Win {
@@ -207,13 +213,6 @@ impl Win {
     fn pane(&self) -> &Pane {
         &self.panes[self.focus]
     }
-}
-
-/// A group of windows: a name, one of the eight colours, and whether the panel shows its windows.
-struct Group {
-    name: String,
-    color: u8,
-    collapsed: bool,
 }
 
 impl Drop for Pane {
@@ -245,6 +244,15 @@ struct App {
     groups: Vec<Group>,
     groups_made: usize,
     entries: Vec<side::Entry>,
+    /// A window's name being edited in its row, what a close took out (kept until its toast is gone), what the open
+    /// context menu is about, the last press on a row and on a group's header (for double clicks), and where the group
+    /// dialog leaves its answer (`wlapp/groups_ui.rs`).
+    rename: Option<groups_ui::Rename>,
+    undo: Option<groups_ui::Undo>,
+    menu_for: Option<groups_ui::Target>,
+    row_click: Option<(u64, u32)>,
+    head_click: Option<(u32, u32)>,
+    answer: group_dialog::Answer,
     xkb: Option<Xkb>,
     ui: Ui,
     hover: Hit,
@@ -339,9 +347,14 @@ fn win_place(w: &Win) -> String {
     pane_place(w.pane())
 }
 
-/// The name of a window: that of the pane with the focus.
-fn win_title(w: &Win) -> String {
+/// The name a window has without one of its own: that of the pane with the focus.
+fn auto_title(w: &Win) -> String {
     pane_title(w.pane())
+}
+
+/// The name of a window: the one the user gave it, else the automatic one.
+fn win_title(w: &Win) -> String {
+    if w.name.is_empty() { auto_title(w) } else { w.name.clone() }
 }
 
 /// What a pane's shell is doing, from its hook.
@@ -411,20 +424,43 @@ fn group_items(groups: &[Group], wins: &[Win]) -> Vec<side::GroupItem> {
         .collect()
 }
 
+/// A window's name being edited: its index and the field, painted over its row (with no title under it).
+type Editing<'a> = Option<(usize, &'a field::Field)>;
+
+/// The edit view of a field for the panel's painter.
+fn edit_of(f: &field::Field) -> side::Edit<'_> {
+    side::Edit { text: f.text(), caret: f.caret(), sel: f.selection() }
+}
+
 /// Paints the panel of windows over its cleared box.
 #[allow(clippy::too_many_arguments)]
-fn paint_side(soft: &Soft, fb: &mut [u32], wins: &[Win], groups: &[Group], entries: &[side::Entry], cur: usize, right: bool, hover: Option<side::Part>, scratch: &mut Vec<u8>) {
+fn paint_side(soft: &Soft, fb: &mut [u32], wins: &[Win], groups: &[Group], entries: &[side::Entry], cur: usize, right: bool, hover: Option<side::Part>, edit: Editing, scratch: &mut Vec<u8>) {
     let (Some(rect), Some(b)) = (soft.side_rect(), side_box(soft)) else { return };
     soft.clear_rect(fb, rect);
-    side::paint(soft, fb, b, !right, &tr(Str::Windows), entries, &group_items(groups, wins), &items(wins, cur, false), hover, scratch);
+    let mut list = items(wins, cur, false);
+    if let Some((wi, _)) = edit {
+        list[wi].title.clear();
+    }
+    side::paint(soft, fb, b, !right, &tr(Str::Windows), entries, &group_items(groups, wins), &list, hover, scratch);
+    if let Some((wi, f)) = edit {
+        side::paint_rename(soft, fb, side::Layout::Side { x0: b.0, y0: b.1, w: b.2, entries }, wi, &edit_of(f), hover, scratch);
+    }
 }
 
 /// Paints the tabs in the title bar, over the bar cleared between the buttons.
-fn paint_tabs(soft: &Soft, fb: &mut [u32], wins: &[Win], cur: usize, w: u32, hover: Option<side::Part>, scratch: &mut Vec<u8>) {
+#[allow(clippy::too_many_arguments)]
+fn paint_tabs(soft: &Soft, fb: &mut [u32], wins: &[Win], cur: usize, w: u32, hover: Option<side::Part>, edit: Editing, scratch: &mut Vec<u8>) {
     let (ox, oy) = soft.origin();
     let (x0, x1) = tabs_span(w);
     soft.clear_rect(fb, (ox + x0 as usize, oy, ox + x1 as usize, oy + chrome::TITLE_H));
-    side::paint_top(soft, fb, (x0, x1), &items(wins, cur, true), hover, scratch);
+    let mut list = items(wins, cur, true);
+    if let Some((wi, _)) = edit {
+        list[wi].title.clear();
+    }
+    side::paint_top(soft, fb, (x0, x1), &list, hover, scratch);
+    if let Some((wi, f)) = edit {
+        side::paint_rename(soft, fb, side::Layout::Top { x0, x1, n: wins.len() }, wi, &edit_of(f), hover, scratch);
+    }
 }
 
 /// Runs the app. Returns false, with nothing shown, if this backend cannot start here (no Wayland
@@ -477,7 +513,7 @@ impl Pane {
 impl Win {
     /// A window with one pane, numbered `id`.
     fn new(pane: Pane, id: u64) -> Win {
-        Win { panes: vec![pane], focus: 0, kind: panes::Kind::Single, unread: false, id, group: None }
+        Win { panes: vec![pane], focus: 0, kind: panes::Kind::Single, unread: false, id, group: None, name: String::new() }
     }
 }
 
@@ -554,6 +590,12 @@ impl App {
             groups: Vec::new(),
             groups_made: 0,
             entries: Vec::new(),
+            rename: None,
+            undo: None,
+            menu_for: None,
+            row_click: None,
+            head_click: None,
+            answer: group_dialog::Answer::default(),
             xkb,
             ui,
             hover: Hit::Client,
@@ -619,6 +661,12 @@ impl App {
         if std::env::var_os("AXON_OVERVIEW").is_some() {
             app.toggle_overview();
         }
+        // Another: start with one of the window list's screens open (the group dialog, a menu, a rename, a close with its toast).
+        if let Ok(kind) = std::env::var("AXON_LIST_UI") {
+            if !app.list_ui(&kind) {
+                eprintln!("axon: AXON_LIST_UI is one of dialog, edit, menu, group-menu, pane-menu, strip-menu, rename, close, toast (edit and group-menu need AXON_GROUPS=1)");
+            }
+        }
         // Another: start with one of the overlay kit's screens open (`field`, `list`, `menu`, `toast`, `modal`) or the palette.
         if let Ok(kind) = std::env::var("AXON_DEMO_OVERLAY") {
             if !app.demo_overlay(&kind) {
@@ -636,7 +684,7 @@ impl App {
             // Block until the compositor, the PTY thread or a held key needs us; and, when a redraw is
             // stuck waiting for the compositor, only until it is clear that it will not answer.
             let now = Instant::now();
-            let timeout = [self.repeat.as_ref().map(|r| r.at), self.waiting.map(|t| t + STALL), self.save_at, self.overlays.deadline(now)]
+            let timeout = [self.repeat.as_ref().map(|r| r.at), self.waiting.map(|t| t + STALL), self.save_at, self.overlays.deadline(now), self.undo.as_ref().map(|u| u.until)]
                 .into_iter()
                 .chain(self.wins[self.cur].panes.iter().flat_map(|p| [p.refresh.due, p.refresh.clock_at]))
                 .flatten()
@@ -683,6 +731,7 @@ impl App {
                 overlay::Tick::Rest => {}
             }
             self.tick_save();
+            self.tick_undo(Instant::now());
             if self.waiting.is_some_and(|t| t.elapsed() >= STALL) {
                 self.wl.give_up_waiting();
                 self.waiting = None;
@@ -761,11 +810,12 @@ impl App {
         self.close_shown = cross;
         let top = self.cfg.windows.tabs == config::TabsPos::Top;
         if self.soft.last_full || self.side_dirty || (self.soft.title_painted && top) {
+            let edit: Editing = self.rename.as_ref().and_then(|r| self.wins.iter().position(|w| w.id == r.win).map(|wi| (wi, &r.field)));
             if top {
-                paint_tabs(&self.soft, fb, &self.wins, self.cur, self.w, self.side_hover, &mut self.side_scratch);
+                paint_tabs(&self.soft, fb, &self.wins, self.cur, self.w, self.side_hover, edit, &mut self.side_scratch);
             } else {
                 let right = self.cfg.windows.tabs == config::TabsPos::Right;
-                paint_side(&self.soft, fb, &self.wins, &self.groups, &self.entries, self.cur, right, self.side_hover, &mut self.side_scratch);
+                paint_side(&self.soft, fb, &self.wins, &self.groups, &self.entries, self.cur, right, self.side_hover, edit, &mut self.side_scratch);
             }
             self.side_dirty = false;
         }
@@ -938,10 +988,9 @@ impl App {
     }
 
     fn toggle_side(&mut self) {
-        // With the tabs at the top there is no panel to show: say so, as the reference does.
+        // The tabs at the top have no panel to show or hide: the reference says so.
         if self.tabs_on_top() {
-            self.overlays.toast(tr(Str::ToastNoPanel), None, 0, Instant::now());
-            self.dirty = true;
+            self.toast(tr(Str::ToastNoPanel));
             return;
         }
         self.cfg.windows.side = !self.cfg.windows.side;
@@ -955,27 +1004,10 @@ impl App {
 
     // ------------------------------------------------------------ windows --
 
-    /// Opens a window with a shell of its own and goes to it.
+    /// Opens a window with a shell of its own, where the one on screen is, and goes to it.
     fn new_win(&mut self) {
         self.close_overview();
-        let id = self.open_win();
-        if let Some(i) = self.wins.iter().position(|w| w.id == id) {
-            self.switch_to(i);
-        }
-    }
-
-    /// Opens a window with a shell of its own, in none of the groups, and stays where it is. Returns its number.
-    fn open_win(&mut self) -> u64 {
-        let n = self.next_win;
-        self.next_win += 1;
-        let cfg_chips = self.chips_on();
-        // The new shell starts where the one you were in is.
-        let dir = std::fs::read_link(format!("/proc/{}/cwd", self.wins[self.cur].pane().shell)).ok();
-        let pane = Pane::spawn(&self.wake, n, (self.cols, self.rows, self.cw, self.ch), self.cfg.input.cursor, cfg_chips, dir);
-        self.wins.push(Win::new(pane, n));
-        self.rebuild_side();
-        self.sync_flag();
-        n
+        self.spawn_win(groups_ui::Spawn { activate: true, ..groups_ui::Spawn::default() });
     }
 
     /// Closes window `i` (its shell is told to end); the last one closing quits.
@@ -1009,6 +1041,7 @@ impl App {
         let ws = self.soft.workspace(self.w, self.h);
         let (min_w, min_h) = self.soft.min_pane(panes::MIN_COLS, panes::MIN_ROWS);
         if !panes::fits(kind, n + 1, ws, min_w, min_h) {
+            self.toast(tr(Str::ToastNoRoom));
             return;
         }
         let at = focus + 1;
@@ -1122,40 +1155,27 @@ impl App {
 
     /// Drops the groups that no window is in, and renumbers the others in the windows.
     fn prune_groups(&mut self) {
-        let mut g = 0;
-        while g < self.groups.len() {
-            if self.wins.iter().any(|w| w.group == Some(g)) {
-                g += 1;
-                continue;
-            }
-            self.groups.remove(g);
-            for w in &mut self.wins {
-                w.group = w.group.map(|x| if x > g { x - 1 } else { x });
-            }
+        let mut of: Vec<Option<usize>> = self.wins.iter().map(|w| w.group).collect();
+        groups::prune(&mut self.groups, &mut of);
+        for (w, g) in self.wins.iter_mut().zip(of) {
+            w.group = g;
         }
     }
 
-    /// A new group, named and coloured for the next in line, around the window on screen.
+    /// A new group, named and coloured for the next in line, around the window on screen (a debugging aid:
+    /// `AXON_GROUPS`; the dialog, `Alt+G`, is how a group is made).
     fn new_group(&mut self) {
-        self.new_group_for(self.cur);
-    }
-
-    /// A new group around window `wi` (the overview makes one around the card it has selected).
-    fn new_group_for(&mut self, wi: usize) {
         self.groups_made += 1;
-        let color = (self.groups.len() % 8) as u8;
-        self.groups.push(Group { name: format!("{} {}", tr(Str::GroupName), self.groups_made), color, collapsed: false });
-        self.wins[wi].group = Some(self.groups.len() - 1);
+        let color = groups::next_color(&self.groups.iter().map(|g| g.color).collect::<Vec<_>>());
+        self.groups.push(Group { id: self.groups_made as u32, name: format!("{} {}", tr(Str::GroupName), self.groups_made), color, collapsed: false });
+        self.wins[self.cur].group = Some(self.groups.len() - 1);
         self.prune_groups();
         self.rebuild_side();
     }
 
     /// Takes the window on screen out of its group.
     fn ungroup(&mut self) {
-        if self.wins[self.cur].group.take().is_some() {
-            self.prune_groups();
-            self.rebuild_side();
-        }
+        self.move_to_group(self.cur, None);
     }
 
     /// Folds or unfolds group `g` in the panel.
@@ -1257,6 +1277,17 @@ impl App {
                     _ => return,
                 };
                 if self.overlay_button(b, pressed, time) {
+                    return;
+                }
+                // A window's name being edited: a press on its field is the field's, a press elsewhere ends the edit
+                // and goes on; a right click on the list of windows opens the menu of what is under it.
+                if b == 0 && !pressed {
+                    self.rename_release();
+                }
+                if b == 0 && pressed && self.rename.is_some() && self.rename_press(self.mouse.0, self.mouse.1, time) {
+                    return;
+                }
+                if b == 2 && pressed && self.open_context_menu(self.mouse.0, self.mouse.1) {
                     return;
                 }
                 if self.panel.is_some() && b == 0 && self.panel_button(pressed) {
@@ -1708,6 +1739,13 @@ impl App {
             self.overlay_reply(r);
             return !closed; // the key that closed it must not repeat into the shell
         }
+        // A window's name being edited has the keyboard: Enter commits, Esc cancels, the shell hears nothing.
+        if let Some(keep) = self.rename_key(k) {
+            return keep;
+        }
+        if self.f2_rename(k) {
+            return false;
+        }
         let m = k.mods;
         if m.ctrl && !m.alt && !m.shift && k.sym == 0x2c {
             self.toggle_settings();
@@ -1735,11 +1773,17 @@ impl App {
                     self.close_pane(self.cur, self.wins[self.cur].focus);
                     return false;
                 }
-                (Some('w'), _) => self.close_win(self.cur),
+                (Some('w'), _) => {
+                    self.close_wins(&[self.wins[self.cur].id], None);
+                    return false;
+                }
                 (Some('b'), _) => self.toggle_side(),
                 (Some('o'), _) => self.toggle_overview(),
                 (Some('g'), _) if m.shift => self.ungroup(),
-                (Some('g'), _) => self.new_group(),
+                (Some('g'), _) => {
+                    self.group_dialog_here();
+                    return false;
+                }
                 (_, 0x5c) => {
                     self.split(panes::Dir::Cols);
                     return false;
@@ -1892,7 +1936,9 @@ impl App {
                 self.overlays.toast(tr(Str::OvToastClosed), Some(tr(Str::OvUndo)), overlay_demo::CMD_UNDO, Instant::now());
             }
             overview::TAG => self.overview_ran(ran.id),
-            overlay::TOAST => eprintln!("axon: toast action {}", ran.id),
+            overlay::TOAST => self.toast_ran(ran.id),
+            ctxmenu::TAG => self.menu_ran(ran.id),
+            group_dialog::TAG => self.dialog_ran(ran.id),
             _ => {}
         }
     }
@@ -1911,7 +1957,7 @@ impl App {
     fn run_cmd(&mut self, cmd: Cmd) {
         match cmd {
             Cmd::NewWindow => self.new_win(),
-            Cmd::NewGroup => self.new_group(),
+            Cmd::NewGroup => self.group_dialog_here(),
             Cmd::NewPane => self.split(panes::Dir::Auto),
             Cmd::SplitCols => self.split(panes::Dir::Cols),
             Cmd::SplitRows => self.split(panes::Dir::Rows),
@@ -2092,6 +2138,9 @@ impl App {
         let (ml, mt, _) = chrome::margins(self.ui.maximized);
         let (x, y) = (x - ml as f32, y - mt as f32);
         self.mouse = (x, y);
+        if self.rename_drag(x) {
+            return;
+        }
         if !self.overlays.is_empty() {
             let g = self.geo();
             let r = self.overlays.pointer(x, y, g);
@@ -2225,10 +2274,28 @@ impl App {
             Hit::Edge(edges) => self.wl.begin_resize(edges),
             Hit::Prefs => {}
             Hit::Side => match self.side_hover {
-                Some(side::Part::Row(i)) => self.go_to(i),
-                Some(side::Part::Close(i)) => self.close_win(i),
+                // A second press on a row soon after the first renames its window, on a group's header edits the group.
+                Some(side::Part::Row(i)) => {
+                    let id = self.wins[i].id;
+                    let double = self.row_click.is_some_and(|(w, t)| w == id && time.wrapping_sub(t) < MULTI_CLICK_MS);
+                    self.row_click = if double { None } else { Some((id, time)) };
+                    self.go_to(i);
+                    if double {
+                        self.start_rename(i);
+                    }
+                }
+                Some(side::Part::Close(i)) => self.close_wins(&[self.wins[i].id], None),
                 Some(side::Part::New) => self.new_win(),
-                Some(side::Part::Head(g)) => self.fold(g),
+                Some(side::Part::NewGroup) => self.group_dialog_here(),
+                Some(side::Part::Head(g)) => {
+                    let id = self.groups[g].id;
+                    let double = self.head_click.is_some_and(|(h, t)| h == id && time.wrapping_sub(t) < MULTI_CLICK_MS);
+                    self.head_click = if double { None } else { Some((id, time)) };
+                    self.fold(g);
+                    if double {
+                        self.open_group_dialog(Some(id), Vec::new());
+                    }
+                }
                 Some(side::Part::Pane(wi, pi)) => {
                     self.go_to(wi);
                     self.set_focus(pi);

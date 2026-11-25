@@ -143,6 +143,46 @@ strings! {
     HintComplete: "complete", "completar";
     HintClear: "clear", "limpiar";
     HintSettings: "settings", "ajustes";
+    GroupEdit: "Edit group", "Editar grupo";
+    GroupEditHint: "change the name or the color", "cambia el nombre o el color";
+    GroupSave: "Save", "Guardar";
+    GroupColor: "Color", "Color";
+    GroupWindows: "Windows to group", "Ventanas que se agrupan";
+    GroupNewWindows: "Create new windows", "Crear ventanas nuevas";
+    TplNone: "None", "Ninguna";
+    TplNoneHint: "Only the chosen windows", "Solo las ventanas elegidas";
+    TplOne: "One window", "Una ventana";
+    TplOneHint: "An empty terminal", "Una terminal vacía";
+    TplDev: "Development", "Desarrollo";
+    TplDevHint: "server · tests · git", "servidor · pruebas · git";
+    TplServer: "server", "servidor";
+    TplTests: "tests", "pruebas";
+    TplGit: "git", "git";
+    ErrNameEmpty: "Give the group a name.", "Ponle un nombre al grupo.";
+    ErrNameTaken: "There is already a group with that name.", "Ya hay un grupo con ese nombre.";
+    ErrNothing: "Choose at least one window or create a new one.", "Elige al menos una ventana o crea una nueva.";
+    WinOne: "window", "ventana";
+    WinMany: "windows", "ventanas";
+    MenuSplitRows: "Split into rows", "Dividir en filas";
+    MenuRemoveFromGroup: "Remove from group", "Quitar del grupo";
+    MenuCloseWin: "Close window", "Cerrar ventana";
+    MenuEditGroup: "Edit name and color…", "Editar nombre y color…";
+    MenuCollapse: "Collapse group", "Contraer grupo";
+    MenuExpand: "Expand group", "Expandir grupo";
+    MenuNewWinInGroup: "New window in the group", "Nueva ventana en el grupo";
+    MenuDissolve: "Dissolve group", "Disolver grupo";
+    MenuCloseGroup: "Close group", "Cerrar grupo";
+    MenuGoPane: "Go to this pane", "Ir a este panel";
+    MenuClosePane: "Close pane", "Cerrar panel";
+    ToastClosed: "Window “{}” closed", "Ventana «{}» cerrada";
+    ToastClosedMany: "{} windows closed", "{} ventanas cerradas";
+    ToastGroupClosed: "Group “{}” closed", "Grupo «{}» cerrado";
+    ToastMoved: "“{}” moved to “{}”", "«{}» movida a «{}»";
+    ToastUngrouped: "“{}” out of the group", "«{}» fuera del grupo";
+    ToastDissolved: "Group “{}” dissolved", "Grupo «{}» disuelto";
+    ToastGroupMade: "Group “{}” created · {} {}", "Grupo «{}» creado · {} {}";
+    ToastGroupSaved: "Group “{}” updated", "Grupo «{}» actualizado";
+    ToastNoRoom: "No room for another pane", "No hay sitio para otro panel";
     Cancel: "Cancel", "Cancelar";
     OvNoMatches: "Nothing matches", "Nada coincide con";
     OvKeyMove: "move", "moverse";
@@ -235,6 +275,14 @@ mod tests {
             }
         }
         assert_ne!(tr_in(Lang::En, Str::Reset), tr_in(Lang::Es, Str::Reset));
+    }
+
+    #[test]
+    fn sentences_with_names_have_the_same_holes_in_both_languages() {
+        for key in [Str::ToastClosed, Str::ToastClosedMany, Str::ToastGroupClosed, Str::ToastMoved, Str::ToastUngrouped, Str::ToastDissolved, Str::ToastGroupMade, Str::ToastGroupSaved] {
+            let holes = |l| tr_in(l, key).matches("{}").count();
+            assert!(holes(Lang::En) > 0 && holes(Lang::En) == holes(Lang::Es), "{key:?}");
+        }
     }
 
     #[test]
