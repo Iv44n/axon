@@ -1,4 +1,5 @@
-# Installs axon on Windows from the folder this script sits in (a release bundle, scripts/package.ps1), or removes it:
+# Installs axon on Windows from the folder this script sits in (a release bundle, scripts/package.ps1) or, in a
+# checkout, from `cargo build --release`'s target\release\axon.exe; or removes it:
 #
 #   .\install.ps1                      install under %LOCALAPPDATA%\Programs\axon, for you, no administrator needed
 #   .\install.ps1 -Prefix D:\Tools\axon
@@ -46,8 +47,18 @@ if ($Uninstall) {
     return
 }
 
+# Where the files come from: beside this script (a bundle), or a checkout's build and assets.
 $src = $PSScriptRoot
-if (-not (Test-Path (Join-Path $src 'axon.exe'))) { throw "axon: there is no axon.exe next to install.ps1 ($src)" }
+$assets = $src
+if (-not (Test-Path (Join-Path $src 'axon.exe'))) {
+    $root = Split-Path $src
+    if (Test-Path (Join-Path $root 'target\release\axon.exe')) {
+        $assets = Join-Path $root 'assets'
+        $src = Join-Path $root 'target\release'
+    } else {
+        throw "axon: there is no axon.exe next to install.ps1 ($src); in a checkout, run 'cargo build --release' first"
+    }
+}
 if (-not [IO.Path]::IsPathRooted($Prefix)) { throw "axon: -Prefix must be an absolute path" }
 
 New-Item -ItemType Directory -Force $Prefix | Out-Null
@@ -58,10 +69,12 @@ try {
 } catch {
     throw "axon: could not write $exe (is axon running? close its windows and run this again): $($_.Exception.Message)"
 }
-foreach ($f in 'axon.ico', 'config.example', 'install.ps1') {
-    $from = Join-Path $src $f
+foreach ($f in 'axon.ico', 'config.example') {
+    $from = Join-Path $assets $f
     if ((Test-Path $from) -and -not (Same-Dir (Split-Path $from) $Prefix)) { Copy-Item -Force $from (Join-Path $Prefix $f) }
 }
+# The uninstaller (Settings > Apps runs it) is this script.
+if (-not (Same-Dir $PSScriptRoot $Prefix)) { Copy-Item -Force $PSCommandPath (Join-Path $Prefix 'install.ps1') }
 
 $path = Get-UserPath
 if (-not ($path | Where-Object { Same-Dir $_ $Prefix })) { Set-UserPath (@($path) + $Prefix) }

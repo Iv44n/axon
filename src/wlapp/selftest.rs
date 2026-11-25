@@ -1,6 +1,7 @@
 //! `AXON_SELFTEST=<folder>` (ADR 0039): the app tests itself, for CI, where nobody is there to look. It runs the real
 //! window and shell: types a command through the same path a key takes, waits for what the shell prints, moves to
-//! another directory, puts text on the clipboard and reads it back, maximizes and restores the window, then writes
+//! another directory, puts text on the clipboard and reads it back, maximizes and restores the window, lets it idle
+//! and counts the CPU it uses and the memory it holds, then writes
 //! `selftest.txt` (what happened, and `RESULT: ok` or `RESULT: FAILED`) and `frame.argb` (the window's pixels: the
 //! width and the height as two little-endian `u32`, then each pixel's `u32`) into the folder and exits with 0 or 1.
 //! Nothing here runs unless the variable is set.
@@ -17,12 +18,43 @@ use alacritty_terminal::{
 
 use super::*;
 
+/// The CPU time this process has used, in milliseconds.
+fn cpu_ms() -> u64 {
+    #[cfg(windows)]
+    return crate::win::cpu_ms();
+    // `utime` and `stime` of /proc/self/stat (fields 14 and 15, after the command in parentheses), in clock ticks of 10 ms.
+    #[cfg(not(windows))]
+    return std::fs::read_to_string("/proc/self/stat")
+        .ok()
+        .and_then(|s| {
+            let f: Vec<&str> = s.rsplit_once(')')?.1.split_whitespace().collect();
+            Some((f.get(11)?.parse::<u64>().ok()? + f.get(12)?.parse::<u64>().ok()?) * 10)
+        })
+        .unwrap_or(0);
+}
+
+/// The memory this process holds in RAM, in kilobytes.
+fn resident_kb() -> u64 {
+    #[cfg(windows)]
+    return crate::win::resident_kb();
+    #[cfg(not(windows))]
+    return std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| s.lines().find_map(|l| l.strip_prefix("VmRSS:")?.trim().strip_suffix("kB")?.trim().parse().ok()))
+        .unwrap_or(0);
+}
+
 /// A command whose output only exists if the shell ran it: the sum is the shell's, not part of what is typed.
 const COMMAND: &str = if cfg!(windows) { "echo (\"axon-selftest-\" + 6 * 7)" } else { "echo axon-selftest-$((6*7))" };
 const MARK: &str = "axon-selftest-42";
 /// Where the second command takes the shell, and what the pane's directory ends in once it is there.
 const CD: &str = if cfg!(windows) { "Set-Location $env:TEMP" } else { "cd /tmp" };
 const CD_ENDS: [&str; 2] = ["temp", "tmp"];
+/// How long the window settles after the last step, and how long it is then left alone to be counted.
+const SETTLE: Duration = Duration::from_secs(1);
+const IDLE: Duration = Duration::from_secs(3);
+/// The most CPU an idle window may use in `IDLE`: the rule is none; this is a margin for the system's own noise.
+const IDLE_CPU_MAX_MS: u64 = 150;
 /// How long the whole run may take before it is a failure.
 const LIMIT: Duration = Duration::from_secs(60);
 const STEP: Duration = Duration::from_millis(200);
@@ -35,6 +67,10 @@ enum Phase {
     WaitDir,
     WaitMaximized,
     WaitRestored,
+    /// Nothing happens for `SETTLE`, then the CPU time is noted ...
+    Settle,
+    /// ... and nothing happens for `IDLE`, then it is noted again.
+    Idle,
 }
 
 pub struct Run {
@@ -44,6 +80,8 @@ pub struct Run {
     pub next: Instant,
     phase: Phase,
     phase_at: Instant,
+    /// The process's CPU time (ms) when the idle count started.
+    cpu0: u64,
     log: String,
 }
 
@@ -52,7 +90,7 @@ impl Run {
     pub fn from_env() -> Option<Run> {
         let dir = std::env::var_os("AXON_SELFTEST").filter(|d| !d.is_empty())?;
         let now = Instant::now();
-        Some(Run { dir: PathBuf::from(dir), start: now, next: now + Duration::from_secs(2), phase: Phase::Start, phase_at: now, log: String::new() })
+        Some(Run { dir: PathBuf::from(dir), start: now, next: now + Duration::from_secs(2), phase: Phase::Start, phase_at: now, cpu0: 0, log: String::new() })
     }
 }
 
@@ -115,7 +153,17 @@ impl App {
             }
             Phase::WaitRestored if !self.ui.maximized => {
                 let _ = writeln!(run.log, "restore: back to {}x{} after {} ms", self.w, self.h, ms(run.phase_at));
-                return self.selftest_end(run, None);
+                (run.phase, run.phase_at, run.next) = (Phase::Settle, now, now + SETTLE);
+            }
+            Phase::Settle => {
+                run.cpu0 = cpu_ms();
+                (run.phase, run.phase_at, run.next) = (Phase::Idle, now, now + IDLE);
+            }
+            Phase::Idle => {
+                let used = cpu_ms().saturating_sub(run.cpu0);
+                let _ = writeln!(run.log, "idle: {used} ms of CPU in {} ms; resident memory {:.1} MB", ms(run.phase_at), resident_kb() as f64 / 1024.0);
+                let failure = (used > IDLE_CPU_MAX_MS).then(|| format!("an idle window used {used} ms of CPU in {} ms (the most is {IDLE_CPU_MAX_MS})", ms(run.phase_at)));
+                return self.selftest_end(run, failure);
             }
             _ => {}
         }

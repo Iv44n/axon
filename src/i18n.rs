@@ -6,6 +6,7 @@
 //! with no allocation. `[ui] language` is `auto` (from `LC_ALL`, `LC_MESSAGES` or `LANG`), `en` or `es`.
 //! The config file, the command line and the shell hooks stay in English: they are for tools and for
 //! people who read documentation; this is what the window says.
+#[cfg(not(test))]
 use std::sync::atomic::{AtomicU8, Ordering};
 
 /// A language the interface is written in.
@@ -67,6 +68,7 @@ impl Setting {
     }
 }
 
+#[cfg(not(test))]
 static CURRENT: AtomicU8 = AtomicU8::new(0);
 
 // Tests run in parallel and some paint the Spanish board: the language is each test's own, not one all of them share.

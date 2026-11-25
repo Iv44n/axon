@@ -32,7 +32,8 @@ use windows_sys::{
             Diagnostics::Debug::ReadProcessMemory,
             LibraryLoader::GetModuleHandleW,
             Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock},
-            Threading::{GetExitCodeProcess, INFINITE, OpenProcess, PROCESS_BASIC_INFORMATION, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ},
+            ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS},
+            Threading::{GetCurrentProcess, GetExitCodeProcess, GetProcessTimes, INFINITE, OpenProcess, PROCESS_BASIC_INFORMATION, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ},
         },
         UI::{
             Input::KeyboardAndMouse::*,
@@ -1000,6 +1001,32 @@ pub fn process_alive(pid: u32) -> bool {
         let ok = GetExitCodeProcess(h, &mut code) != 0 && code == STILL_ACTIVE as u32;
         CloseHandle(h);
         ok
+    }
+}
+
+/// The CPU time this process has used so far (kernel and user), in milliseconds: the self-test's idle check.
+pub fn cpu_ms() -> u64 {
+    // SAFETY: the pseudo-handle of this process and four FILETIMEs to fill.
+    unsafe {
+        let (mut created, mut exited, mut kernel, mut user): (FILETIME, FILETIME, FILETIME, FILETIME) = zeroed();
+        if GetProcessTimes(GetCurrentProcess(), &mut created, &mut exited, &mut kernel, &mut user) == 0 {
+            return 0;
+        }
+        let t = |f: FILETIME| ((f.dwHighDateTime as u64) << 32 | f.dwLowDateTime as u64) / 10_000; // 100 ns units
+        t(kernel) + t(user)
+    }
+}
+
+/// The memory this process holds in RAM (its working set), in kilobytes: the Windows counterpart of the resident set.
+pub fn resident_kb() -> u64 {
+    // SAFETY: a counters struct of the size it says, filled for this process.
+    unsafe {
+        let mut c: PROCESS_MEMORY_COUNTERS = zeroed();
+        c.cb = size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+        if K32GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) == 0 {
+            return 0;
+        }
+        c.WorkingSetSize as u64 / 1024
     }
 }
 
