@@ -79,6 +79,7 @@ Not caches:
 | `Rgba16Float` swapchain (8 bytes per pixel, chosen by accident) | oversized | `Bgra8Unorm` if the look allows; moot: the GPU path goes away ([0011](../../../knowledge/decisions/core/0011-software-render-wl-shm.md)) | pending |
 | `winit` + `wgpu` (GPU stack floor: ~94 MB RSS; spike without it: 8.7 MB) | dependency | Own Wayland client + CPU renderer into `wl_shm` ([plan](../../../knowledge/plan/software-renderer.md)) | accepted, pending |
 | `dirty`, `last_cursor`, `last_sel` in `State` | damage protocol | Keep | n/a |
+| `panes::Tracks` on `Group` (a split's sizes) | authoritative user state, not a cache: nothing recomputes it | Fixed 66 bytes (`u16` weight per track, 16 per axis, the count they hold for); zero = even, another count = even, so no path that changes a group invalidates it ([0045](../../../knowledge/decisions/workspace/0045-a-split-can-be-resized.md)) | done 2026-11-26 |
 
 Plan and order: `knowledge/plan/own-implementations.md`.
 

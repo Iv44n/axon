@@ -342,7 +342,7 @@ mod tests {
     /// The real palette: the commands' own entries for a window of three in a group and one apart, the loose one on screen.
     fn real() -> Picker {
         let (wins, groups) = commands::sample();
-        Picker::new(commands::build(&commands::State { wins: &wins, groups: &groups, cur: 3, panes: 1, overview: false }))
+        Picker::new(commands::build(&commands::State { wins: &wins, groups: &groups, cur: 3, panes: 1, split: (1, 1), overview: false }))
     }
 
     fn ctrl(c: char) -> Key {

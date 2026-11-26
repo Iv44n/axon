@@ -105,6 +105,8 @@ pub struct Soft {
     touched: Vec<bool>,
     /// The panes as the framebuffer shows them (`set_layout`); empty means one pane filling the workspace.
     slots: Vec<Slot>,
+    /// The line in the gap between two panes that the pointer is on or drags (`set_handle`), and whether it drags.
+    handle: Option<(Rect, bool)>,
     /// The pane being built (`select`): the geometry every row and chip of the next calls follows.
     cur: usize,
     /// How each pane's lines were laid on its rows at its last frame (`view::Fold`): where its rows are drawn, and
@@ -152,6 +154,7 @@ impl Soft {
             restore: None,
             touched: Vec::new(),
             slots: Vec::new(),
+            handle: None,
             cur: 0,
             folds: Vec::new(),
             full: true,
@@ -455,6 +458,7 @@ impl Soft {
                 self.paint_bg(fb, 0, h, 0, w);
                 self.paint_title(fb);
                 self.paint_status(fb);
+                self.paint_handle(fb);
             } else if fb.len() >= self.w * self.h {
                 if let Some(r) = self.restore.take() {
                     self.paint_bg(fb, oy + r.y as usize, oy + r.y2() as usize, ox + r.x as usize, ox + r.x2() as usize);
@@ -579,6 +583,27 @@ impl Soft {
             self.slots.extend_from_slice(slots);
             self.stale = true;
         }
+    }
+
+    /// Tells the renderer which line between two panes the pointer is on (`panes::edge_line`), and whether it drags it.
+    /// It lies in a gap, which only a full frame paints: a change repaints the frame, as a change of layout does (it
+    /// comes and goes as the pointer crosses a gap; while it drags, the layout changes anyway).
+    pub fn set_handle(&mut self, handle: Option<(Rect, bool)>) {
+        if self.handle != handle {
+            self.handle = handle;
+            self.stale = true;
+        }
+    }
+
+    /// The line `set_handle` gave, over the glass of the gap: the accent, stronger while it drags (ADR 0045).
+    fn paint_handle(&self, fb: &mut [u32]) {
+        let Some((r, drags)) = self.handle else { return };
+        if fb.len() < self.w * self.h {
+            return;
+        }
+        let (ox, oy) = self.origin();
+        let mut p = Paint { fb, w: self.w, h: self.h, ox: ox as i32, oy: oy as i32, fade: 1.0 };
+        p.rrect(r.x, r.y, r.w, r.h, 1.0, palette::unit(palette::ACCENT), if drags { 0.85 } else { 0.5 });
     }
 
     /// The pane `i` of the layout; with none set, the one pane that fills the workspace.

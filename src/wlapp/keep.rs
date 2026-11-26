@@ -64,7 +64,7 @@ impl App {
         Saved {
             owner: std::process::id(),
             cur: self.cur,
-            groups: self.groups.iter().map(|g| SavedGroup { name: g.name.clone(), color: g.color, collapsed: g.collapsed, kind: g.kind }).collect(),
+            groups: self.groups.iter().map(|g| SavedGroup { name: g.name.clone(), color: g.color, collapsed: g.collapsed, kind: g.kind, tracks: g.tracks }).collect(),
             wins: self.wins.iter().map(|w| SavedWin { dir: w.pane().place.to_string_lossy().into_owned(), name: w.name.clone(), group: w.group }).collect(),
         }
     }
@@ -98,7 +98,7 @@ impl App {
     pub(super) fn restore_session(&mut self, saved: &Saved) {
         for g in &saved.groups {
             self.groups_made += 1;
-            self.groups.push(Group { id: self.groups_made as u32, name: g.name.clone(), color: g.color, collapsed: g.collapsed, kind: g.kind });
+            self.groups.push(Group { id: self.groups_made as u32, name: g.name.clone(), color: g.color, collapsed: g.collapsed, kind: g.kind, tracks: g.tracks });
         }
         if let (Some(first), Some(w)) = (saved.wins.first(), self.wins.first_mut()) {
             (w.group, w.name) = (first.group, first.name.clone());

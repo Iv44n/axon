@@ -8,8 +8,10 @@
 //! **Entries** (the reference's, with what axon can do):
 //! - *Actions*: new window, new group, new pane, split in columns / rows, the windows' panel (show or hide,
 //!   left, right, top), search the history, clear the screen, settings, close the window; the overview only
-//!   when the app has one (`State::overview`). Two more are listed, after the reference's, only where they apply:
-//!   close the pane (the window has several) and take the window out of its group (it is in one).
+//!   when the app has one (`State::overview`). More are listed, after the reference's, only where they apply:
+//!   close the pane (the window has several), take the window out of its group (it is in one), and in a split
+//!   make the window wider or narrower (the split has columns), taller or shorter (it has rows), or even the
+//!   split out again (ADR 0045).
 //! - *Windows*: one per window, its directory and group as the description, `Alt+1..9` as the shortcut.
 //! - *Groups*: one to go to the group's first window, one to collapse or expand it in the panel.
 //!
@@ -44,6 +46,12 @@ pub enum Cmd {
     CloseWindow,
     ClosePane,
     Ungroup,
+    /// The window on screen a step wider, narrower, taller or shorter in its split, or the split even again (ADR 0045).
+    Wider,
+    Narrower,
+    Taller,
+    Shorter,
+    EvenPanes,
     /// Go to the window with this id (`short` of its `Win::id`). Ids, not places: while the palette is open a shell
     /// can end or a close can be undone, and a place would then be another window.
     Window(u32),
@@ -54,7 +62,7 @@ pub enum Cmd {
 }
 
 /// The commands with nothing to say but their name, in the order of their ids.
-const FIXED: [Cmd; 16] = [
+const FIXED: [Cmd; 21] = [
     Cmd::NewWindow,
     Cmd::NewGroup,
     Cmd::NewPane,
@@ -71,6 +79,11 @@ const FIXED: [Cmd; 16] = [
     Cmd::CloseWindow,
     Cmd::ClosePane,
     Cmd::Ungroup,
+    Cmd::Wider,
+    Cmd::Narrower,
+    Cmd::Taller,
+    Cmd::Shorter,
+    Cmd::EvenPanes,
 ];
 
 /// The id of a command that takes a number: the kind in the two high bits, the number in the other thirty.
@@ -129,6 +142,8 @@ pub struct State<'a> {
     /// The window on screen and how many panes it has.
     pub cur: usize,
     pub panes: usize,
+    /// The columns and rows of the split on screen (`(1, 1)`: none).
+    pub split: (usize, usize),
     /// Whether the app has an overview of its windows to open.
     pub overview: bool,
 }
@@ -151,6 +166,7 @@ mod kw {
     pub const UNGROUP: &str = "grupo group disolver quitar remove";
     pub const GROUP: &str = "grupo group";
     pub const FOLD: &str = "grupo group fold plegar collapse expand contraer expandir";
+    pub const RESIZE: &str = "agrandar achicar tamaño redimensionar ampliar reducir panel resize size bigger smaller grow shrink pane split";
 }
 
 /// The shortcut of the command that opens window `i`: `Alt+1` to `Alt+9`, none beyond.
@@ -192,6 +208,17 @@ pub fn build(s: &State) -> List {
     }
     if s.wins.get(s.cur).is_some_and(|w| w.group.is_some()) {
         act(Cmd::Ungroup, tr(Str::CmdUngroup), "Alt+Shift+G", Icon::Group, kw::UNGROUP);
+    }
+    if s.split.0 > 1 {
+        act(Cmd::Wider, tr(Str::CmdWider), "Alt+Shift+\u{2192}", Icon::Split, kw::RESIZE);
+        act(Cmd::Narrower, tr(Str::CmdNarrower), "Alt+Shift+\u{2190}", Icon::Split, kw::RESIZE);
+    }
+    if s.split.1 > 1 {
+        act(Cmd::Taller, tr(Str::CmdTaller), "Alt+Shift+\u{2191}", Icon::Split, kw::RESIZE);
+        act(Cmd::Shorter, tr(Str::CmdShorter), "Alt+Shift+\u{2193}", Icon::Split, kw::RESIZE);
+    }
+    if s.split.0 > 1 || s.split.1 > 1 {
+        act(Cmd::EvenPanes, tr(Str::CmdEvenPanes), "Alt+=", Icon::Grid, kw::RESIZE);
     }
 
     let windows = tr(Str::Windows);
@@ -241,7 +268,7 @@ mod tests {
 
     fn state<'a>(wins: &'a [WinInfo], groups: &'a [GroupItem]) -> State<'a> {
         // The window on screen is the one in no group.
-        State { wins, groups, cur: 3, panes: 1, overview: false }
+        State { wins, groups, cur: 3, panes: 1, split: (1, 1), overview: false }
     }
 
     /// The commands the list shows, in order.
@@ -295,7 +322,7 @@ mod tests {
         let (wins, groups) = sample();
         // Whatever the window on screen is: the reference's list is never reordered, the extras come after it.
         for (cur, panes) in [(3, 1), (0, 1), (0, 3)] {
-            let cmds = shown(&build(&State { wins: &wins, groups: &groups, cur, panes, overview: true }));
+            let cmds = shown(&build(&State { wins: &wins, groups: &groups, cur, panes, split: (panes, 1), overview: true }));
             assert_eq!(
                 &cmds[..14],
                 [
@@ -323,7 +350,7 @@ mod tests {
     fn some_actions_are_listed_only_where_they_apply() {
         let (wins, groups) = sample();
         let with = |cur, panes, overview| {
-            let l = build(&State { wins: &wins, groups: &groups, cur, panes, overview });
+            let l = build(&State { wins: &wins, groups: &groups, cur, panes, split: (panes, 1), overview });
             shown(&l)
         };
         // Window 0 is in a group: it can leave it; window 3 is not.
@@ -342,7 +369,31 @@ mod tests {
         let close = cmds.iter().position(|&c| c == Cmd::CloseWindow).unwrap();
         assert_eq!(&cmds[close + 1..close + 3], &[Cmd::ClosePane, Cmd::Ungroup]);
         // No windows at all (the app always has one, but the list must not index past what it was given).
-        assert!(shown(&build(&State { wins: &[], groups: &[], cur: 0, panes: 1, overview: false })).len() >= 13);
+        assert!(shown(&build(&State { wins: &[], groups: &[], cur: 0, panes: 1, split: (1, 1), overview: false })).len() >= 13);
+    }
+
+    #[test]
+    fn resizing_is_listed_for_the_axes_the_split_has_and_found_by_its_words() {
+        let (wins, groups) = sample();
+        let with = |split, query: &str| {
+            let mut l = build(&State { wins: &wins, groups: &groups, cur: 0, panes: 3, split, overview: false });
+            l.filter(query);
+            shown(&l)
+        };
+        let all = [Cmd::Wider, Cmd::Narrower, Cmd::Taller, Cmd::Shorter, Cmd::EvenPanes];
+        let listed = |split| all.iter().copied().filter(|c| with(split, "").contains(c)).collect::<Vec<_>>();
+        assert_eq!(listed((1, 1)), [], "no split, nothing to resize");
+        assert_eq!(listed((3, 1)), [Cmd::Wider, Cmd::Narrower, Cmd::EvenPanes]);
+        assert_eq!(listed((1, 3)), [Cmd::Taller, Cmd::Shorter, Cmd::EvenPanes]);
+        assert_eq!(listed((2, 2)), all);
+        // After the reference's actions and the other extras.
+        let cmds = with((2, 2), "");
+        let ungroup = cmds.iter().position(|&c| c == Cmd::Ungroup).unwrap();
+        assert_eq!(&cmds[ungroup + 1..ungroup + 6], all);
+        // The user's words find them, in either language.
+        for q in ["agrandar", "achicar", "resize", "tamaño"] {
+            assert!(with((2, 2), q).contains(&Cmd::Wider) || with((2, 2), q).contains(&Cmd::Shorter), "{q}");
+        }
     }
 
     #[test]
@@ -359,7 +410,7 @@ mod tests {
         assert_eq!((l.label(g), l.desc(g), l.mark(g)), ("arcton", "3 windows", Mark::Dot(1)));
         // Ten windows: the tenth has no digit.
         let many: Vec<WinInfo> = (0..10).map(|i| WinInfo { id: i, title: format!("w{i}"), place: "~".into(), group: None }).collect();
-        let l = build(&State { wins: &many, groups: &[], cur: 0, panes: 1, overview: false });
+        let l = build(&State { wins: &many, groups: &[], cur: 0, panes: 1, split: (1, 1), overview: false });
         let tenth = (0..l.total()).find(|&e| l.id(e) == Cmd::Window(9).id()).unwrap();
         assert_eq!(l.keys(tenth), "");
         // A group of one says "1 window".
@@ -386,7 +437,7 @@ mod tests {
     #[test]
     fn the_actions_show_the_shortcuts_that_run_them() {
         let (wins, groups) = sample();
-        let l = build(&State { wins: &wins, groups: &groups, cur: 0, panes: 2, overview: true });
+        let l = build(&State { wins: &wins, groups: &groups, cur: 0, panes: 2, split: (2, 1), overview: true });
         let keys = |c: Cmd| (0..l.total()).find(|&e| l.id(e) == c.id()).map(|e| l.keys(e).to_string()).unwrap();
         assert_eq!(keys(Cmd::NewWindow), "Alt+N");
         assert_eq!(keys(Cmd::NewGroup), "Alt+G");
