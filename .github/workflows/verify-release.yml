@@ -28,11 +28,14 @@ jobs:
       matrix:
         shell: [pwsh, powershell]
     runs-on: windows-latest
+    # The shell of the install and uninstall steps (a step's own `shell` cannot name the matrix).
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
     steps:
       - uses: actions/checkout@v5
 
       - name: Install from the website
-        shell: ${{ matrix.shell }}
         run: |
           $PSVersionTable.PSVersion
           $env:AXON_PREFIX = Join-Path $env:RUNNER_TEMP 'axon-live'
@@ -52,7 +55,6 @@ jobs:
           if-no-files-found: warn
 
       - name: Uninstall
-        shell: ${{ matrix.shell }}
         run: |
           $env:AXON_PREFIX = Join-Path $env:RUNNER_TEMP 'axon-live'
           & ([scriptblock]::Create((irm https://iv44n.github.io/axon/install.ps1))) -Uninstall
