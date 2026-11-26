@@ -111,7 +111,8 @@ case ":$PATH:" in
 esac
 
 # Keyboard layouts come from libxkbcommon, loaded at run time; without it axon falls back to winit + wgpu.
-if command -v ldconfig >/dev/null && ! ldconfig -p 2>/dev/null | grep -q 'libxkbcommon\.so\.0'; then
+# Not `grep -q`: it stops at the first match, `ldconfig` dies of SIGPIPE and `pipefail` makes the library look missing.
+if command -v ldconfig >/dev/null && ! ldconfig -p 2>/dev/null | grep 'libxkbcommon\.so\.0' >/dev/null; then
   echo "Note: libxkbcommon.so.0 not found (package libxkbcommon0): axon will start its heavier winit fallback."
 fi
 
