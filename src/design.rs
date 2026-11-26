@@ -429,7 +429,9 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
             soft.select(i);
             soft.set_dim(if i == ps.focus { 255 } else { UNFOCUSED });
             let hover = s.hover.filter(|_| i == ps.focus).and_then(|l| crate::view::fold(&term, true).row(l as i32));
-            bar::Chips::default().frame(s.bar.is_some(), true, &demo_history(&ctx), &chips, &mut term, &mut View::new(), &mut soft, &mut fb, (w, h), s.ui.focused && i == ps.focus, hover);
+            let (mut c, mut view, history) = (bar::Chips::default(), View::new(), demo_history(&ctx));
+            c.frame(s.bar.is_some(), true, &history, &mut term, &mut view, &mut soft, &mut fb, (w, h), s.ui.focused && i == ps.focus, hover);
+            c.paint(&history, &chips, &view, &mut soft, &mut fb, (w, h));
         }
         soft.set_dim(255);
         soft.select(0);
@@ -447,7 +449,9 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
         }
         soft.set_status("zsh", "main", cols, rows);
         let hover = s.hover.and_then(|l| crate::view::fold(&term, true).row(l as i32));
-        bar::Chips::default().frame(s.bar.is_some(), true, &demo_history(&ctx), &chips, &mut term, &mut View::new(), &mut soft, &mut fb, (w, h), s.ui.focused, hover);
+        let (mut c, mut view, history) = (bar::Chips::default(), View::new(), demo_history(&ctx));
+        c.frame(s.bar.is_some(), true, &history, &mut term, &mut view, &mut soft, &mut fb, (w, h), s.ui.focused, hover);
+        c.paint(&history, &chips, &view, &mut soft, &mut fb, (w, h));
     }
     if let Some((pos, hover)) = s.side {
         // The windows the panel lists. With a split, the group "arcton" is the split: a window for each pane (ADR 0034), then
@@ -793,12 +797,15 @@ fn chips_repaint_incrementally_like_a_full_frame() {
         if *change {
             history.set_ctx(&other);
         }
-        chips_state.frame(*on, false, &history, &chips, &mut term, &mut view, &mut soft, &mut fb, (w, h), true, None);
+        chips_state.frame(*on, false, &history, &mut term, &mut view, &mut soft, &mut fb, (w, h), true, None);
+        chips_state.paint(&history, &chips, &view, &mut soft, &mut fb, (w, h));
 
         let (mut fsoft, mut fterm) = make();
         Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::new().advance(&mut fterm, seen.as_bytes());
         let mut full = vec![0u32; w * h];
-        bar::Chips::default().frame(*on, true, &history, &chips, &mut fterm, &mut View::new(), &mut fsoft, &mut full, (w, h), true, None);
+        let (mut fchips, mut fview) = (bar::Chips::default(), View::new());
+        fchips.frame(*on, true, &history, &mut fterm, &mut fview, &mut fsoft, &mut full, (w, h), true, None);
+        fchips.paint(&history, &chips, &fview, &mut fsoft, &mut full, (w, h));
         let diff = fb.iter().zip(&full).filter(|(a, b)| a != b).count();
         assert_eq!(diff, 0, "step {i}: {diff} pixels differ from a full repaint");
     }
@@ -837,7 +844,8 @@ fn panes_repaint_incrementally_like_a_full_frame() {
         for (i, p) in panes.iter_mut().enumerate() {
             soft.select(i);
             soft.set_dim(if i == focus { 255 } else { UNFOCUSED });
-            p.chips.frame(false, false, &History::default(), &[], &mut p.term, &mut p.view, soft, fb, (w, h), i == focus, None);
+            p.chips.frame(false, false, &History::default(), &mut p.term, &mut p.view, soft, fb, (w, h), i == focus, None);
+            p.chips.paint(&History::default(), &[], &p.view, soft, fb, (w, h));
         }
         soft.set_dim(255);
         soft.select(0);

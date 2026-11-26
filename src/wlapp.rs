@@ -988,10 +988,12 @@ impl App {
             pane.proxy.pending.store(false, Ordering::Release);
             self.soft.select(i);
             self.soft.set_dim(if i == focus { 255 } else { UNFOCUSED });
+            // The terminal is locked only while its cells are read: the PTY thread parses while the rows are painted.
             let mut t = pane.term.lock();
             let hover = self.grid_hover.filter(|&(p, _)| p == i).map(|(_, r)| r);
-            pane.chips.frame(chips_on, pane.ctx_dirty, &pane.history, chips, &mut t, &mut pane.view, &mut self.soft, fb, (w, h), self.ui.focused && i == focus, hover);
+            pane.chips.frame(chips_on, pane.ctx_dirty, &pane.history, &mut t, &mut pane.view, &mut self.soft, fb, (w, h), self.ui.focused && i == focus, hover);
             drop(t);
+            pane.chips.paint(&pane.history, chips, &pane.view, &mut self.soft, fb, (w, h));
             pane.ctx_dirty = false;
         }
         self.soft.set_dim(255);

@@ -339,17 +339,17 @@ impl Fonts {
     /// Loads the configured family (a path, or a name searched in the font directories), then the
     /// built-in candidates; panics only when no monospaced font exists at all.
     pub fn new(cfg: &FontCfg) -> Self {
-        let mut candidates: Vec<PathBuf> = Vec::new();
-        if let Some(fam) = &cfg.family {
-            if fam.contains('/') || fam.contains('\\') || fam.starts_with('~') {
-                candidates.push(expand_home(fam));
-            } else if let Some(p) = find_family(fam) {
-                candidates.push(p);
-            }
-            if candidates.is_empty() || load_font(&candidates[0]).is_none() {
+        // The configured family is parsed once and kept: parsing is the whole cost of a font (~8 ms for JetBrains
+        // Mono, ~90 ms for a Nerd Font), and it used to be parsed a second time to be chosen.
+        let configured = cfg.family.as_ref().and_then(|fam| {
+            let path = if fam.contains('/') || fam.contains('\\') || fam.starts_with('~') { Some(expand_home(fam)) } else { find_family(fam) };
+            let font = path.as_deref().and_then(load_font);
+            if font.is_none() {
                 eprintln!("axon: config: font {fam:?} not found or not readable, using the default font");
             }
-        }
+            font
+        });
+        let mut candidates: Vec<PathBuf> = Vec::new();
         #[cfg(target_os = "linux")]
         {
             let home = crate::context::home_dir().unwrap_or_default();
@@ -371,9 +371,8 @@ impl Fonts {
                 candidates.push(dir.join(f));
             }
         }
-        let primary = candidates
-            .iter()
-            .find_map(|p| load_font(p))
+        let primary = configured
+            .or_else(|| candidates.iter().find_map(|p| load_font(p)))
             .expect("no monospaced font found (set font.family in ~/.config/axon/config.toml)");
 
         let fallbacks = fallback_files().into_iter().map(|(path, ranges)| Fallback { path, ranges, font: OnceCell::new() }).collect();

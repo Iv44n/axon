@@ -280,6 +280,10 @@ pub struct Chips {
     scratch: Vec<u8>,
     /// The placeholder's cells, built when it is drawn.
     cells: Vec<Cell>,
+    /// For each of `last`, the columns its command's line holds (`Show::Run`; 0 for the others), and the terminal's
+    /// width: read in `frame`, under the terminal's lock, for `paint`.
+    used: Vec<usize>,
+    cols: usize,
 }
 
 impl Chips {
@@ -292,14 +296,14 @@ impl Chips {
     /// One frame: the grid, with the composer apart (`view::Fold`), and over it, when `on`, the chips of the prompt
     /// being typed at (with the placeholder while nothing is typed) and the status of each command on screen that
     /// failed or that the pointer is over (`hover`: the row under it). Each prompt finds its record in `history`.
-    /// `changed`: the settings changed since the last frame.
+    /// `changed`: the settings changed since the last frame. This is the part that reads the terminal (its lock is
+    /// held): what is drawn where, and the rows' cells; `paint` draws them once the lock is released.
     #[allow(clippy::too_many_arguments)]
     pub fn frame<L: EventListener>(
         &mut self,
         on: bool,
         changed: bool,
         history: &History,
-        chips: &[Chip],
         term: &mut Term<L>,
         view: &mut View,
         soft: &mut Soft,
@@ -353,14 +357,27 @@ impl Chips {
         }
         std::mem::swap(&mut self.last, &mut self.now);
         view.build_folded(term, focused, fold, &mut Target { soft: &mut *soft, fb: &mut *fb, w, h });
+        // What the painting needs from the terminal: how many columns each command's line holds, and the width.
+        self.used.clear();
+        self.used.extend(self.last.iter().map(|d| match d.show {
+            Show::Run => fold.line(d.line()).map_or(0, |l| used_cols(term, l)),
+            _ => 0,
+        }));
+        self.cols = term.columns();
+    }
+
+    /// The rest of the frame, without the terminal: the rows `frame` built, then the chips, the placeholder and the
+    /// commands' status over the rows that were repainted.
+    pub fn paint(&mut self, history: &History, chips: &[Chip], view: &View, soft: &mut Soft, fb: &mut [u32], (w, h): (usize, usize)) {
+        view.put(&mut Target { soft: &mut *soft, fb: &mut *fb, w, h });
         let (ch, cw) = (soft.cell().1 as usize, soft.cell().0 as usize);
         let (left, _, right) = soft.content_box();
-        for d in &self.last {
+        for (d, &used) in self.last.iter().zip(&self.used) {
             if !soft.row_repainted(d.line()) {
                 continue;
             }
             if d.show == Show::Hint {
-                paint_hint(soft, fb, (d.row, d.n as usize), term.columns(), &mut self.cells);
+                paint_hint(soft, fb, (d.row, d.n as usize), self.cols, &mut self.cells);
                 continue;
             }
             let Some(rec) = history.get(d.n) else { continue };
@@ -368,7 +385,7 @@ impl Chips {
                 (Show::Chips, _) => paint(soft, fb, &rec.ctx, chips, d.row, &mut self.scratch),
                 (Show::Run, Some(run)) => {
                     // At the right end of the command's line, if its text leaves room there (a long command keeps it).
-                    let used = left + cw * fold.line(d.line()).map_or(0, |l| used_cols(term, l));
+                    let used = left + cw * used;
                     let gap = cw * 2;
                     if right >= used + gap + run_width(soft, &run) {
                         let cy = soft.row_top(d.line()) as f32 + ch as f32 / 2.0;

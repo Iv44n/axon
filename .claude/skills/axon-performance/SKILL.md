@@ -27,7 +27,9 @@ description: axon's performance budgets and rules (latency, idle CPU, throughput
 5. **Rasterize only on a miss, and never add caches.** The glyph table is a flat two-level table and is the only
    lazy structure of its kind (to be replaced by an eager bake, see `axon-data-oriented-design`).
 6. **One draw call** for cells + one for the background. Do not add passes without measuring.
-7. **Minimal `FairMutex` locking.** Only inside `build()`; no I/O or GPU work while holding the lock (`render()` already runs outside it).
+7. **Minimal `FairMutex` locking.** Only to read the terminal (`View::build_folded`, `bar::Chips::frame`): the cells of the
+   damaged rows go into `View`'s `stage`, the lock is released, then they are painted (`View::put`, `Chips::paint`) or
+   uploaded. No pixels, I/O or GPU work while holding it (ADR 0041: painting under it held the PTY thread 27 % of a flood).
 8. **Vsync (`AutoVsync`)**: do not use `Immediate/Mailbox` by default; it burns GPU under heavy output.
 9. Dependencies: every new crate is justified by its cost in size and compile time.
 
@@ -44,3 +46,8 @@ description: axon's performance budgets and rules (latency, idle CPU, throughput
 - Replace fontdue with an own font reader; the first-use stall of a fallback font disappears with it (`knowledge/plan/own-implementations.md`).
 - Subpixel/LCD AA and an SDF map only if sharpness demands it.
 - One `Session` per thread for multiple panes.
+- Surface damage: `wl.rs` `present()` damages the whole buffer every frame, so the compositor uploads all of it (2.8 MB at
+  1000x640, 8 MB maximized at 1080p) for a keystroke that repainted one row. Damaging only what was painted needs every
+  painter (rows, chips, panel, overlays, title) to report its rectangles; check the second-buffer path first.
+- Scrolling by moving the framebuffer's rows: a flood repaints every row every frame (`Term` reports Full damage on a
+  scroll); a shift of `k` rows is one `copy_within` plus `k` new rows.

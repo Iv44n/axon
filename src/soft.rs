@@ -9,7 +9,7 @@
 use crate::cell::{
     Cell, Glyphs, MAX_TILES, T_BAR, T_BEAM, T_BOX, T_FIRST_GLYPH, T_STRIKE, T_UNDER, pack,
 };
-use crate::chrome::{self, REACH, STATUS_H, TITLE_FROM_RIGHT, TITLE_H, TITLE_X0, Ui};
+use crate::chrome::{self, STATUS_H, TITLE_FROM_RIGHT, TITLE_H, TITLE_X0, Ui};
 use alacritty_terminal::vte::ansi::Rgb;
 use crate::{bar, config::Chip, i18n::{Str, tr}, palette, paint::{Paint, WHITE, seg}, panes::{self, Rect}};
 use crate::config::FontCfg;
@@ -711,11 +711,18 @@ impl Soft {
                 3 => T_BOX,
                 _ => 0,
             };
+            // With no background, line or cursor in the cell, a pixel the glyph does not cover is transparent (`text_px3`
+            // of nothing over nothing): what is under it stays, and most of a glyph's pixels are skipped at once.
+            let bare = bg[3] == 0 && flags & 3 == 0 && shape == 0;
             for y in 0..ch {
                 let row = &mut fb[(y0 + y) * self.w + x0..][..cw];
                 for (x, dst) in row.iter_mut().enumerate() {
                     let i = (y * cw + x) * 3;
-                    let mut px = text_px3(fg, bg, [glyph[i] as u32, glyph[i + 1] as u32, glyph[i + 2] as u32]);
+                    let cov = [glyph[i] as u32, glyph[i + 1] as u32, glyph[i + 2] as u32];
+                    if bare && cov == [0; 3] {
+                        continue;
+                    }
+                    let mut px = text_px3(fg, bg, cov);
                     if flags & 1 != 0 {
                         px = overlay(px, fg, tile(T_UNDER)[i] as u32);
                     }
@@ -856,24 +863,19 @@ impl Soft {
             return;
         }
         let (w, h) = (self.w, self.h);
-        let (ml, mt, mb) = chrome::margins(self.ui.maximized);
-        let (wh, reach) = ((h - mt - mb) as isize, REACH as isize);
-        // Columns between the side bands: there a row can be one value.
-        let (b0, b1) = ((ml + REACH).clamp(x0, x1), w.saturating_sub(ml + REACH).clamp(x0, x1));
         for y in y0..y1.min(h) {
             let row = &mut fb[y * w..][..w];
-            let wy = y as isize - mt as isize;
-            // Away from the title bar, the bottom edge and the corners a row is one value between
-            // the side bands (chrome tests), in the margin rows above and below as well.
-            if (wy < 0 || wy >= wh || (wy >= reach && wy + reach < wh)) && b1 > b0 {
-                for x in (x0..b0).chain(b1..x1) {
-                    row[x] = self.bg_px(x, y);
-                }
+            // Between the side bands a row is one value (`chrome::flat_from`, and its test): in the window's body that is
+            // all but its outermost pixels, so a grid row's background is a fill.
+            let (b0, b1) = match chrome::flat_from(y, h, self.ui.maximized) {
+                Some(band) => (band.clamp(x0, x1), w.saturating_sub(band).clamp(x0, x1)),
+                None => (x1, x1),
+            };
+            for x in (x0..b0).chain(b1.max(b0)..x1) {
+                row[x] = self.bg_px(x, y);
+            }
+            if b1 > b0 {
                 row[b0..b1].fill(self.bg_px(w / 2, y));
-            } else {
-                for x in x0..x1 {
-                    row[x] = self.bg_px(x, y);
-                }
             }
         }
     }

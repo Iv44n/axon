@@ -125,7 +125,7 @@ pub struct View {
     last_sel: Option<SelectionRange>,
     /// The columns of the last build: a different width (a pane resized) rebuilds every row.
     cols: usize,
-    /// Scratch for the rows being built; dead once they are handed to the backend.
+    /// The cells of the rows the last `build_folded` rebuilt, one after the other: what `put` hands to the backend.
     stage: Vec<Cell>,
     /// Rows the caller wants repainted at the next frame (something is drawn over them).
     wanted: Vec<usize>,
@@ -161,9 +161,13 @@ impl View {
     pub fn build<L: EventListener>(&mut self, term: &mut Term<L>, focused: bool, out: &mut impl Backend) {
         let fold = fold(term, out.docks());
         self.build_folded(term, focused, fold, out);
+        self.put(out);
     }
 
-    /// The same, with the lines laid out as `fold` (from `fold`) says.
+    /// The part of `build` that reads the terminal, with the lines laid out as `fold` (from `fold`) says: what changed
+    /// since the last frame, and the cells of every row to repaint. `put` hands them to the backend afterwards, so a
+    /// caller holding the terminal's lock can release it first: painting the rows is most of a frame, and the PTY
+    /// thread cannot parse while the lock is held.
     pub fn build_folded<L: EventListener>(&mut self, term: &mut Term<L>, focused: bool, fold: Fold, out: &mut impl Backend) {
         let (rows, cols) = (term.screen_lines(), term.columns());
         let mut full = out.begin_frame(rows, cols, &fold);
@@ -228,23 +232,35 @@ impl View {
         self.last_cursor = cursor;
         self.last_sel = selection;
 
-        // Write each run of consecutive damaged rows with one upload.
-        let mut row = 0;
-        while row < rows {
-            if !self.dirty[row] {
-                row += 1;
-                continue;
-            }
-            let first = row;
-            while row < rows && self.dirty[row] {
-                row += 1;
-            }
-            self.stage.clear();
-            self.stage.resize((row - first) * cols, Cell::BLANK);
-            build_rows(out, term, &fold, first, &mut self.stage, focused);
-            out.put_rows(first, row - first, &self.stage);
+        // The damaged rows' cells, run after run.
+        self.stage.clear();
+        for (first, count) in runs(&self.dirty) {
+            let at = self.stage.len();
+            self.stage.resize(at + count * cols, Cell::BLANK);
+            build_rows(out, term, &fold, first, &mut self.stage[at..], focused);
         }
     }
+
+    /// Hands the rows the last `build_folded` built to the backend: each run of consecutive rows in one call.
+    pub fn put(&self, out: &mut impl Backend) {
+        let mut cells = self.stage.as_slice();
+        for (first, count) in runs(&self.dirty) {
+            let (run, rest) = cells.split_at(count * self.cols);
+            out.put_rows(first, count, run);
+            cells = rest;
+        }
+    }
+}
+
+/// The runs of consecutive true rows of `dirty`, as `(first, count)`.
+fn runs(dirty: &[bool]) -> impl Iterator<Item = (usize, usize)> + '_ {
+    let mut row = 0;
+    std::iter::from_fn(move || {
+        let first = row + dirty.get(row..)?.iter().position(|&d| d)?;
+        let count = dirty[first..].iter().position(|&d| !d).unwrap_or(dirty.len() - first);
+        row = first + count;
+        Some((first, count))
+    })
 }
 
 /// How many rows above the prompt's last line its reserved line may be (a prompt of several lines), and
@@ -429,6 +445,16 @@ mod tests {
     use crate::session::Size;
 
     const MARK: &str = "\x1b[8m \x1b[0m";
+
+    #[test]
+    fn rows_to_repaint_go_out_in_runs_of_consecutive_rows() {
+        let r = |d: &[bool]| runs(d).collect::<Vec<_>>();
+        assert_eq!(r(&[]), []);
+        assert_eq!(r(&[false, false]), []);
+        assert_eq!(r(&[true, true, true]), [(0, 3)]);
+        assert_eq!(r(&[false, true, true, false, true]), [(1, 2), (4, 1)]);
+        assert_eq!(r(&[true, false, false, true, true]), [(0, 1), (3, 2)]);
+    }
 
     fn term(rows: usize, text: &str) -> Term<VoidListener> {
         let mut t = Term::new(Config::default(), &Size { cols: 20, rows }, VoidListener);

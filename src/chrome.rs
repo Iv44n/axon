@@ -432,6 +432,25 @@ fn shadow(px: f32, py: f32, w: f32, h: f32) -> f32 {
     SHADOW_ALPHA * (1.0 - t) * (1.0 - t) * (1.0 - t)
 }
 
+/// How far the outline reaches into the window's body from its left and right edges: the outermost pixel (`pixel`).
+const BODY_EDGE: usize = 2;
+
+/// How many buffer pixels in from the left and the right of an `h`-tall buffer row `y` of the frame (`pixel`) can differ
+/// from the row's middle: between them the row is one value. None in the title bar (its buttons and its title).
+/// In the window's body, the shadow's margin and the outline; beside the rounded corners at the bottom, and in the margin
+/// rows above and below the window, the corners and the shadow, `REACH`.
+pub fn flat_from(y: usize, h: usize, maximized: bool) -> Option<usize> {
+    let (ml, mt, mb) = margins(maximized);
+    let (wy, wh) = (y as isize - mt as isize, h as isize - (mt + mb) as isize);
+    if wy < 0 || wy + REACH as isize >= wh {
+        Some(ml + REACH)
+    } else if wy < TITLE_H as isize {
+        None
+    } else {
+        Some(ml + BODY_EDGE)
+    }
+}
+
 /// The frame at buffer pixel `(x, y)` of a `w` x `h` buffer (window plus `margins`), premultiplied
 /// `Argb8888`. `opacity` is the alpha of the glass body.
 pub fn pixel(x: usize, y: usize, w: usize, h: usize, opacity: f32, ui: &Ui) -> u32 {
@@ -583,11 +602,33 @@ mod tests {
     }
 
     #[test]
-    fn rows_are_constant_away_from_the_side_edges() {
-        // What soft.rs relies on to fill the middle of a row with one value, margin rows included.
-        let (w, h, ml, mt) = buf(&UI);
-        for y in [2, mt + REACH, mt + 300, mt + WIN.1 - REACH - 1, h - 3] {
-            assert_eq!(pixel(ml + REACH, y, w, h, 0.8, &UI), pixel(w / 2, y, w, h, 0.8, &UI), "row {y}");
+    fn a_row_is_one_value_between_the_bands_flat_from_gives() {
+        // What soft.rs relies on to fill the middle of a row with one value: every pixel of every row, in every state
+        // that lights something in the title bar, an odd size and a maximized window among them.
+        let states = [
+            UI,
+            Ui { status: false, ..UI },
+            Ui { focused: false, ..UI },
+            Ui { hover: 1, down: true, ..UI },
+            Ui { hover: 4, ..UI },
+            Ui { prefs: true, ..UI },
+            Ui { side: 2, ..UI },
+            Ui { hover: 5, down: true, ..UI },
+            Ui { side: 0, hover: 6, ..UI },
+            Ui { maximized: true, ..UI },
+        ];
+        for ui in states {
+            for (ww, wh) in [(420, 300), (421, 263)] {
+                let (ml, mt, mb) = margins(ui.maximized);
+                let (w, h) = (ww + 2 * ml, wh + mt + mb);
+                for y in 0..h {
+                    let Some(band) = flat_from(y, h, ui.maximized) else { continue };
+                    let fill = pixel(w / 2, y, w, h, 0.8, &ui);
+                    for x in band..w.saturating_sub(band) {
+                        assert_eq!(pixel(x, y, w, h, 0.8, &ui), fill, "({x}, {y}) of a {ww} x {wh} window, {ui:?}");
+                    }
+                }
+            }
         }
     }
 

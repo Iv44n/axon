@@ -316,25 +316,25 @@ Measured with [`scripts/bench.sh`](scripts/bench.sh) (`--clean` adds a cold buil
 can move size or speed** (rule in `CLAUDE.md`); older numbers stay in the history table.
 
 Machine: AMD Ryzen 5 5600H (12 threads) + RTX 3050 Mobile, Ubuntu, kernel 7.0.0-44, GNOME Shell 50.1 on Wayland.
-Last measured: 2026-11-25, at `870aa8e`, the Windows port (ADR 0039: the app runs over the `plat.rs` seam; `win.rs` and the Windows-only code are not in the Linux binary, which is +18.8 KB, the seam, the self-test and the PowerShell hook text; idle, memory and the flood as before, on a quiet machine: load average 0.1-0.7). The table of windows, groups and screens and the notes under the tables come from the builds before it (ADR 0036-0038, measured at `37e4cd3` and `c16281a` plus their changes) and were not measured again: nothing in the port touches them. **Windows** has its own line below: it is measured by the self-test on a GitHub Actions runner, not on this machine.
+Last measured: 2026-11-26, at `18ff573` plus the change that paints the rows outside the terminal's lock (ADR 0041: the UI thread held it 2.3 ms a frame during a flood, painting, and now 0.08 ms, reading the cells), paints a grid row's glass as a fill and skips a glyph's empty pixels; +3.7 KB; the flood is 13 % faster in an A/B (notes under the throughput table), idle and memory as before. The machine was busier than on 2026-11-25 (load average 1-4 after the builds), so the absolute flood times moved for both builds. The table of windows, groups and screens and the older notes under the tables come from earlier builds (ADR 0036-0039) and were not measured again: nothing in this change touches them. **Windows** has its own line below: it is measured by the self-test on a GitHub Actions runner, not on this machine.
 
 **Build**
 
 | Binary | Cold release build |
 |---|---|
-| 8.0 MiB (8,338,544 bytes) | 101 s (before ADR 0036) |
+| 8.0 MiB (8,342,256 bytes) | 101 s (before ADR 0036) |
 
 **Idle memory and CPU** (`AXON_BACKEND` selects the backend; `wl` is the own Wayland client with the CPU renderer and the
 default on Wayland, `winit` is the `winit` + `wgpu` fallback)
 
 | Backend | Font | RSS | PSS | Private (anon) | CPU |
 |---|---|---|---|---|---|
-| `wl` | JetBrains Mono (default) | **18 MB** | 14 MB | 8 MB | 0 ticks / 3 s |
-| `wl` | DejaVu Sans Mono | 24 MB | 19 MB | 14 MB | 0 ticks / 3 s |
+| `wl` | JetBrains Mono (default) | **18 MB** | 13 MB | 8 MB | 0 ticks / 3 s |
+| `wl` | DejaVu Sans Mono | 23 MB | 19 MB | 14 MB | 0 ticks / 3 s |
 | `wl` | Cascadia Mono NF | 60 MB | 55 MB | 50 MB | 0 ticks / 3 s |
-| `winit` | JetBrains Mono (default) | 150 MB | 61 MB | 31 MB | 0 ticks / 3 s |
-| `winit` | DejaVu Sans Mono | 156 MB | 67 MB | 37 MB | 0 ticks / 3 s |
-| `winit` | Cascadia Mono NF | 192 MB | 103 MB | 74 MB | 0 ticks / 3 s |
+| `winit` | JetBrains Mono (default) | 148 MB | 131 MB | 31 MB | 0 ticks / 3 s |
+| `winit` | DejaVu Sans Mono | 154 MB | 137 MB | 37 MB | 0 ticks / 3 s |
+| `winit` | Cascadia Mono NF | 190 MB | 173 MB | 74 MB | 0 ticks / 3 s |
 
 The idle target is under 50 MB of RSS. `wl` meets it with the default font (the 4 MB over the 15 MB of before are the UI
 font: 2.7 MB of its parsed outlines, narrowed to the characters an interface draws, and ~1.5 MB more of the binary's own code
@@ -361,8 +361,10 @@ A shell killed with `SIGKILL` closes only its own window; when the last one goes
 
 | Backend | Time | RSS afterwards |
 |---|---|---|
-| `wl` | 1.83 s | 39 MB |
-| `winit` | 1.30 s | 179 MB |
+| `wl` | 1.76 s | 39 MB |
+| `winit` | 1.37 s | 177 MB |
+
+For ADR 0041 (painting outside the terminal's lock), nine floods of each build in turn, the build before it first: 1.91/1.60, 1.93/1.57, 1.90/1.67, 1.72/1.49, 1.99/1.58, 2.06/1.81, 2.29/2.12, 1.91/1.71 and 2.07/1.88 s, every pair faster, 1.98 against 1.71 s on average (-13 %); axon's own CPU during the flood fell 20 % (the UI thread from 49 to 17 ticks in one run). A first `scripts/bench.sh` run gave 1.82 s and 68 MB after: the window opened larger that time (~229 columns of scrollback); the second, in the tables, 1.76 s and 39 MB. The PTY thread is now not saturated (~58 % of a core): what is left is parsing and the kernel's PTY, which `winit` shares.
 
 For ADR 0038 (a scope per window), four rounds with the scope on and off, in turn, at load 1.0-1.3: `wl` 2.39, 1.94, 1.89 and 1.93 s on against 1.78, 1.93, 1.78 and 2.07 s off (the first pair had a cold file cache; the rest average 1.92 against 1.93 s): the same within the noise, as it must be, since the scope changes where the shell is accounted and not what it does. The `scripts/bench.sh` run above, 2.01 s, is inside that spread. Startup to a window's first shell process, six launches in turn: 57, 59 and 59 ms without the scope, 65, 61 and 60 ms with it (the `systemd-run` that makes the scope runs in the shell's own process, and its probe overlaps the window's creation).
 
@@ -391,6 +393,7 @@ ADR 0039; not this machine, and a VM's numbers move from run to run)
 
 | Date | Change | Binary | Idle RSS `winit` | Idle RSS `wl` |
 |---|---|---|---|---|
+| 2026-11-26 | The rows painted outside the terminal's lock (ADR 0041), a grid row's glass as one fill (`chrome::flat_from`; it also fixes the lit panel button's bottom row), a glyph's empty pixels skipped, a configured font parsed once (it was twice: +88 ms of startup with a Nerd Font); flood 13 % faster in an A/B, 1.76 s in `bench.sh` | 8,342,256 B (+3.7 KB) | 148 MB | 18 MB |
 | 2026-11-25 | The Windows port (ADR 0039): `plat.rs` seam, `win.rs`, PowerShell hook, `fallback.rs` split out of `main.rs`, the self-test; Linux numbers as before (flood 1.83 s, 0 ticks idle); Windows exe 1.6 MiB, 30 MB idle, 0 CPU (CI runner) | 8,338,544 B (+18.8 KB) | 150 MB | 18 MB |
 | 2026-11-25 | Every window's shell in a systemd scope of its own (ADR 0038, `[windows] scope`): `systemd-run --user --scope` execs in place, a probe runs while the window is made, off where the user manager does not answer; +4.6 KB; flood and idle the same (A/B); 1-8 ms more to a window's first shell | 8,319,736 B | 151 MB | 19 MB |
 | 2026-11-25 | The prompt docked at the bottom below a hairline (ADR 0037): `view::Fold` lays the lines on the rows, `Soft::band` draws them; +0.9 KB; flood and spinners the same as the rows drawn flat (A/B); one or two rows fewer for every program (the composer's gaps are kept) | 8,315,096 B | 151 MB | 19 MB |
