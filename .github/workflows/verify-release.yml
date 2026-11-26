@@ -1,0 +1,60 @@
+# Installs the published release the way a user does, from the website, and runs what was installed: the installer
+# one-liners (Linux `curl | sh`; Windows `irm | iex` in both PowerShells, 7 and the 5.1 every Windows has), then the
+# installed exe's own self-test. Run it by hand after a release (Actions > Verify release > Run workflow): a release
+# made with the repository's token does not start other workflows.
+name: Verify release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Install from the website
+        run: |
+          curl -fsSL https://iv44n.github.io/axon/install.sh | sh -s -- --prefix "$RUNNER_TEMP/axon"
+          "$RUNNER_TEMP/axon/bin/axon" --version
+          "$RUNNER_TEMP/axon/bin/axon" config show | head -5
+          curl -fsSL https://iv44n.github.io/axon/install.sh | sh -s -- --prefix "$RUNNER_TEMP/axon" --uninstall
+          test ! -e "$RUNNER_TEMP/axon/bin/axon"
+
+  windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [pwsh, powershell]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install from the website
+        shell: ${{ matrix.shell }}
+        run: |
+          $PSVersionTable.PSVersion
+          $env:AXON_PREFIX = Join-Path $env:RUNNER_TEMP 'axon-live'
+          irm https://iv44n.github.io/axon/install.ps1 | iex
+          if (-not (Test-Path "$env:AXON_PREFIX\axon.exe")) { throw 'axon.exe was not installed' }
+          & "$env:AXON_PREFIX\axon.exe" --version | Out-String
+
+      - name: The installed exe's self-test
+        shell: pwsh
+        run: scripts/selftest.ps1 -Exe "$env:RUNNER_TEMP\axon-live\axon.exe" -Out selftest-out
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: selftest-${{ matrix.shell }}
+          path: selftest-out
+          if-no-files-found: warn
+
+      - name: Uninstall
+        shell: ${{ matrix.shell }}
+        run: |
+          $env:AXON_PREFIX = Join-Path $env:RUNNER_TEMP 'axon-live'
+          & ([scriptblock]::Create((irm https://iv44n.github.io/axon/install.ps1))) -Uninstall
+          Start-Sleep 4
+          if (Test-Path "$env:AXON_PREFIX\axon.exe") { throw 'axon.exe is still there after the uninstall' }
