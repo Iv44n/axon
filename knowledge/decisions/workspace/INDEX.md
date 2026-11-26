@@ -15,3 +15,5 @@ Windows, groups, panes, the overlays built on one kit, and the screens of the se
 - [0033 · Windows, groups, palette, overview and drag as one set](0033-windows-feature-set-after-the-merge.md) — what the merge connected; the groups model; what is left out on purpose.
 - [0034 · A group is the split](0034-a-group-is-the-split.md) — a group's windows are shown side by side as panes; `Ctrl+Space` makes the group.
 - [0038 · A scope per window](0038-a-scope-per-window.md) — each shell in its own systemd scope, probed first; memory and oomd kills are per window.
+- [0042 · The session is kept between runs](0042-the-session-is-kept-between-runs.md) — windows, folders, names and groups reopen where they were; one owner; `[windows] restore`.
+- [0044 · An agent has its mark, not a spinner](0044-an-agent-has-its-mark-not-a-spinner.md) — `claude`, `codex`, `agy` show their mark; the ring is for commands that end; no timer.

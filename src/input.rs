@@ -18,6 +18,17 @@ fn csi(mods: u8, app_cursor: bool, final_byte: char) -> Vec<u8> {
     }
 }
 
+/// A press of the Left or Right arrow, no modifier, as a program in `mode` expects it (`caret.rs` moves the shell's cursor
+/// with these).
+pub fn arrow(forward: bool, mode: TermMode) -> &'static [u8] {
+    match (forward, mode.contains(TermMode::APP_CURSOR)) {
+        (true, true) => b"\x1bOC",
+        (true, false) => b"\x1b[C",
+        (false, true) => b"\x1bOD",
+        (false, false) => b"\x1b[D",
+    }
+}
+
 fn tilde(mods: u8, n: u8) -> Vec<u8> {
     if mods > 1 { format!("\x1b[{n};{mods}~").into_bytes() } else { format!("\x1b[{n}~").into_bytes() }
 }
@@ -203,6 +214,14 @@ mod tests {
     fn key(sym: u32, text: &str, shift: bool, ctrl: bool, alt: bool) -> XKey {
         XKey { sym, text: text.into(), mods: Mods { shift, ctrl, alt } }
     }
+    #[test]
+    fn the_plain_arrows_follow_the_cursor_keys_mode() {
+        assert_eq!(arrow(false, TermMode::empty()), b"\x1b[D");
+        assert_eq!(arrow(true, TermMode::empty()), b"\x1b[C");
+        assert_eq!(arrow(false, TermMode::APP_CURSOR), b"\x1bOD");
+        assert_eq!(arrow(true, TermMode::APP_CURSOR), b"\x1bOC");
+    }
+
     fn enc(k: XKey) -> Vec<u8> {
         encode_key(&k, TermMode::empty()).unwrap()
     }

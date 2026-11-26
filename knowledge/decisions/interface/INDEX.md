@@ -14,3 +14,4 @@ How the window looks and what the user can configure: glass, the settings file, 
 - [0022 · i18n](0022-i18n.md) — English and Spanish through one `strings!` list; `[ui] language`.
 - [0036 · The reference, cleaner](0036-the-reference-cleaner.md) — superseded in part by 0037; UI font around the grid (narrowed `cmap`), no status bar, quiet chips, 22 px margins stand.
 - [0037 · The prompt docked at the bottom](0037-the-prompt-docked-at-the-bottom.md) — the shell's prompt below a hairline at the bottom, output rising above; `view::Fold`.
+- [0043 · A click moves the shell's cursor](0043-a-click-moves-the-shells-cursor.md) — a click on the typed line presses the arrows to that cell; not on suggestions or programs.

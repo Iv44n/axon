@@ -182,11 +182,14 @@ pub struct WindowsCfg {
     /// window is accounted, and killed under memory pressure, apart from the other windows. It only takes effect
     /// where systemd's user manager answers; elsewhere the shell starts as it always did.
     pub scope: bool,
+    /// Open again where the last run left off: its windows, each in the folder its shell was in, with their names and
+    /// groups (`restore.rs`).
+    pub restore: bool,
 }
 
 impl Default for WindowsCfg {
     fn default() -> Self {
-        WindowsCfg { tabs: TabsPos::Left, side: true, side_w: 220, scope: true }
+        WindowsCfg { tabs: TabsPos::Left, side: true, side_w: 220, scope: true, restore: true }
     }
 }
 
@@ -367,7 +370,7 @@ fn describe(c: &Config) -> String {
     format!(
         "[font]\n{family}\nsize = {}\nweight = {}\nbold = {}\nletter_spacing = {}\nline_height = {}\nsmoothing = {:?}\nhinting = {}\n\n[window]\n{opacity}\nblur = {}\nstatus_bar = {}\n\n[ui]\nlanguage = {:?}\n\n\
          [input]\nmode = {:?}\nclock = {:?}\ncursor = {:?}\nautosuggest = {}\nchips = {}\n\n\
-         [windows]\ntabs = {:?}\nside = {}\nside_width = {}\nscope = {}\n",
+         [windows]\ntabs = {:?}\nside = {}\nside_width = {}\nscope = {}\nrestore = {}\n",
         f.size,
         f.weight,
         f.bold,
@@ -387,6 +390,7 @@ fn describe(c: &Config) -> String {
         c.windows.side,
         c.windows.side_w,
         c.windows.scope,
+        c.windows.restore,
     )
 }
 
@@ -653,6 +657,7 @@ fn apply(cfg: &mut Config, key: &str, v: &str) -> Result<(), String> {
         "windows.side" => cfg.windows.side = boolean(v)?,
         "windows.side_width" => cfg.windows.side_w = number(v, SIDE_W)?.round() as u32,
         "windows.scope" => cfg.windows.scope = boolean(v)?,
+        "windows.restore" => cfg.windows.restore = boolean(v)?,
         _ => return Err("unknown setting".into()),
     }
     Ok(())
@@ -713,13 +718,25 @@ mod tests {
 
     #[test]
     fn the_windows_panel_is_read_and_clamped() {
-        assert_eq!(parsed("").0.windows, WindowsCfg { tabs: TabsPos::Left, side: true, side_w: 220, scope: true });
+        assert_eq!(parsed("").0.windows, WindowsCfg { tabs: TabsPos::Left, side: true, side_w: 220, scope: true, restore: true });
         let (c, w) = parsed("[windows]\ntabs = \"right\"\nside = false\nside_width = 999\n");
-        assert_eq!(c.windows, WindowsCfg { tabs: TabsPos::Right, side: false, side_w: 320, scope: true });
+        assert_eq!(c.windows, WindowsCfg { tabs: TabsPos::Right, side: false, side_w: 320, scope: true, restore: true });
         assert!(w.is_empty(), "{w:?}");
         let (c, w) = parsed("[windows]\ntabs = \"bottom\"\nside_width = 10\n");
         assert_eq!((c.windows.tabs, c.windows.side_w), (TabsPos::Left, 160));
         assert_eq!(w.len(), 1, "{w:?}");
+    }
+
+    #[test]
+    fn the_last_session_is_restored_unless_the_file_says_not() {
+        assert!(parsed("").0.windows.restore, "on by default");
+        let (c, w) = parsed("[windows]\nrestore = false\n");
+        assert!(!c.windows.restore);
+        assert!(w.is_empty(), "{w:?}");
+        let (c, w) = parsed("[windows]\nrestore = \"no\"\n");
+        assert!(c.windows.restore, "a mistake keeps the default");
+        assert!(w[0].contains("restore") && w[0].contains("true or false"), "{}", w[0]);
+        assert!(describe(&parsed("[windows]\nrestore = false\n").0).contains("restore = false"));
     }
 
     #[test]
@@ -880,7 +897,7 @@ mod tests {
         let every = parsed(
             "[font]\nsmoothing = \"gray\"\nhinting = false\nbold = false\n[window]\nblur = true\nstatus_bar = false\n[ui]\nlanguage = \"es\"\n\
              [input]\nmode = \"chips\"\nclock = \"24h\"\ncursor = \"underline\"\nautosuggest = false\nchips = [\"dir\", \"kube\"]\n\
-             [windows]\ntabs = \"top\"\nside = false\nside_width = 300\nscope = false\n",
+             [windows]\ntabs = \"top\"\nside = false\nside_width = 300\nscope = false\nrestore = false\n",
         )
         .0;
         assert_ne!(every.windows, WindowsCfg::default());
@@ -933,7 +950,7 @@ mod tests {
             ("font", "smoothing", "\"bgr\""), ("font", "hinting", "false"),
             ("window", "opacity", "0.7"), ("window", "blur", "true"), ("window", "status_bar", "false"), ("ui", "language", "\"es\""), ("input", "cursor", "\"bar\""), ("input", "mode", "\"chips\""), ("input", "clock", "\"24h\""),
             ("input", "chips", "[\"dir\", \"time\"]"), ("input", "autosuggest", "false"),
-            ("windows", "tabs", "\"right\""), ("windows", "side", "false"), ("windows", "side_width", "260"), ("windows", "scope", "false"),
+            ("windows", "tabs", "\"right\""), ("windows", "side", "false"), ("windows", "side_width", "260"), ("windows", "scope", "false"), ("windows", "restore", "false"),
         ] {
             text = set_key(&text, sec, key, Some(v));
         }
@@ -945,7 +962,7 @@ mod tests {
                 font: FontCfg { family: Some("Fira Code".into()), size: 20.0, weight: 700, bold: false, letter_spacing: 1.5, line_height: 1.25, smoothing: Smoothing::Bgr, hinting: false },
                 opacity: Some(0.7),
                 input: InputCfg { inline: true, chips: vec![Chip::Dir, Chip::Time], clock24: true, cursor: CursorKind::Bar, autosuggest: false },
-                windows: WindowsCfg { tabs: TabsPos::Right, side: false, side_w: 260, scope: false },
+                windows: WindowsCfg { tabs: TabsPos::Right, side: false, side_w: 260, scope: false, restore: false },
                 blur: true,
                 status_bar: false,
                 lang: crate::i18n::Setting::Es,

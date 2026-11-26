@@ -25,7 +25,7 @@ use alacritty_terminal::{
 mod windows_overview;
 
 use crate::{
-    bar,
+    bar, caret,
     side,
     history::{self, History, Hook},
     i18n::{self, Str, tr},
@@ -50,6 +50,7 @@ use crate::xkb::Xkb;
 use windows_overview::AppGrid;
 
 mod groups_ui;
+mod keep;
 mod selftest;
 
 /// How long a redraw may wait for the compositor's frame callback or buffer release before axon
@@ -193,6 +194,8 @@ struct Pane {
     /// The directory of its shell in short form (`~/lab/axon`), read again when the shell may have moved
     /// (`read_dir`): the list, the tabs and the title bar show it without asking the system each time.
     dir: String,
+    /// The same folder in full, as `read_dir` last saw it: what the session keeps (`wlapp/keep.rs`).
+    place: PathBuf,
     /// The size, in columns and rows, its terminal and PTY were told.
     size: (usize, usize),
 }
@@ -378,6 +381,12 @@ struct App {
     /// Time of the last press on the title bar, and of the last press on the grid with its click count.
     title_click: u32,
     grid_click: (u32, u8),
+    /// The cell a plain click on the grid went down on (the pane and the terminal point): when the button comes up on the
+    /// same cell, it moves the shell's cursor there if the cell is on the line being typed (`click_caret`).
+    click: Option<(usize, Point)>,
+    /// Whether this axon keeps the session between runs (`wlapp/keep.rs`), and when the next write is due.
+    keep_session: bool,
+    session_at: Option<Instant>,
     repeat: Option<Repeat>,
     /// Key repeat: keys per second (0 = off) and initial delay, as the compositor says.
     rate: i32,
@@ -421,11 +430,12 @@ impl Pane {
     /// moved (a prompt, a new title, the window coming on screen), not when the list is painted: the painters
     /// only read `dir`.
     fn read_dir(&mut self) -> bool {
-        let cwd = self.cwd_now().unwrap_or_default();
+        // A shell that has ended has no folder to read: the last one it was seen in stays (the session keeps it).
+        let Some(cwd) = self.cwd_now() else { return false };
         let home = context::home_dir();
         let dir = context::tidy_dir(&cwd.to_string_lossy(), home.as_deref().and_then(std::path::Path::to_str));
-        let moved = dir != self.dir;
-        self.dir = dir;
+        let moved = dir != self.dir || cwd != self.place;
+        (self.dir, self.place) = (dir, cwd);
         moved
     }
 }
@@ -459,15 +469,19 @@ fn win_title(w: &Win) -> &str {
 /// the hook says it is at a prompt a moment after it starts).
 static ALL_RUNNING: AtomicBool = AtomicBool::new(false);
 
-/// Whether a command runs in pane `p`, from its shell's hook.
+/// Whether a command that is busy runs in pane `p`, from its shell's hook: one that will end by itself. An AI agent
+/// (`claude`) runs until the user quits it, so it is not this: it has its mark (`pane_status`), and no spinner (and no
+/// timer for one) goes with it.
 fn running(p: &Pane) -> bool {
-    ALL_RUNNING.load(Ordering::Relaxed) || p.history.running()
+    ALL_RUNNING.load(Ordering::Relaxed) || p.history.busy()
 }
 
 /// What a pane's shell is doing, from its hook.
 fn pane_status(p: &Pane) -> side::Status {
     if running(p) {
         side::Status::Running
+    } else if let Some(a) = p.history.agent() {
+        side::Status::Agent(a)
     } else if p.history.failed() {
         side::Status::Failed
     } else {
@@ -673,6 +687,7 @@ impl Pane {
             refresh: Refresh { due: chips.then(Instant::now), last: Instant::now(), running: Arc::new(AtomicBool::new(false)), done: Arc::default(), clock_at: None },
             title: String::new(),
             dir: String::new(),
+            place: PathBuf::new(),
             size: (cols, rows),
         };
         pane.read_dir();
@@ -751,7 +766,10 @@ impl App {
         }
         let cfg_chips = cfg.input.inline && !cfg.input.chips.is_empty();
         let scope_ok = cfg.windows.scope.then(|| scope_probe.works());
-        let first = Win::new(Pane::spawn(&wake, 0, (cols, rows, cw, ch), cfg.input.cursor, cfg_chips, None, scope_ok == Some(true)), 0);
+        // Where the last run left off (the first window opens in the folder its first window was in).
+        let plan = keep::plan(&cfg);
+        let first_dir = plan.saved.as_ref().and_then(|s| s.wins.first()).and_then(|w| keep::folder(&w.dir));
+        let first = Win::new(Pane::spawn(&wake, 0, (cols, rows, cw, ch), cfg.input.cursor, cfg_chips, first_dir, scope_ok == Some(true)), 0);
         let mut app = App {
             plat,
             soft,
@@ -820,6 +838,9 @@ impl App {
             scroll_acc: 0.0,
             title_click: 0,
             grid_click: (0, 0),
+            click: None,
+            keep_session: plan.keep,
+            session_at: None,
             repeat: None,
             rate,
             delay,
@@ -827,6 +848,11 @@ impl App {
         app.set_geometry();
         app.rebuild_side();
         app.sync_flag();
+        if let Some(saved) = &plan.saved {
+            app.restore_session(saved);
+        }
+        // This axon owns the session from now on (the file says whose it is).
+        app.note_session();
         // A debugging aid: start with this many windows (screenshots, memory measurements).
         for _ in 1..std::env::var("AXON_WINDOWS").ok().and_then(|n| n.parse::<usize>().ok()).unwrap_or(1).min(9) {
             app.new_win();
@@ -837,7 +863,9 @@ impl App {
             app.wins[1].group = Some(0);
             app.rebuild_side();
         }
-        app.switch_to(0);
+        if plan.saved.is_none() {
+            app.switch_to(0);
+        }
         // Another: the first window starts with this many panes (screenshots, smoke tests of the layouts).
         for _ in 1..std::env::var("AXON_PANES").ok().and_then(|n| n.parse::<usize>().ok()).unwrap_or(1).min(12) {
             app.split(panes::Dir::Auto);
@@ -879,7 +907,7 @@ impl App {
             // Block until the compositor, the PTY thread or a held key needs us; and, when a redraw is
             // stuck waiting for the compositor, only until it is clear that it will not answer.
             let now = Instant::now();
-            let timeout = [self.repeat.as_ref().map(|r| r.at), self.waiting.map(|t| t + STALL), self.save_at, self.overlays.deadline(now), self.undo.as_ref().map(|u| u.until), self.spin_at, self.selftest.as_ref().map(|t| t.next)]
+            let timeout = [self.repeat.as_ref().map(|r| r.at), self.waiting.map(|t| t + STALL), self.save_at, self.session_at, self.overlays.deadline(now), self.undo.as_ref().map(|u| u.until), self.spin_at, self.selftest.as_ref().map(|t| t.next)]
                 .into_iter()
                 .chain(self.shown_panes().flat_map(|p| [p.refresh.due, p.refresh.clock_at]))
                 .flatten()
@@ -917,6 +945,7 @@ impl App {
                 overlay::Tick::Rest => {}
             }
             self.tick_save();
+            self.tick_session();
             self.tick_undo(Instant::now());
             self.tick_spin();
             self.tick_selftest();
@@ -925,8 +954,9 @@ impl App {
                 self.waiting = None;
             }
         }
-        // What the panel changed last is written even if the window closes a moment later.
+        // What the panel changed last is written even if the window closes a moment later, and so is where the windows were.
         self.flush_save();
+        self.save_session();
         Ok(())
     }
 
@@ -1093,6 +1123,9 @@ impl App {
                     };
                     // The panel and the tabs say whether a command runs or failed (a folded group, that one does).
                     self.refresh_groups();
+                    if moved {
+                        self.note_session();
+                    }
                     if moved || said || named != self.wins[i].panes[j].history.command().is_some() {
                         self.titled(i);
                     }
@@ -1103,14 +1136,19 @@ impl App {
                     let Some(e) = self.wins[i].panes[j].proxy.queue.lock().unwrap().pop_front() else { break };
                     match e {
                         // Shells set the title at their prompt, with the directory in it: a moment to look where they are.
+                        // (A program may set its title many times a second: the session is noted only when the folder changed.)
                         TermEvent::Title(t) => {
                             self.wins[i].panes[j].title = t;
-                            self.wins[i].panes[j].read_dir();
+                            if self.wins[i].panes[j].read_dir() {
+                                self.note_session();
+                            }
                             self.titled(i);
                         }
                         TermEvent::ResetTitle => {
                             self.wins[i].panes[j].title.clear();
-                            self.wins[i].panes[j].read_dir();
+                            if self.wins[i].panes[j].read_dir() {
+                                self.note_session();
+                            }
                             self.titled(i);
                         }
                         TermEvent::PtyWrite(t) => self.wins[i].panes[j].pty.notify(t.into_bytes()),
@@ -1453,6 +1491,7 @@ impl App {
     /// Lists what the panel or the tabs show for the windows and groups as they are: a folded group still shows
     /// the window on screen if it is one of its own, the tabs list no panes.
     fn relist(&mut self) {
+        self.note_session();
         let of: Vec<Option<usize>> = self.wins.iter().map(|w| w.group).collect();
         let folded: Vec<bool> = self.groups.iter().map(|g| g.collapsed).collect();
         let panes: Vec<usize> = self.wins.iter().map(|w| w.panes.len()).collect();
@@ -1558,6 +1597,7 @@ impl App {
             report_focus(self.wins[i].pane(), true);
         }
         self.cur = i;
+        self.note_session();
         if i != was {
             let unfolded = self.wins[i].group.is_some_and(|g| std::mem::take(&mut self.groups[g].collapsed));
             if unfolded || self.groups.iter().any(|g| g.collapsed) {
@@ -2731,6 +2771,10 @@ impl App {
                 return;
             }
             self.selecting = false;
+            // A click that went down and up on one cell of the line being typed puts the shell's cursor there.
+            if let Some((pi, p)) = self.click.take() {
+                self.click_caret(pi, p);
+            }
             // The cross of a pane closes it when the button comes up over it too.
             if let Some(pi) = self.cross_down.take()
                 && self.close_hot && self.pane_hover == Some(pi)
@@ -2753,6 +2797,7 @@ impl App {
             }
             return;
         }
+        self.click = None;
         match self.hover {
             Hit::Close | Hit::Minimize | Hit::Maximize | Hit::Settings | Hit::SideBtn | Hit::NewGroup => {
                 self.ui.down = true;
@@ -2802,10 +2847,30 @@ impl App {
                 };
                 let (p, side) = self.cell_at(pi);
                 self.pane(pi).term.lock().selection = Some(Selection::new(ty, p, side));
+                self.click = (n == 0).then_some((pi, p));
                 (self.selecting, self.drag) = (true, pi);
                 self.dirty = true;
             }
         }
+    }
+
+    /// A plain click that went down and up on cell `p` of pane `pi`: when the shell waits for a line (its hook has said a
+    /// prompt and no command runs, so the arrows go to its editor and not to a program) and `p` is on what is being typed,
+    /// the arrows that take the shell's cursor there are pressed for the user (`caret.rs`). The click selects nothing then.
+    fn click_caret(&mut self, pi: usize, p: Point) {
+        if pi >= self.shown().n || self.reporting(pi) || self.cell_at(pi).0 != p {
+            return;
+        }
+        let pane = self.pane(pi);
+        if pane.history.running() || pane.history.latest().is_none() {
+            return;
+        }
+        let mut t = pane.term.lock();
+        let Some(keys) = caret::keys(&t, p) else { return };
+        t.selection = None;
+        drop(t);
+        pane.pty.notify(keys);
+        self.dirty = true;
     }
 
     fn on_scroll(&mut self, pixels: f32, clicks: i32) {

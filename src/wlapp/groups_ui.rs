@@ -542,6 +542,7 @@ impl App {
         if commit && let Some(wi) = self.win_index(r.win) {
             let name = groups::rename_result(r.field.text(), auto_title(&self.wins[wi]));
             self.wins[wi].name = name;
+            self.note_session();
             self.titled(wi);
         }
         self.side_dirty = true;

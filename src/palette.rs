@@ -24,6 +24,9 @@ pub const MAGENTA: Rgb = hex(0xd86bdc);
 pub const YELLOW: Rgb = hex(0xf6b73c);
 pub const BLUE: Rgb = hex(0x6aa9ff);
 pub const CYAN: Rgb = hex(0x4fd6d0);
+/// Claude's own orange, for its mark beside a window that runs it (`icons::agent`); the user asked for the agents'
+/// marks to tell them from a command that is busy, and this is the one colour that is not from the reference.
+pub const CLAUDE: Rgb = hex(0xd97757);
 
 /// The reference's hues in the ANSI slots programs use. Index 8 (gray) is a step lighter than `DIM` (`#74747d` is 4.25:1 on `BG`, fine for chrome text) so programs' grey text keeps 4.5:1.
 const ANSI: [Rgb; 16] = [

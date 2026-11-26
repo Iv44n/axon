@@ -10,7 +10,7 @@
 //! after a scroll finds its record again. A bounded ring: the oldest prompts forget their chips.
 use std::{collections::VecDeque, time::Instant};
 
-use crate::context::Context;
+use crate::{agent::Agent, context::Context};
 
 /// How many prompts are remembered.
 const KEEP: usize = 256;
@@ -159,6 +159,17 @@ impl History {
         self.started.is_some()
     }
 
+    /// The AI agent that runs, when the command now running is one (`claude`, `codex`, `agy`): it does not end until the
+    /// user quits it, so it is shown by its mark, not as a command that is busy (`agent.rs`).
+    pub fn agent(&self) -> Option<Agent> {
+        self.command().and_then(Agent::of)
+    }
+
+    /// A command that is not an agent is running: what a spinner says.
+    pub fn busy(&self) -> bool {
+        self.running() && self.agent().is_none()
+    }
+
     /// The last command that ran failed (interrupting one with Ctrl+C, status 130, is not a failure).
     pub fn failed(&self) -> bool {
         self.recs.iter().rev().find_map(|r| r.run).is_some_and(|r| r.status != 0 && r.status != 130)
@@ -223,6 +234,23 @@ mod tests {
         // The directory a shell says it is in (PowerShell): the whole rest of the title, spaces included.
         assert_eq!(parse("axon!hook D C:\\Users\\Ana Perez\\code"), Some(Hook::Dir("C:\\Users\\Ana Perez\\code".into())));
         assert_eq!(parse("axon!hook D"), None);
+    }
+
+    #[test]
+    fn an_agent_runs_but_is_not_busy() {
+        let (mut h, t0) = (History::default(), Instant::now());
+        h.prompt(1, 0, t0, &ctx("~/a"));
+        assert!(!h.running() && !h.busy() && h.agent().is_none());
+        h.start(t0);
+        assert!(h.running() && h.busy(), "before the shell says what runs, it is a command like any other");
+        h.set_label("claude");
+        assert!(h.running() && !h.busy());
+        assert_eq!(h.agent(), Some(Agent::Claude));
+        h.prompt(2, 0, t0 + Duration::from_secs(3600), &ctx("~/a"));
+        assert!(!h.running() && h.agent().is_none(), "the agent quit");
+        h.start(t0);
+        h.set_label("cargo");
+        assert!(h.busy() && h.agent().is_none());
     }
 
     #[test]

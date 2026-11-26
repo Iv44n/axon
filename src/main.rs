@@ -2,7 +2,9 @@
 // A Windows build is a window program: no console flashes up when it is started from a shortcut. The commands that print
 // (`axon --version`, `axon config show`) attach to the console they were typed in (`win::attach_console`).
 #![cfg_attr(windows, windows_subsystem = "windows")]
+mod agent;
 mod bar;
+mod caret;
 mod cell;
 mod chrome;
 mod cmap;
@@ -35,6 +37,7 @@ mod panes;
 mod palette;
 mod picker;
 mod plat;
+mod restore;
 mod session;
 mod settings;
 mod side;

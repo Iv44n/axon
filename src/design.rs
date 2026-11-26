@@ -20,6 +20,7 @@ use alacritty_terminal::{
 };
 
 use crate::{
+    agent::Agent,
     bar,
     chrome::{self, Ui},
     config::{Chip, FontCfg, Smoothing, TabsPos, WindowsCfg},
@@ -194,6 +195,9 @@ const NO_LIST: ListScene = ListScene { grouped_tabs: false, fold0: false, status
 
 /// The reference's session: servidor runs a command, pruebas failed one.
 const BUSY: [Status; 5] = [Status::Idle, Status::Running, Status::Failed, Status::Idle, Status::Idle];
+
+/// The agents: servidor runs Claude, pruebas ChatGPT's, the home Google's, notas a command that is busy (its ring turns, theirs do not).
+const AGENTS: [Status; 5] = [Status::Idle, Status::Agent(Agent::Claude), Status::Agent(Agent::ChatGpt), Status::Agent(Agent::Google), Status::Running];
 
 struct Scene {
     name: &'static str,
@@ -377,6 +381,8 @@ fn scenes() -> Vec<Scene> {
         Scene { panes: split(2, panes::Kind::Cols, 0, None), bar: chips3(), ..base("panes-no-panel", "Two windows of a group with the panel hidden (Alt+B)", "panes", Ui { side: 1, ..Ui::IDLE }) },
         Scene { side: Some((TabsPos::Left, None)), list: ListScene { status: BUSY, ..NO_LIST }, ..base("status-side", "Status icons in the panel: the prompt (idle), a ring that turns (a command runs), a red dot (the last command failed); the cyan dot is output that came while it was hidden", "status", side_ui) },
         Scene { side: Some((TabsPos::Left, None)), list: ListScene { status: BUSY, phase: 0.6, ..NO_LIST }, ..base("status-side-turned", "The same a little later: the ring's bright quarter has gone round", "status", side_ui) },
+        Scene { side: Some((TabsPos::Left, None)), list: ListScene { status: AGENTS, ..NO_LIST }, ..base("status-agents-side", "A window that runs an AI agent shows its mark instead of a ring: Claude (servidor), ChatGPT (pruebas), Antigravity (~); the ring is for a command that will end (notas); nothing turns for an agent, so no timer runs for it", "status", side_ui) },
+        Scene { side: Some((TabsPos::Top, None)), list: ListScene { grouped_tabs: true, status: AGENTS, ..NO_LIST }, ..base("status-agents-tabs", "The same in the tabs at the top", "status", Ui { side: 0, ..Ui::IDLE }) },
         Scene { side: Some((TabsPos::Left, Some(side::Part::Head(0)))), folded: true, list: ListScene { fold0: true, status: BUSY, ..NO_LIST }, ..base("status-folded", "A folded group shows the window on screen, and its dot turns while a window in it runs a command (the other group is folded too, idle)", "status", side_ui) },
         Scene { side: Some((TabsPos::Top, None)), list: ListScene { grouped_tabs: true, status: BUSY, ..NO_LIST }, ..base("tabs-top-groups", "Groups in the tabs: a container tinted with the group's colour, its chip (dot, name, count), the tab on screen at 16 % of the colour; status icons in the tabs", "tabs", Ui { side: 0, ..Ui::IDLE }) },
         Scene { side: Some((TabsPos::Top, None)), list: ListScene { grouped_tabs: true, status: BUSY, first: 4, ..NO_LIST }, ..base("tabs-top-scrolled", "The tabs scrolled a group on (the wheel moves them a group or a window at a time): the first group is out of sight and the rest start at the left of the strip", "tabs", Ui { side: 0, ..Ui::IDLE }) },

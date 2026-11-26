@@ -97,7 +97,7 @@ Always use `--release`: debug mode is much slower.
 | `Alt+Shift+W` | Close the focused pane, which is a window of the group (with the *Undo* toast; a shell that exits closes its window); the cross at a pane's corner and the cross of its row in the panel do the same |
 | `Alt+O` | The overview of windows: every window as a card (the last rows of its terminal, status, name, directory) in a section per group; type to filter (name, directory, group or terminal text), arrows or `Tab` to move, `Enter` or a click to go to a window, `Alt+N` for a new one, `Esc` clears the filter and then closes it |
 | Drag a card in the overview | Drop it on a group's section to put the window into the group (on the *No group* one to take it out), or on the dashed tile to make a group with it; `Esc` puts it back |
-| Drag a row or a tab | Reorder windows: drop it before or after another (it takes that window's group), on a group's header or chip to put it into the group, on the empty part of the list to take it out of its group. Drag a group's header or chip to move the group. `Esc` cancels. A status icon says what the shell is doing: the prompt, a turning ring while a command runs, a red dot when the last one failed (both need the shell's hook: `axon shell-init`; bash gets it from axon) |
+| Drag a row or a tab | Reorder windows: drop it before or after another (it takes that window's group), on a group's header or chip to put it into the group, on the empty part of the list to take it out of its group. Drag a group's header or chip to move the group. `Esc` cancels. A status icon says what the shell is doing: the prompt, a turning ring while a command runs, the mark of the agent when the command is `claude` (Claude's burst of rays), `codex` (ChatGPT's knot) or `agy` (Antigravity's arch), which do not end by themselves and so do not turn, a red dot when the last command failed (all need the shell's hook: `axon shell-init`; bash gets it from axon) |
 | `Alt+B` | Show or hide the panel of windows (`[windows] tabs = "left" \| "right" \| "top"`, `side`, `side_width`); the button right of the window buttons does the same |
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copy / paste |
 | `Ctrl+Shift+Q` | Quit |
@@ -107,6 +107,7 @@ Always use `--release`: debug mode is much slower.
 | Mouse wheel | Scroll (sends arrow keys on the alternate screen; wheel reports when the program asks for the mouse); over the tabs at the top it scrolls them, a group or a window at a time |
 | Middle click on a window's row or tab | Close the window (with the *Undo* toast) |
 | Mouse in vim, tmux, htop, less | Clicks, drags, motion and wheel go to the program; hold `Shift` to select text anyway (`wl` backend) |
+| Click on the command being typed | Moves the shell's cursor to that cell (it presses the arrows for you, across the rows of a command that wrapped): click the second row of a long command to fix it there. Needs the shell at its prompt (the hook has spoken and no command runs); a click on a program's screen, on the output, or on a dim suggestion (zsh-autosuggestions, fish) does not move it (ADR 0043) |
 | Click, double click, triple click | Selection: simple, word, line |
 | Drag the title bar, double click it | Move the window, maximize / restore |
 | Title bar buttons (left): close, minimize, maximize | Window controls (grey; they turn red, yellow and green under the pointer) |
@@ -242,6 +243,7 @@ tabs = "left"               # where the list of windows lives: "left" or "right"
 side = true                 # whether the panel is shown (Alt+B toggles it)
 side_width = 220            # the panel's width in pixels, 160 to 320
 scope = true                # every window's shell in a systemd scope of its own: what runs from a window is counted (and killed under memory pressure) apart from the others
+restore = true              # open again where the last run left off: the windows, each in its folder, with their names and groups
 ```
 
 The file is a small subset of TOML read by our own parser (`src/config.rs`): sections, `key = value`, `#` comments,
@@ -261,6 +263,7 @@ axis of a font like `JetBrainsMono[wght].ttf`; the own font reader (task 12) wil
 | `AXON_WINDOWS` | `1` | A debugging aid: start with *n* windows (up to 9) |
 | `AXON_PANES` | `1` | A debugging aid: start with *n* terminals split in a group around the first window (up to 12) |
 | `AXON_GROUPS` | — | A debugging aid: set (any value) with `AXON_WINDOWS` of 2 or more, the first two windows start in one group |
+| `AXON_SESSION` | the state directory's `axon/session` | Where the windows are kept between runs (`[windows] restore`): a file, or `off` to neither read nor write it for this run (what `scripts/bench.sh` does). A run with a debugging aid does not touch it either |
 | `AXON_RUNNING` | — | A debugging aid: every window counts as running a command (the turning ring, the folded groups' dots) |
 | `AXON_OVERVIEW` | — | A debugging aid: start with the overview of windows open |
 | `AXON_LIST_UI` | — | A debugging aid: start with one of the window list's screens open: `dialog`, `edit`, `menu`, `group-menu`, `strip-menu`, `rename`, `close` or `toast` (`edit` and `group-menu` need `AXON_GROUPS`) |
@@ -316,13 +319,13 @@ Measured with [`scripts/bench.sh`](scripts/bench.sh) (`--clean` adds a cold buil
 can move size or speed** (rule in `CLAUDE.md`); older numbers stay in the history table.
 
 Machine: AMD Ryzen 5 5600H (12 threads) + RTX 3050 Mobile, Ubuntu, kernel 7.0.0-44, GNOME Shell 50.1 on Wayland.
-Last measured: 2026-11-26, at `18ff573` plus the change that paints the rows outside the terminal's lock (ADR 0041: the UI thread held it 2.3 ms a frame during a flood, painting, and now 0.08 ms, reading the cells), paints a grid row's glass as a fill and skips a glyph's empty pixels; +3.7 KB; the flood is 13 % faster in an A/B (notes under the throughput table), idle and memory as before. The machine was busier than on 2026-11-25 (load average 1-4 after the builds), so the absolute flood times moved for both builds. The table of windows, groups and screens and the older notes under the tables come from earlier builds (ADR 0036-0039) and were not measured again: nothing in this change touches them. **Windows** has its own line below: it is measured by the self-test on a GitHub Actions runner, not on this machine.
+Last measured: 2026-11-26, at `5ed8214` plus the kept session, the click that moves the shell's cursor and the agents' marks (ADR 0042-0044: `restore.rs`, `caret.rs`, `agent.rs`, `wlapp/keep.rs`, the marks in `icons.rs`; +24.3 KB over it, 8,342,256 to 8,366,520 B, no new dependency; idle and memory as before; the flood 1.52 s at load 1.2-1.5, not run against `5ed8214` side by side, and nothing of this change is on the PTY or paint path; a window that runs `claude`, `codex` or `agy` costs no timer: 0 ticks in 5 s, where the same window running `cargo` turns its ring, 2 ticks on this build and 10 before ADR 0041's cheaper painting). Before it, 2026-11-26, at `18ff573` plus the change that paints the rows outside the terminal's lock (ADR 0041: the UI thread held it 2.3 ms a frame during a flood, painting, and now 0.08 ms, reading the cells), paints a grid row's glass as a fill and skips a glyph's empty pixels; +3.7 KB; the flood is 13 % faster in an A/B (notes under the throughput table), idle and memory as before. The machine was busier than on 2026-11-25 (load average 1-4 after the builds), so the absolute flood times moved for both builds. The table of windows, groups and screens and the older notes under the tables come from earlier builds (ADR 0036-0039) and were not measured again: nothing in this change touches them. **Windows** has its own line below: it is measured by the self-test on a GitHub Actions runner, not on this machine.
 
 **Build**
 
 | Binary | Cold release build |
 |---|---|
-| 8.0 MiB (8,342,256 bytes) | 101 s (before ADR 0036) |
+| 8.0 MiB (8,366,520 bytes) | 101 s (before ADR 0036) |
 
 **Idle memory and CPU** (`AXON_BACKEND` selects the backend; `wl` is the own Wayland client with the CPU renderer and the
 default on Wayland, `winit` is the `winit` + `wgpu` fallback)
@@ -332,15 +335,15 @@ default on Wayland, `winit` is the `winit` + `wgpu` fallback)
 | `wl` | JetBrains Mono (default) | **18 MB** | 13 MB | 8 MB | 0 ticks / 3 s |
 | `wl` | DejaVu Sans Mono | 23 MB | 19 MB | 14 MB | 0 ticks / 3 s |
 | `wl` | Cascadia Mono NF | 60 MB | 55 MB | 50 MB | 0 ticks / 3 s |
-| `winit` | JetBrains Mono (default) | 148 MB | 131 MB | 31 MB | 0 ticks / 3 s |
+| `winit` | JetBrains Mono (default) | 148 MB | 132 MB | 31 MB | 0 ticks / 3 s |
 | `winit` | DejaVu Sans Mono | 154 MB | 137 MB | 37 MB | 0 ticks / 3 s |
-| `winit` | Cascadia Mono NF | 190 MB | 173 MB | 74 MB | 0 ticks / 3 s |
+| `winit` | Cascadia Mono NF | 191 MB | 174 MB | 74 MB | 0 ticks / 3 s |
 
 The idle target is under 50 MB of RSS. `wl` meets it with the default font (the 4 MB over the 15 MB of before are the UI
 font: 2.7 MB of its parsed outlines, narrowed to the characters an interface draws, and ~1.5 MB more of the binary's own code
 paged in; opening the settings or an overlay no longer loads a font); a Nerd Font such as Cascadia Mono NF costs
 ~45 MB inside `fontdue` (it parses every glyph), which the own font reader will remove. The `winit` backend cannot meet
-the target: the Vulkan loader and the drivers map ~94 MB. (`winit`'s PSS went from 56 to 96 and now 139 MB with the RSS
+the target: the Vulkan loader and the drivers map ~94 MB. (`winit`'s PSS went from 56 to 96 and now 132 MB with the RSS
 unchanged: PSS divides shared pages among every process that maps them, so it follows what else runs on the desktop.)
 
 **Windows, groups and screens** (`wl`, default font, idle shell in every window; the debugging knobs `AXON_WINDOWS`,
@@ -354,6 +357,8 @@ unchanged: PSS divides shared pages among every process that maps them, so it fo
 | Settings panel open | 22.8 MB | 11.8 MB | 0 ticks / 5 s |
 | Overview of windows open (one window) | 19.1 MB | 8.4 MB | 0 ticks / 5 s |
 | Three windows, each marked as running (the status spinners turn) | 21.3 MB | 10.6 MB | 11 ticks / 5 s |
+| One window whose command is `cargo` (the hook's label: its ring turns) | - | - | 2 ticks / 5 s (10 before ADR 0041's cheaper painting) |
+| One window whose command is `claude`, `codex` or `agy` (the agent's mark, still: ADR 0044) | - | - | 0 ticks / 5 s |
 
 A shell killed with `SIGKILL` closes only its own window; when the last one goes, axon quits and removes its report files.
 
@@ -361,10 +366,13 @@ A shell killed with `SIGKILL` closes only its own window; when the last one goes
 
 | Backend | Time | RSS afterwards |
 |---|---|---|
-| `wl` | 1.76 s | 39 MB |
-| `winit` | 1.37 s | 177 MB |
+| `wl` | 1.52 s | 40 MB |
+| `winit` | 1.28 s | 177 MB |
 
 For ADR 0041 (painting outside the terminal's lock), nine floods of each build in turn, the build before it first: 1.91/1.60, 1.93/1.57, 1.90/1.67, 1.72/1.49, 1.99/1.58, 2.06/1.81, 2.29/2.12, 1.91/1.71 and 2.07/1.88 s, every pair faster, 1.98 against 1.71 s on average (-13 %); axon's own CPU during the flood fell 20 % (the UI thread from 49 to 17 ticks in one run). A first `scripts/bench.sh` run gave 1.82 s and 68 MB after: the window opened larger that time (~229 columns of scrollback); the second, in the tables, 1.76 s and 39 MB. The PTY thread is now not saturated (~58 % of a core): what is left is parsing and the kernel's PTY, which `winit` shares.
+
+
+The 1.52 s and 1.28 s are the tree with ADR 0041's painting and the kept session, the click and the agents' marks (ADR 0042-0044) in, on 2026-11-26 at load 1.2-1.5, a quieter machine than the one of the A/B above: the two are not an A/B of each other, and none of the three later changes is on the PTY or paint path.
 
 For ADR 0038 (a scope per window), four rounds with the scope on and off, in turn, at load 1.0-1.3: `wl` 2.39, 1.94, 1.89 and 1.93 s on against 1.78, 1.93, 1.78 and 2.07 s off (the first pair had a cold file cache; the rest average 1.92 against 1.93 s): the same within the noise, as it must be, since the scope changes where the shell is accounted and not what it does. The `scripts/bench.sh` run above, 2.01 s, is inside that spread. Startup to a window's first shell process, six launches in turn: 57, 59 and 59 ms without the scope, 65, 61 and 60 ms with it (the `systemd-run` that makes the scope runs in the shell's own process, and its probe overlaps the window's creation).
 
@@ -393,6 +401,7 @@ ADR 0039; not this machine, and a VM's numbers move from run to run)
 
 | Date | Change | Binary | Idle RSS `winit` | Idle RSS `wl` |
 |---|---|---|---|---|
+| 2026-11-26 | The session kept between runs (ADR 0042, `[windows] restore`), a click on the typed line moves the shell's cursor (ADR 0043) and a window that runs `claude`, `codex` or `agy` shows the agent's mark, not a spinner (ADR 0044); no new dependency; the agent's window costs no timer (0 ticks in 5 s against 2 for a busy command); flood 1.52 s in `bench.sh` | 8,366,520 B (+24.3 KB over `5ed8214`) | 148 MB | 18 MB |
 | 2026-11-26 | The rows painted outside the terminal's lock (ADR 0041), a grid row's glass as one fill (`chrome::flat_from`; it also fixes the lit panel button's bottom row), a glyph's empty pixels skipped, a configured font parsed once (it was twice: +88 ms of startup with a Nerd Font); flood 13 % faster in an A/B, 1.76 s in `bench.sh` | 8,342,256 B (+3.7 KB) | 148 MB | 18 MB |
 | 2026-11-25 | The Windows port (ADR 0039): `plat.rs` seam, `win.rs`, PowerShell hook, `fallback.rs` split out of `main.rs`, the self-test; Linux numbers as before (flood 1.83 s, 0 ticks idle); Windows exe 1.6 MiB, 30 MB idle, 0 CPU (CI runner) | 8,338,544 B (+18.8 KB) | 150 MB | 18 MB |
 | 2026-11-25 | Every window's shell in a systemd scope of its own (ADR 0038, `[windows] scope`): `systemd-run --user --scope` execs in place, a probe runs while the window is made, off where the user manager does not answer; +4.6 KB; flood and idle the same (A/B); 1-8 ms more to a window's first shell | 8,319,736 B | 151 MB | 19 MB |
@@ -445,6 +454,9 @@ src/
 ├─ cmap.rs      a font's character map narrowed to what the interface draws (the UI font parses ~900 glyphs, not ~2 900)
 ├─ i18n.rs      the interface's strings in English and Spanish (`tr`), the language setting
 ├─ history.rs   each prompt's chips as they were, and how long its command ran (the hook's title escapes)
+├─ agent.rs     the AI agents that run in a terminal (`claude`, `codex`, `agy`) by the command that starts them; pure
+├─ caret.rs     a click on the typed line: how many arrows move the shell's cursor to that cell; pure
+├─ restore.rs   the session kept between runs: the file's format, where it lives, who owns it; pure
 ├─ context.rs   what the chips say: directory, git, Python, Kubernetes, time (read on a thread)
 ├─ settings.rs  the settings panel docked beside the grid (Font, Input and Windows pages)
 ├─ overlay.rs   the overlay kit: the `Overlay` trait, the stack that takes keys and pointer, the modal frame, text
@@ -457,7 +469,7 @@ src/
 ├─ ctxmenu.rs   the context menus of a window, a group and the empty list
 ├─ menu.rs      the context menu
 ├─ toast.rs     the toast (with an *Undo* button)
-├─ icons.rs     the overlays' outline icons
+├─ icons.rs     the overlays' outline icons, and the agents' marks
 ├─ overlay_demo.rs  the kit's debug screens (`AXON_DEMO_OVERLAY`)
 ├─ overview.rs  the overview of windows (`Alt+O`): cards, sections, filter, keyboard and pointer, an overlay
 ├─ config.rs    the settings file: parser, writer, `axon config`, `axon shell-init`
@@ -470,6 +482,7 @@ src/
 ├─ wlapp.rs     the app on plat + soft.rs, on both systems: windows (a group's are shown split), keyboard, pointer, clipboard, one wait loop
 │  ├─ selftest.rs          `AXON_SELFTEST`: the app tests itself in CI
 │  ├─ groups_ui.rs         windows, groups, menus, rename and undo: what owns the shells
+│  ├─ keep.rs              the session between runs: the snapshot, when it is written, opening it again
 │  └─ windows_overview.rs  the app's side of the overview: cards from the windows, the terminals' text for the previews
 ├─ xkb.rs       keyboard layouts through libxkbcommon (dlopen)
 ├─ input.rs     Keys → xterm sequences (pure)
@@ -503,7 +516,7 @@ Plan, decisions (ADRs), risks and measurements live in the knowledge tree at
 - Synthesized bold; no italics or ligatures; no color emoji.
 - Blur: a request to the compositor, not our own effect; GNOME (Mutter) offers none, so there it does nothing. Settings: fonts, opacity, blur, the prompt chips and the windows' panel (settings panel or `config.toml`); colours, shortcuts and themes are not configurable yet. The weight is synthesized.
 - Input: the chips sit above the prompt, but the line is still edited by the shell. An own input editor (Warp's "Input type") is the next step, not built yet. The chip colours are fixed; the chips are `wl` only, and zsh and fish need the `axon shell-init` line (and keep their own prompt text).
-- Windows, groups and their names are not saved between runs; a split's panes cannot be resized by dragging yet; the overview has no context menus (ADR 0033 lists what is left out on purpose).
+- The session kept between runs is the windows, their folders, names and groups (ADR 0042), not the programs or the scrollback; the click that moves the shell's cursor needs the shell's hook to have spoken, and an agent is known by the word that starts it (`claude`, `codex`, `agy`: not an alias or `npx`); a split's panes cannot be resized by dragging yet; the overview has no context menus (ADR 0033 lists what is left out on purpose).
 - Windows (ADR 0039): not there yet are background blur, display scaling above 100 % (the window is then blurry, as on Wayland today) and prompt chips in PowerShell; `[windows] scope` is systemd's. It is verified by the self-test on a GitHub Actions runner (a real window, a real PowerShell, the installers), not yet by hand on real hardware: expect rough edges.
 - Linux is tested by hand on Wayland (GNOME); X11 only through the `winit` fallback.
 

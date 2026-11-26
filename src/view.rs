@@ -267,31 +267,26 @@ fn runs(dirty: &[bool]) -> impl Iterator<Item = (usize, usize)> + '_ {
 /// how many rows a typed command may wrap over.
 const PROMPT_LINES: i32 = 4;
 
-/// The line (of the terminal: the history's are negative) the shell put the prompt being typed at's chips on.
-///
-/// The shell's hook (`context.rs`) makes the prompt start with a line of its own holding one concealed
-/// space (SGR 8) in its first column, and end with a concealed space right before where the user types.
-/// So the prompt being typed at is the one whose end marker is on the cursor's row (or on an earlier
-/// row of a command that wrapped), and the chips go on the reserved line above it. Output a program
-/// printed since leaves no marker at the cursor. Whether the view is scrolled back does not matter: the
-/// composer (`Fold`) shows this prompt either way.
-pub fn live_prompt<L: EventListener>(term: &Term<L>) -> Option<i32> {
+/// Whether the cell at `(line, col)` is one of the shell hook's concealed spaces.
+fn is_marker(grid: &alacritty_terminal::grid::Grid<alacritty_terminal::term::cell::Cell>, line: i32, col: usize) -> bool {
+    let c = &grid[Line(line)][Column(col)];
+    c.c == ' ' && c.flags.contains(Flags::HIDDEN)
+}
+
+/// Where the prompt being typed at ends: the concealed space the shell's hook (`context.rs`) puts right before where the
+/// user types, on the cursor's row or on an earlier row of a command that wrapped. What is typed starts in the cell after
+/// it. Output a program printed since leaves no marker at the cursor, so there is none then.
+pub fn prompt_end<L: EventListener>(term: &Term<L>) -> Option<Point> {
     let grid = term.grid();
     let first = -(grid.history_size() as i32);
     let cols = term.columns();
-    let marker = |line: i32, col: usize| {
-        let c = &grid[Line(line)][Column(col)];
-        c.c == ' ' && c.flags.contains(Flags::HIDDEN)
-    };
     let mut row = grid.cursor.point.line.0;
-    let mut end = None;
     for _ in 0..=PROMPT_LINES {
         if row < first {
             return None;
         }
-        if (0..cols).any(|c| marker(row, c)) {
-            end = Some(row);
-            break;
+        if let Some(col) = (0..cols).rev().find(|&c| is_marker(grid, row, c)) {
+            return Some(Point::new(Line(row), Column(col)));
         }
         // Up a row only when the one above wraps into this one.
         if row == first || !grid[Line(row - 1)][Column(cols - 1)].flags.contains(Flags::WRAPLINE) {
@@ -299,8 +294,21 @@ pub fn live_prompt<L: EventListener>(term: &Term<L>) -> Option<i32> {
         }
         row -= 1;
     }
-    let end = end?;
-    (1..=PROMPT_LINES).map(|d| end - d).find(|&l| l >= first && marker(l, 0))
+    None
+}
+
+/// The line (of the terminal: the history's are negative) the shell put the prompt being typed at's chips on.
+///
+/// The shell's hook (`context.rs`) makes the prompt start with a line of its own holding one concealed
+/// space (SGR 8) in its first column, and end with a concealed space right before where the user types.
+/// So the prompt being typed at is the one whose end marker is on the cursor's row (or on an earlier
+/// row of a command that wrapped: `prompt_end`), and the chips go on the reserved line above it. Whether the view is
+/// scrolled back does not matter: the composer (`Fold`) shows this prompt either way.
+pub fn live_prompt<L: EventListener>(term: &Term<L>) -> Option<i32> {
+    let grid = term.grid();
+    let first = -(grid.history_size() as i32);
+    let end = prompt_end(term)?.line.0;
+    (1..=PROMPT_LINES).map(|d| end - d).find(|&l| l >= first && is_marker(grid, l, 0))
 }
 
 /// Nothing is typed at the prompt yet: the cursor is right after the prompt's end marker (`live_prompt`) and its

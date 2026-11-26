@@ -136,7 +136,7 @@ pub fn remove_stale_reports(dir: &Path) {
 }
 
 /// Whether process `pid` still runs (a report file of one that does not is stale).
-fn process_alive(pid: u32) -> bool {
+pub fn process_alive(pid: u32) -> bool {
     #[cfg(target_os = "linux")]
     return Path::new(&format!("/proc/{pid}")).exists();
     #[cfg(windows)]

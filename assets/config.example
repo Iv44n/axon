@@ -99,3 +99,10 @@
 # "axon". It is used only where systemd's user manager answers; elsewhere the shell starts as usual. List them with
 # `systemd-cgtop` or `systemctl --user list-units --type=scope` (app-axon-<pid>w<window>.scope).
 # scope = true
+
+# Open again where the last run left off: the windows that were open, each in the folder its shell was in, with the
+# names and groups they had and the one that was on screen. What a shell was running is not kept, only where it was.
+# One axon keeps the session at a time: a second one opened while the first runs starts with a single window and leaves
+# the first's session as it is. The file is `~/.local/state/axon/session` (`$XDG_STATE_HOME`); `AXON_SESSION=off` in
+# the environment keeps and reads nothing for that run, `AXON_SESSION=<file>` uses another file.
+# restore = true

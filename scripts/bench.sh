@@ -9,6 +9,8 @@
 set -euo pipefail
 export LC_ALL=C   # decimal points, whatever the user locale
 cd "$(dirname "$0")/.."
+# The runs below are not the user's session: they must neither restore it nor overwrite it (src/restore.rs).
+export AXON_SESSION=off
 
 cargo build --release -q
 BIN=target/release/axon

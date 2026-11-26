@@ -5,6 +5,7 @@
 //! cleared (`Soft::clear_rect`). The text is the interface's proportional font (`Soft::ui_text`), at the
 //! reference's sizes: 12.5 px for a window, 12 for a group in the panel, 11.5 for the header.
 use crate::{
+    agent::Agent,
     chrome::TITLE_H,
     icons::{self, Icon},
     dnd::{Grab, Target},
@@ -167,21 +168,24 @@ pub fn entries(win_group: &[Option<usize>], collapsed: &[bool], panes: &[usize],
     out
 }
 
-/// What a pane's row says about its shell: nothing special, a command running, or the last one failed.
+/// What a pane's row says about its shell: nothing special, a command running, an AI agent running (its mark: it
+/// does not end by itself, so it is not "busy" and nothing turns), or the last command failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Status {
     #[default]
     Idle,
     Running,
+    Agent(Agent),
     Failed,
 }
 
 impl Status {
-    /// What a window says about its panes (`Tab.status`): running if any pane runs a command, else failed if
-    /// any last command failed, else nothing special.
+    /// What a window says about its panes (`Tab.status`): running if any pane runs a command, else the agent one of
+    /// them runs, else failed if any last command failed, else nothing special.
     pub fn of(panes: impl IntoIterator<Item = Status>) -> Status {
         panes.into_iter().fold(Status::Idle, |a, s| match (a, s) {
             (Status::Running, _) | (_, Status::Running) => Status::Running,
+            (Status::Agent(x), _) | (_, Status::Agent(x)) => Status::Agent(x),
             (Status::Failed, _) | (_, Status::Failed) => Status::Failed,
             _ => Status::Idle,
         })
@@ -880,7 +884,8 @@ fn spinner(p: &mut Paint, cx: f32, cy: f32, d: f32, c: [f32; 3], track: f32, pha
 }
 
 /// The status icon of a row, centred on `(cx, cy)`: the prompt (a chevron and a dash, in `idle`) when nothing
-/// special is going on, a turning ring while a command runs, a red dot when the last one failed.
+/// special is going on, a turning ring while a command runs, the mark of the agent (Claude, ChatGPT, Antigravity) that
+/// runs, a red dot when the last command failed.
 fn status_icon(p: &mut Paint, cx: f32, cy: f32, st: Status, idle: [f32; 3], phase: f32) {
     match st {
         Status::Idle => {
@@ -891,6 +896,7 @@ fn status_icon(p: &mut Paint, cx: f32, cy: f32, st: Status, idle: [f32; 3], phas
             });
         }
         Status::Running => spinner(p, cx, cy, 11.0, palette::unit(palette::ACCENT), 0.28, phase),
+        Status::Agent(a) => icons::agent(p, a, cx, cy, 12.0, 1.0),
         Status::Failed => p.disc(cx, cy, 3.5, palette::unit(palette::RED), 1.0),
     }
 }
