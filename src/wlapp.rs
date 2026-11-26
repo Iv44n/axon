@@ -78,6 +78,10 @@ const KS_END: u32 = 0xff57;
 const KS_KP_ADD: u32 = 0xffab;
 const KS_KP_SUBTRACT: u32 = 0xffad;
 const KS_KP_0: u32 = 0xffb0;
+const KS_LEFT: u32 = 0xff51;
+const KS_UP: u32 = 0xff52;
+const KS_RIGHT: u32 = 0xff53;
+const KS_DOWN: u32 = 0xff54;
 
 fn cursor_for(hit: Hit) -> u32 {
     match hit {
@@ -238,12 +242,20 @@ struct Shown {
     kind: panes::Kind,
     n: usize,
     focus: usize,
+    /// The group whose windows they are, and the sizes of its split's columns and rows (ADR 0045).
+    group: Option<usize>,
+    tracks: panes::Tracks,
 }
 
 impl Shown {
     /// The windows the run covers.
     fn run(self) -> std::ops::Range<usize> {
         self.first..self.first + if self.grouped { self.n.max(1) } else { 1 }
+    }
+
+    /// The box of pane `i` in the workspace `ws`.
+    fn rect(&self, i: usize, ws: panes::Rect) -> panes::Rect {
+        panes::rect(self.kind, self.n, i, ws, &self.tracks)
     }
 
     /// The window, and the pane in it, of pane `i` of the run.
@@ -266,6 +278,16 @@ struct Dnd {
     live: bool,
     target: Option<dnd::Target>,
     at: (f32, f32),
+}
+
+/// A boundary between two panes being dragged (ADR 0045): which, the group whose split it is (an id, so a group that
+/// goes while the button is down is not another's), and how far into its gap the button went down, so the gap stays
+/// under the pointer as it was.
+#[derive(Clone, Copy)]
+struct EdgeDrag {
+    edge: panes::Edge,
+    group: u32,
+    grip: f32,
 }
 
 impl Drop for Pane {
@@ -346,6 +368,11 @@ struct App {
     close_hot: bool,
     close_shown: Option<usize>,
     cross_down: Option<usize>,
+    /// The boundary between two panes the pointer is on (its gap), the one being dragged, and when the button last
+    /// went down on one (a second press soon after evens the split, ADR 0045).
+    edge_hover: Option<panes::Edge>,
+    edge_drag: Option<EdgeDrag>,
+    edge_click: u32,
     /// The pane a selection or a mouse report in progress belongs to.
     drag: usize,
     /// Current font size (zoomed) and the configured one, which Ctrl+0 returns to.
@@ -834,6 +861,9 @@ impl App {
             close_hot: false,
             close_shown: None,
             cross_down: None,
+            edge_hover: None,
+            edge_drag: None,
+            edge_click: 0,
             drag: 0,
             base_px,
             cfg_px: base_px,
@@ -999,11 +1029,14 @@ impl App {
         // Where the panes of the window on screen are: when that is not what the framebuffer shows, the frame
         // is repainted whole. The cross at a pane's corner is drawn over rows that are repainted every frame.
         let sh = self.shown();
-        let (n, kind, focus) = (sh.n, sh.kind, sh.focus);
+        let (n, focus) = (sh.n, sh.focus);
         let ws = self.soft.workspace(self.w, self.h);
         self.slots.clear();
-        self.slots.extend((0..n).map(|i| Slot { rect: panes::rect(kind, n, i, ws), focus: i == focus, framed: n > 1 }));
+        self.slots.extend((0..n).map(|i| Slot { rect: sh.rect(i, ws), focus: i == focus, framed: n > 1 }));
         self.soft.set_layout(&self.slots);
+        // The gap the pointer is on, or drags, is lit (ADR 0045).
+        let handle = self.edge_drag.map(|d| (d.edge, true)).or(self.edge_hover.map(|e| (e, false)));
+        self.soft.set_handle(handle.and_then(|(e, drags)| Some((panes::edge_line(sh.kind, n, ws, &sh.tracks, e)?, drags))));
         let cross = if n > 1 { self.pane_hover.filter(|&i| i < n) } else { None };
         for i in [self.close_shown, cross].into_iter().flatten().filter(|&i| i < n) {
             for r in self.soft.close_rows(i) {
@@ -1358,22 +1391,32 @@ impl App {
     /// always has a group to be. Refused (nothing happens, no group made) when a pane would be left with fewer than
     /// `panes::MIN_COLS` x `panes::MIN_ROWS` cells.
     fn split(&mut self, dir: panes::Dir) {
-        let (n, kind) = match self.wins[self.cur].group {
+        let (n, kind, focus, mut tracks) = match self.wins[self.cur].group {
             Some(_) => {
                 let sh = self.shown();
-                (sh.n, sh.kind)
+                (sh.n, sh.kind, sh.focus, sh.tracks)
             }
-            None => (1, panes::Kind::Single),
+            None => (1, panes::Kind::Single, 0, panes::Tracks::EVEN),
         };
-        let kind = panes::after_split(kind, n, dir);
+        let next = panes::after_split(kind, n, dir);
+        // Columns that were resized stay so: the new window takes half of the one it splits (ADR 0045).
+        match (kind, next) {
+            (panes::Kind::Cols, panes::Kind::Cols) => tracks.split(panes::Axis::Cols, n, focus),
+            (panes::Kind::Rows, panes::Kind::Rows) => tracks.split(panes::Axis::Rows, n, focus),
+            _ => {}
+        }
         let ws = self.soft.workspace(self.w, self.h);
         let (min_w, min_h) = self.soft.min_pane(panes::MIN_COLS, panes::MIN_ROWS);
-        if !panes::fits(kind, n + 1, ws, min_w, min_h) {
-            self.toast(tr(Str::ToastNoRoom));
-            return;
+        if !panes::fits(next, n + 1, ws, &tracks, min_w, min_h) {
+            // Half of a narrow window may be too little where an even split is not.
+            if !panes::fits(next, n + 1, ws, &panes::Tracks::EVEN, min_w, min_h) {
+                self.toast(tr(Str::ToastNoRoom));
+                return;
+            }
+            tracks = panes::Tracks::EVEN;
         }
         let g = self.wins[self.cur].group.unwrap_or_else(|| self.group_around(self.cur));
-        self.groups[g].kind = kind;
+        (self.groups[g].kind, self.groups[g].tracks) = (next, tracks);
         self.groups[g].collapsed = false;
         let o = groups_ui::Spawn { group: Some(g), after: Some(self.wins[self.cur].id), activate: true, ..groups_ui::Spawn::default() };
         self.spawn_win(o);
@@ -1452,10 +1495,12 @@ impl App {
     /// What window `wi` is shown with: itself and its panes, or, in a group, the group's windows.
     fn shown_for(&self, wi: usize) -> Shown {
         let w = &self.wins[wi];
-        let Some(g) = w.group else { return Shown { first: wi, grouped: false, kind: w.kind, n: w.panes.len(), focus: w.focus } };
+        let Some(g) = w.group else {
+            return Shown { first: wi, grouped: false, kind: w.kind, n: w.panes.len(), focus: w.focus, group: None, tracks: panes::Tracks::EVEN };
+        };
         let (first, n) = groups::span(self.wins.iter().map(|w| w.group), g).unwrap_or((wi, 1));
-        let kind = self.groups.get(g).map_or(panes::Kind::Single, |g| g.kind);
-        Shown { first, grouped: true, kind: panes::fit_kind(kind, n), n, focus: wi.saturating_sub(first).min(n - 1) }
+        let (kind, tracks) = self.groups.get(g).map_or((panes::Kind::Single, panes::Tracks::EVEN), |g| (g.kind, g.tracks));
+        Shown { first, grouped: true, kind: panes::fit_kind(kind, n), n, focus: wi.saturating_sub(first).min(n - 1), group: Some(g), tracks }
     }
 
     /// What the grid area shows now.
@@ -1491,13 +1536,101 @@ impl App {
         if sh.n == 1 {
             return Some(0);
         }
-        panes::at(sh.kind, sh.n, self.soft.workspace(self.w, self.h), x, y)
+        panes::at(sh.kind, sh.n, self.soft.workspace(self.w, self.h), &sh.tracks, x, y)
     }
 
     /// The box of pane `pi` of the window on screen, and whether it has a frame.
     fn pane_box(&self, pi: usize) -> (panes::Rect, bool) {
         let sh = self.shown();
-        (panes::rect(sh.kind, sh.n, pi, self.soft.workspace(self.w, self.h)), sh.n > 1)
+        (sh.rect(pi, self.soft.workspace(self.w, self.h)), sh.n > 1)
+    }
+
+    // ------------------------------------------------- resizing a split (ADR 0045) --
+
+    /// The boundary between two panes of the split on screen whose gap is under window pixel `(x, y)`.
+    fn edge_under(&self, x: f32, y: f32) -> Option<panes::Edge> {
+        let sh = self.shown();
+        sh.group?;
+        panes::edge_at(sh.kind, sh.n, self.soft.workspace(self.w, self.h), &sh.tracks, x, y)
+    }
+
+    /// Whether the grid area shows a split: a group of two windows or more.
+    fn split_on_screen(&self) -> bool {
+        let sh = self.shown();
+        sh.group.is_some() && sh.n > 1
+    }
+
+    /// The least a pane may be along `a`, in pixels: `panes::MIN_COLS` columns or `MIN_ROWS` rows and its margins
+    /// (what a split asks of every pane, ADR 0024).
+    fn min_track(&self, a: panes::Axis) -> i32 {
+        let (w, h) = self.soft.min_pane(panes::MIN_COLS, panes::MIN_ROWS);
+        if a == panes::Axis::Cols { w } else { h }
+    }
+
+    /// The sizes of the split on screen changed: every terminal whose box now holds another number of cells is told
+    /// (its PTY with it), the frame is painted again, and the session keeps the sizes (written in a moment).
+    fn split_resized(&mut self) {
+        self.resize_panes(false);
+        self.dirty = true;
+        self.note_session();
+    }
+
+    /// The button went down on boundary `e` at `time`: a drag begins, or, when it is the second press in a short
+    /// while, that axis of the split is shared evenly again.
+    fn edge_press(&mut self, e: panes::Edge, time: u32) {
+        let sh = self.shown();
+        let Some(g) = sh.group else { return };
+        if self.edge_click != 0 && time.wrapping_sub(self.edge_click) < DOUBLE_CLICK_MS {
+            self.edge_click = 0;
+            if self.groups[g].tracks.n[e.axis as usize] != 0 {
+                self.groups[g].tracks.even(e.axis);
+                self.split_resized();
+            }
+            return;
+        }
+        self.edge_click = time;
+        let Some(start) = panes::edge_pos(sh.kind, sh.n, self.soft.workspace(self.w, self.h), &sh.tracks, e) else { return };
+        let at = if e.axis == panes::Axis::Cols { self.mouse.0 } else { self.mouse.1 };
+        self.edge_drag = Some(EdgeDrag { edge: e, group: self.groups[g].id, grip: at - start as f32 });
+        self.dirty = true;
+    }
+
+    /// The pointer moved to window pixel `(x, y)` with a boundary held: the boundary follows it, as far as the panes
+    /// either side keep their minimum. The group may have gone meanwhile (its last shell ended): then the drag is over.
+    fn edge_move(&mut self, x: f32, y: f32) {
+        let Some(d) = self.edge_drag else { return };
+        let sh = self.shown();
+        let Some(g) = sh.group.filter(|&g| self.groups[g].id == d.group) else {
+            self.edge_drag = None;
+            self.dirty = true;
+            return;
+        };
+        let at = if d.edge.axis == panes::Axis::Cols { x } else { y };
+        let (ws, min) = (self.soft.workspace(self.w, self.h), self.min_track(d.edge.axis));
+        if panes::drag(&mut self.groups[g].tracks, sh.kind, sh.n, ws, d.edge, (at - d.grip).round() as i32, min) {
+            self.split_resized();
+        }
+    }
+
+    /// Makes the window on screen a step bigger (`dir` 1) or smaller (-1) along `a`: `Alt+Shift+arrows` and the
+    /// palette. Nothing happens in a window that is not split, or along an axis the split does not have.
+    fn grow_pane(&mut self, a: panes::Axis, dir: i32) {
+        let sh = self.shown();
+        let Some(g) = sh.group else { return };
+        let (ws, min) = (self.soft.workspace(self.w, self.h), self.min_track(a));
+        if panes::grow(&mut self.groups[g].tracks, sh.kind, sh.n, sh.focus, ws, a, dir, min) {
+            self.split_resized();
+        }
+    }
+
+    /// Shares the split on screen evenly again: `Alt+=` and the palette.
+    fn even_panes(&mut self) {
+        if let Some(g) = self.shown().group
+            && self.groups[g].tracks.uneven()
+        {
+            self.groups[g].tracks = panes::Tracks::EVEN;
+            self.split_resized();
+        }
     }
 
     /// Puts the windows in the order the panel shows them (a group's windows together, groups in order, the
@@ -1593,7 +1726,7 @@ impl App {
     fn new_group(&mut self) {
         self.groups_made += 1;
         let color = groups::next_color(&self.groups.iter().map(|g| g.color).collect::<Vec<_>>());
-        self.groups.push(Group { id: self.groups_made as u32, name: format!("{} {}", tr(Str::GroupName), self.groups_made), color, collapsed: false, kind: panes::Kind::Single });
+        self.groups.push(Group { id: self.groups_made as u32, name: format!("{} {}", tr(Str::GroupName), self.groups_made), color, collapsed: false, kind: panes::Kind::Single, tracks: panes::Tracks::EVEN });
         self.wins[self.cur].group = Some(self.groups.len() - 1);
         self.prune_groups();
         self.rebuild_side();
@@ -1723,6 +1856,10 @@ impl App {
                     self.close_hot = false;
                     self.dirty = true;
                 }
+                // A gap that was lit goes dark (one being dragged stays: the button is still down).
+                if self.edge_drag.is_none() && self.edge_hover.take().is_some() {
+                    self.dirty = true;
+                }
                 if let Some((pi, r)) = self.grid_hover.take()
                     && self.chips_on()
                     && self.pane(pi).chips.block_of(r).is_some()
@@ -1818,7 +1955,7 @@ impl App {
             let sh = self.shown_for(wi);
             for pj in 0..self.wins[wi].panes.len() {
                 let i = if sh.grouped { wi - sh.first } else { pj };
-                let g = self.soft.grid(panes::rect(sh.kind, sh.n, i, ws), sh.n > 1);
+                let g = self.soft.grid(sh.rect(i, ws), sh.n > 1);
                 let p = &mut self.wins[wi].panes[pj];
                 let moved = p.size != (g.cols, g.rows);
                 if moved {
@@ -2305,6 +2442,18 @@ impl App {
                 }
                 (_, 0x2c) => self.cycle_pane(-1),
                 (_, 0x2e) => self.cycle_pane(1),
+                // Alt+Shift+arrows: the window on screen wider, narrower, taller, shorter; Alt+=: the split even again
+                // (ADR 0045). Only in a split: elsewhere the shell has them.
+                (_, KS_LEFT | KS_RIGHT | KS_UP | KS_DOWN) if m.shift && !docked && self.split_on_screen() => match k.sym {
+                    KS_RIGHT => self.grow_pane(panes::Axis::Cols, 1),
+                    KS_LEFT => self.grow_pane(panes::Axis::Cols, -1),
+                    KS_UP => self.grow_pane(panes::Axis::Rows, 1),
+                    _ => self.grow_pane(panes::Axis::Rows, -1),
+                },
+                (_, 0x3d) if self.split_on_screen() => {
+                    self.even_panes();
+                    return false;
+                }
                 (_, 0x5b) => self.switch_to(if self.cur == 0 { last } else { self.cur - 1 }),
                 (_, 0x5d) => self.switch_to(if self.cur == last { 0 } else { self.cur + 1 }),
                 (_, d @ 0x31..=0x39) if ((d - 0x31) as usize) < self.wins.len() => self.switch_to((d - 0x31) as usize),
@@ -2462,7 +2611,9 @@ impl App {
     fn open_palette(&mut self) {
         let wins: Vec<commands::WinInfo> = self.wins.iter().map(|w| commands::WinInfo { id: w.id, title: win_title(w).to_string(), place: win_place(w).to_string(), group: w.group }).collect();
         let groups = group_items(&self.groups, &self.wins);
-        let state = commands::State { wins: &wins, groups: &groups, cur: self.cur, panes: self.shown().n, overview: true };
+        let sh = self.shown();
+        let split = if self.split_on_screen() { panes::dims(sh.kind, sh.n) } else { (1, 1) };
+        let state = commands::State { wins: &wins, groups: &groups, cur: self.cur, panes: sh.n, split, overview: true };
         let list = commands::build(&state);
         self.open_overlay(commands::TAG, Box::new(Picker::new(list)));
     }
@@ -2484,6 +2635,11 @@ impl App {
             Cmd::CloseWindow => self.close_wins(&[self.wins[self.cur].id], None),
             Cmd::ClosePane => self.close_pane_asked(self.cur, self.wins[self.cur].focus),
             Cmd::Ungroup => self.ungroup(),
+            Cmd::Wider => self.grow_pane(panes::Axis::Cols, 1),
+            Cmd::Narrower => self.grow_pane(panes::Axis::Cols, -1),
+            Cmd::Taller => self.grow_pane(panes::Axis::Rows, 1),
+            Cmd::Shorter => self.grow_pane(panes::Axis::Rows, -1),
+            Cmd::EvenPanes => self.even_panes(),
             // The palette names windows and groups by id: where they are now is looked up, as `menu_ran` does.
             Cmd::Window(id) => {
                 if let Some(i) = self.wins.iter().position(|w| commands::short(w.id) == id) {
@@ -2711,6 +2867,11 @@ impl App {
         if self.dnd_move(x, y) {
             return;
         }
+        // A boundary between panes held: the move is the drag's (ADR 0045).
+        if self.edge_drag.is_some() {
+            self.edge_move(x, y);
+            return;
+        }
         if let Some(p) = self.panel.as_mut() {
             let e = p.pointer(x, y);
             self.panel_effect(e);
@@ -2781,9 +2942,17 @@ impl App {
             (self.pane_hover, self.close_hot) = (hp, hot);
             self.dirty = true;
         }
+        // In a gap between two panes: the boundary is lit and the pointer says it can be dragged (ADR 0045).
+        let edge = if now == Hit::Client && hp.is_none() { self.edge_under(x, y) } else { None };
+        if edge != self.edge_hover {
+            self.edge_hover = edge;
+            self.dirty = true;
+        }
         // One shape for what is under the pointer (the call is a no-op when it is the one already set).
         let shape = if hot {
             cursor::POINTER
+        } else if let Some(e) = edge {
+            if e.axis == panes::Axis::Cols { cursor::COL_RESIZE } else { cursor::ROW_RESIZE }
         } else if now == Hit::Prefs {
             self.prefs_cursor()
         } else if part.is_some() {
@@ -2798,6 +2967,12 @@ impl App {
         if !pressed {
             // The button came up on a row of the list or on a drag: a click, or a drop.
             if self.dnd_release() {
+                return;
+            }
+            // A boundary between panes let go: it stays where it was dragged (still lit while the pointer is on it).
+            if self.edge_drag.take().is_some() {
+                self.edge_hover = self.edge_under(self.mouse.0, self.mouse.1);
+                self.dirty = true;
                 return;
             }
             self.selecting = false;
@@ -2858,8 +3033,14 @@ impl App {
                 None => {}
             },
             Hit::Client => {
-                // The gaps between panes belong to none; a press on a pane's cross waits for the button to come up.
-                let Some(pi) = self.pane_under(self.mouse.0, self.mouse.1) else { return };
+                // The gaps between panes belong to none: a press there takes the boundary (a second one evens the
+                // split). A press on a pane's cross waits for the button to come up.
+                let Some(pi) = self.pane_under(self.mouse.0, self.mouse.1) else {
+                    if let Some(e) = self.edge_under(self.mouse.0, self.mouse.1) {
+                        self.edge_press(e, time);
+                    }
+                    return;
+                };
                 if self.close_hot && self.pane_hover == Some(pi) {
                     self.cross_down = Some(pi);
                     return;

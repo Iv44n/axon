@@ -241,6 +241,11 @@ strings! {
     CmdClear: "Clear the screen", "Limpiar la pantalla";
     CmdClosePane: "Close the pane", "Cerrar el panel";
     CmdUngroup: "Take the window out of its group", "Sacar la ventana de su grupo";
+    CmdWider: "Make the window wider", "Agrandar la ventana a lo ancho";
+    CmdNarrower: "Make the window narrower", "Achicar la ventana a lo ancho";
+    CmdTaller: "Make the window taller", "Agrandar la ventana a lo alto";
+    CmdShorter: "Make the window shorter", "Achicar la ventana a lo alto";
+    CmdEvenPanes: "Give the windows the same size", "Igualar el tamaño de las ventanas";
     CmdFold: "Collapse group", "Contraer grupo";
     CmdUnfold: "Expand group", "Expandir grupo";
     CmdWindowOne: "window", "ventana";

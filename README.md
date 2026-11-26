@@ -13,7 +13,7 @@ Written in Rust, for **Linux** (Wayland: own client, CPU-rendered into `wl_shm`,
 - **Zero idle usage**: no continuous redraw; it only paints when there are events (the one timer is the time chip's clock, once a minute, and only while that chip is shown).
 - **Full VT emulation** thanks to [`alacritty_terminal`](https://crates.io/crates/alacritty_terminal).
 - **Dark glass look** (after the `terminal.html` reference, ADR 0021, 0036 and 0037): one rounded translucent pane with a soft shadow; a title bar divided from the grid by a hairline, the line you type at docked at the bottom below another (output rises above it; it is still your shell's own prompt and line editor), grey window buttons that turn red/yellow/green on hover, one amber accent and six clear hues (also the ANSI colours), a proportional UI font (Geist, else Inter) around the monospaced grid, the reference's airy margins, quiet outline-icon chips and a settings panel docked beside the terminal; the status bar is there if you ask for it (`[window] status_bar`). The frame is computed per pixel (`src/chrome.rs`), no images. On the default backend; the `winit` fallback only has the black-and-white colours.
-- **Windows, groups and panes**: one shell per window, listed in a panel at the left or right or as tabs in the title bar; windows can be put in coloured groups (a dialog with templates that open real windows with their commands typed in), renamed in place, reordered and regrouped by dragging, and closed with an *Undo*; each row says what its shell is doing (the prompt, a turning ring while a command runs, a red dot when the last one failed). **A group is a split view**, as a tab with split panes is in Warp: the windows of the group you are in are shown side by side (columns, rows or a grid), and `Ctrl+Space` on a window in no group makes the group. Right click opens the menu of whatever is under the pointer. See [Shortcuts](#shortcuts).
+- **Windows, groups and panes**: one shell per window, listed in a panel at the left or right or as tabs in the title bar; windows can be put in coloured groups (a dialog with templates that open real windows with their commands typed in), renamed in place, reordered and regrouped by dragging, and closed with an *Undo*; each row says what its shell is doing (the prompt, a turning ring while a command runs, a red dot when the last one failed, and the mark of Claude, Codex or Antigravity when one runs there: faint while Claude works, with an amber dot while it waits for you). **A group is a split view**, as a tab with split panes is in Warp: the windows of the group you are in are shown side by side (columns, rows or a grid), and `Ctrl+Space` on a window in no group makes the group; drag the gap between two of them (or `Alt+Shift+arrows`) to make one bigger or smaller. Right click opens the menu of whatever is under the pointer. See [Shortcuts](#shortcuts).
 - **Command palette and overview**: `Ctrl+K` lists actions, windows and groups (ranked as you type, each with its shortcut); `Alt+O` shows every window as a card with the last rows of its terminal, in a section per group, with a filter and drag and drop between groups.
 - **Prompt chips** (opt-in): a row of context chips on the line above your prompt (time, user, directory, git branch and changes, conda/venv, pyenv, Kubernetes), chosen and ordered by you. See [Prompt chips](#prompt-chips).
 - **Design board**: `design/board.html` shows frames of every screen (the window, the settings panel, the panes, the palette, the overview, the group dialog and menus, in English and Spanish) from the real renderer over different desktops, zoomed to the pixel and compared with a baseline (see [Design](#design)).
@@ -94,6 +94,10 @@ Always use `--release`: debug mode is much slower.
 | `Ctrl+Space` | Split: one more terminal in the group of the window on screen, shown beside it (to the right first, then an automatic grid). A window in no group is put in a new group first. A split that would leave a pane under 20 columns x 5 rows is refused, and no group is made |
 | `Alt+\` / `Alt+-` | The same split, with the group's windows in columns / in rows (mixing the two gives the grid) |
 | `Alt+,` / `Alt+.` | Focus the previous / the next window of the group (a click on a pane focuses it too) |
+| Drag the gap between two panes | Resize the split: the boundary follows the pointer (the gap lights up and the pointer becomes a resize arrow), the panes on either side keep at least 20 columns x 5 rows, and every shell is told its new size as the boundary crosses a cell. A double click on a gap gives that direction's windows the same size again. The sizes are kept with the group, between runs too |
+| `Alt+Shift+→` / `Alt+Shift+←` | The window on screen a step (a twentieth of the split) wider / narrower in its split; the others give or take the room in proportion. Only in a split: elsewhere the keys go to the shell |
+| `Alt+Shift+↑` / `Alt+Shift+↓` | The same, taller / shorter |
+| `Alt+=` | Give the windows of the split the same size again |
 | `Alt+Shift+W` | Close the focused pane, which is a window of the group (with the *Undo* toast; a shell that exits closes its window); the cross at a pane's corner and the cross of its row in the panel do the same |
 | `Alt+O` | The overview of windows: every window as a card (the last rows of its terminal, status, name, directory) in a section per group; type to filter (name, directory, group or terminal text), arrows or `Tab` to move, `Enter` or a click to go to a window, `Alt+N` for a new one, `Esc` clears the filter and then closes it |
 | Drag a card in the overview | Drop it on a group's section to put the window into the group (on the *No group* one to take it out), or on the dashed tile to make a group with it; `Esc` puts it back |
@@ -319,23 +323,23 @@ Measured with [`scripts/bench.sh`](scripts/bench.sh) (`--clean` adds a cold buil
 can move size or speed** (rule in `CLAUDE.md`); older numbers stay in the history table.
 
 Machine: AMD Ryzen 5 5600H (12 threads) + RTX 3050 Mobile, Ubuntu, kernel 7.0.0-44, GNOME Shell 50.1 on Wayland.
-Last measured: 2026-11-26, at `b10df3d` plus the agents' own marks and the title's status mark cut (ADR 0046: the marks' outlines and their scanline fill in `icons.rs`, their colours in `palette.rs`, `status_mark` in `wlapp.rs`; +5.0 KB, 8,366,520 to 8,371,560 B, no new dependency; idle and memory as before; the flood 1.53 s at load 1.4-2.2, where a first run gave 1.95 s with another worktree building beside it, and nothing of this change is on the PTY path; a window whose program turns its title's mark the way Claude Code does while it works, `◐`/`◑` every 0.96 s, costs 0-1 ticks in 10 s, 1-4 before, five runs of each build in turn: the title without its mark does not change, so nothing is painted). Before it, 2026-11-26, at `5ed8214` plus the kept session, the click that moves the shell's cursor and the agents' marks (ADR 0042-0044: `restore.rs`, `caret.rs`, `agent.rs`, `wlapp/keep.rs`, the marks in `icons.rs`; +24.3 KB over it, 8,342,256 to 8,366,520 B, no new dependency; idle and memory as before; the flood 1.52 s at load 1.2-1.5, not run against `5ed8214` side by side, and nothing of this change is on the PTY or paint path; a window that runs `claude`, `codex` or `agy` costs no timer: 0 ticks in 5 s, where the same window running `cargo` turns its ring, 2 ticks on this build and 10 before ADR 0041's cheaper painting). Before it, 2026-11-26, at `18ff573` plus the change that paints the rows outside the terminal's lock (ADR 0041: the UI thread held it 2.3 ms a frame during a flood, painting, and now 0.08 ms, reading the cells), paints a grid row's glass as a fill and skips a glyph's empty pixels; +3.7 KB; the flood is 13 % faster in an A/B (notes under the throughput table), idle and memory as before. The machine was busier than on 2026-11-25 (load average 1-4 after the builds), so the absolute flood times moved for both builds. The table of windows, groups and screens and the older notes under the tables come from earlier builds (ADR 0036-0039) and were not measured again: nothing in this change touches them. **Windows** has its own line below: it is measured by the self-test on a GitHub Actions runner, not on this machine.
+Last measured: 2026-11-26, v0.3.0: `b10df3d` plus a split that can be resized (ADR 0045: `panes::Tracks`, the gaps' hit test and drag, `Alt+Shift+arrows`, the sizes in the session file) and the agents' own marks, which say whether Claude works or waits, with the title's status mark cut (ADR 0046: the marks' outlines and their scanline fill in `icons.rs`, their colours in `palette.rs`, `agent::State`, `status_mark` in `wlapp.rs`). +28.2 KB, 8,366,520 to 8,394,712 B (the split +19.3 KB and the marks +5.0 KB on their own branches, the waiting state and the merge the rest), no new dependency; idle and memory as before, 0 ticks (`winit` with Cascadia once 1 tick in 3 s: its path is untouched); the flood 1.49 s at load 1.1-1.2, where the branches' own runs gave 1.70 s (another build on five cores) and 1.53 s, and neither change is on the PTY path or a row's paint; a group of four windows shown split 21.3 MB, as before; a window whose program turns its title's mark the way Claude Code does while it works, `◐`/`◑` every 0.96 s, costs 0-1 ticks in 10 s, 1-4 before, five runs of each build in turn: the title without its mark does not change, so nothing is painted unless Claude's state does. Before it, 2026-11-26, at `5ed8214` plus the kept session, the click that moves the shell's cursor and the agents' marks (ADR 0042-0044: `restore.rs`, `caret.rs`, `agent.rs`, `wlapp/keep.rs`, the marks in `icons.rs`; +24.3 KB over it, 8,342,256 to 8,366,520 B, no new dependency; idle and memory as before; the flood 1.52 s at load 1.2-1.5, not run against `5ed8214` side by side, and nothing of this change is on the PTY or paint path; a window that runs `claude`, `codex` or `agy` costs no timer: 0 ticks in 5 s, where the same window running `cargo` turns its ring, 2 ticks on this build and 10 before ADR 0041's cheaper painting). Before it, 2026-11-26, at `18ff573` plus the change that paints the rows outside the terminal's lock (ADR 0041: the UI thread held it 2.3 ms a frame during a flood, painting, and now 0.08 ms, reading the cells), paints a grid row's glass as a fill and skips a glyph's empty pixels; +3.7 KB; the flood is 13 % faster in an A/B (notes under the throughput table), idle and memory as before. The machine was busier than on 2026-11-25 (load average 1-4 after the builds), so the absolute flood times moved for both builds. The table of windows, groups and screens and the older notes under the tables come from earlier builds (ADR 0036-0039) and were not measured again: nothing in this change touches them. **Windows** has its own line below: it is measured by the self-test on a GitHub Actions runner, not on this machine.
 
 **Build**
 
 | Binary | Cold release build |
 |---|---|
-| 8.0 MiB (8,371,560 bytes) | 101 s (before ADR 0036) |
+| 8.0 MiB (8,394,712 bytes) | 101 s (before ADR 0036) |
 
 **Idle memory and CPU** (`AXON_BACKEND` selects the backend; `wl` is the own Wayland client with the CPU renderer and the
 default on Wayland, `winit` is the `winit` + `wgpu` fallback)
 
 | Backend | Font | RSS | PSS | Private (anon) | CPU |
 |---|---|---|---|---|---|
-| `wl` | JetBrains Mono (default) | **18 MB** | 13 MB | 8 MB | 0 ticks / 3 s |
-| `wl` | DejaVu Sans Mono | 23 MB | 19 MB | 14 MB | 0 ticks / 3 s |
-| `wl` | Cascadia Mono NF | 59 MB | 55 MB | 50 MB | 0 ticks / 3 s |
-| `winit` | JetBrains Mono (default) | 149 MB | 71 MB | 31 MB | 0 ticks / 3 s |
+| `wl` | JetBrains Mono (default) | **18 MB** | 14 MB | 8 MB | 0 ticks / 3 s |
+| `wl` | DejaVu Sans Mono | 24 MB | 19 MB | 14 MB | 0 ticks / 3 s |
+| `wl` | Cascadia Mono NF | 60 MB | 56 MB | 50 MB | 0 ticks / 3 s |
+| `winit` | JetBrains Mono (default) | 149 MB | 72 MB | 31 MB | 0 ticks / 3 s |
 | `winit` | DejaVu Sans Mono | 155 MB | 77 MB | 37 MB | 0 ticks / 3 s |
 | `winit` | Cascadia Mono NF | 191 MB | 114 MB | 74 MB | 0 ticks / 3 s |
 
@@ -343,7 +347,7 @@ The idle target is under 50 MB of RSS. `wl` meets it with the default font (the 
 font: 2.7 MB of its parsed outlines, narrowed to the characters an interface draws, and ~1.5 MB more of the binary's own code
 paged in; opening the settings or an overlay no longer loads a font); a Nerd Font such as Cascadia Mono NF costs
 ~45 MB inside `fontdue` (it parses every glyph), which the own font reader will remove. The `winit` backend cannot meet
-the target: the Vulkan loader and the drivers map ~94 MB. (`winit`'s PSS went from 56 to 96, 132 and now 71 MB with the RSS
+the target: the Vulkan loader and the drivers map ~94 MB. (`winit`'s PSS went from 56 to 96, 132 and now 72 MB with the RSS
 unchanged: PSS divides shared pages among every process that maps them, so it follows what else runs on the desktop.)
 
 **Windows, groups and screens** (`wl`, default font, idle shell in every window; the debugging knobs `AXON_WINDOWS`,
@@ -353,7 +357,7 @@ unchanged: PSS divides shared pages among every process that maps them, so it fo
 |---|---|---|---|
 | One window | 18.6 MB | 8.4 MB | 0 ticks / 5 s |
 | Three windows (grouped or not) | 21.1 MB | 10.6 MB | 0 ticks / 5 s |
-| A group of four windows shown split (`AXON_PANES=4`) | 22.3 MB | 11.7 MB | 0 ticks / 5 s |
+| A group of four windows shown split (`AXON_PANES=4`) | 21.3 MB | 11.7 MB | 0 ticks / 5 s |
 | Settings panel open | 22.8 MB | 11.8 MB | 0 ticks / 5 s |
 | Overview of windows open (one window) | 19.1 MB | 8.4 MB | 0 ticks / 5 s |
 | Three windows, each marked as running (the status spinners turn) | 21.3 MB | 10.6 MB | 11 ticks / 5 s |
@@ -367,13 +371,13 @@ A shell killed with `SIGKILL` closes only its own window; when the last one goes
 
 | Backend | Time | RSS afterwards |
 |---|---|---|
-| `wl` | 1.53 s | 39 MB |
-| `winit` | 1.32 s | 178 MB |
+| `wl` | 1.49 s | 40 MB |
+| `winit` | 1.48 s | 178 MB |
 
 For ADR 0041 (painting outside the terminal's lock), nine floods of each build in turn, the build before it first: 1.91/1.60, 1.93/1.57, 1.90/1.67, 1.72/1.49, 1.99/1.58, 2.06/1.81, 2.29/2.12, 1.91/1.71 and 2.07/1.88 s, every pair faster, 1.98 against 1.71 s on average (-13 %); axon's own CPU during the flood fell 20 % (the UI thread from 49 to 17 ticks in one run). A first `scripts/bench.sh` run gave 1.82 s and 68 MB after: the window opened larger that time (~229 columns of scrollback); the second, in the tables, 1.76 s and 39 MB. The PTY thread is now not saturated (~58 % of a core): what is left is parsing and the kernel's PTY, which `winit` shares.
 
 
-The 1.53 s and 1.32 s are the tree with the agents' own marks (ADR 0046) in, on 2026-11-26 at load 1.4-2.2 (a first run, 1.95 and 1.63 s, had another worktree's build beside it); the change is not on the PTY path. The 1.52 s and 1.28 s before them are the tree with ADR 0041's painting and the kept session, the click and the agents' marks (ADR 0042-0044) in, on 2026-11-26 at load 1.2-1.5, a quieter machine than the one of the A/B above: the two are not an A/B of each other, and none of the three later changes is on the PTY or paint path.
+The 1.49 s and 1.48 s are v0.3.0 (the resizable split and the agents' own marks, ADR 0045-0046), on 2026-11-26 at load 1.1-1.2; neither change is on the PTY path, and `winit`, whose code neither touches, moved from 1.28-1.41 s by the run. On their branches: 1.70 s with another build using five cores (ADR 0045) and 1.53 s at load 1.4-2.2 (ADR 0046). The 1.52 s and 1.28 s before them are the tree with ADR 0041's painting and the kept session, the click and the agents' marks (ADR 0042-0044) in, on 2026-11-26 at load 1.2-1.5, a quieter machine than the one of the A/B above: the two are not an A/B of each other, and none of the three later changes is on the PTY or paint path.
 
 For ADR 0038 (a scope per window), four rounds with the scope on and off, in turn, at load 1.0-1.3: `wl` 2.39, 1.94, 1.89 and 1.93 s on against 1.78, 1.93, 1.78 and 2.07 s off (the first pair had a cold file cache; the rest average 1.92 against 1.93 s): the same within the noise, as it must be, since the scope changes where the shell is accounted and not what it does. The `scripts/bench.sh` run above, 2.01 s, is inside that spread. Startup to a window's first shell process, six launches in turn: 57, 59 and 59 ms without the scope, 65, 61 and 60 ms with it (the `systemd-run` that makes the scope runs in the shell's own process, and its probe overlaps the window's creation).
 
@@ -402,7 +406,7 @@ ADR 0039; not this machine, and a VM's numbers move from run to run)
 
 | Date | Change | Binary | Idle RSS `winit` | Idle RSS `wl` |
 |---|---|---|---|---|
-| 2026-11-26 | The agents' own marks (ADR 0046): Claude's burst, Codex's cloud with `>_`, Antigravity's arch, their published outlines filled in their colours (14 px in the list, 16 in the overview), and a program's status glyph cut from its title (Claude Code's `✳` drew the UI font's missing-glyph box); no new dependency; a title that turns its mark (`◐`/`◑`) costs 0-1 ticks in 10 s, 1-4 before; flood 1.53 s | 8,371,560 B (+5.0 KB) | 149 MB | 18 MB |
+| 2026-11-26 | v0.3.0. A split resized by dragging its gaps or with `Alt+Shift+arrows`, `Alt+=` evens it, the sizes kept with the group (ADR 0045, `panes::Tracks`); the agents' own marks (ADR 0046): Claude's burst, Codex's cloud with `>_`, Antigravity's arch, filled in their colours (14 px in the list, 16 in the overview), faint while Claude works and with an amber dot while it waits for you, a program's status glyph cut from its title (Claude Code's `✳` drew the UI font's missing-glyph box); no new dependency; a group of four split 21.3 MB, 0 ticks idle; a title that turns its mark costs 0-1 ticks in 10 s, 1-4 before; flood 1.49 s | 8,394,712 B (+28.2 KB) | 149 MB | 18 MB |
 | 2026-11-26 | The session kept between runs (ADR 0042, `[windows] restore`), a click on the typed line moves the shell's cursor (ADR 0043) and a window that runs `claude`, `codex` or `agy` shows the agent's mark, not a spinner (ADR 0044); no new dependency; the agent's window costs no timer (0 ticks in 5 s against 2 for a busy command); flood 1.52 s in `bench.sh` | 8,366,520 B (+24.3 KB over `5ed8214`) | 148 MB | 18 MB |
 | 2026-11-26 | The rows painted outside the terminal's lock (ADR 0041), a grid row's glass as one fill (`chrome::flat_from`; it also fixes the lit panel button's bottom row), a glyph's empty pixels skipped, a configured font parsed once (it was twice: +88 ms of startup with a Nerd Font); flood 13 % faster in an A/B, 1.76 s in `bench.sh` | 8,342,256 B (+3.7 KB) | 148 MB | 18 MB |
 | 2026-11-25 | The Windows port (ADR 0039): `plat.rs` seam, `win.rs`, PowerShell hook, `fallback.rs` split out of `main.rs`, the self-test; Linux numbers as before (flood 1.83 s, 0 ticks idle); Windows exe 1.6 MiB, 30 MB idle, 0 CPU (CI runner) | 8,338,544 B (+18.8 KB) | 150 MB | 18 MB |
@@ -450,7 +454,7 @@ src/
 ├─ palette.rs   the colour tokens (amber accent, six hues) and ANSI resolution
 ├─ side.rs      the list of windows (panel or tabs): layout, groups, status icons, drag marks, painting
 ├─ dnd.rs       drag and drop in that list: what a drop means and the new order (pure)
-├─ panes.rs     the split layouts (columns, rows, grid), focus order, the 20 x 5 minimum (pure); a group's windows are the panes
+├─ panes.rs     the split layouts (columns, rows, grid) and the sizes of their columns and rows, focus order, the 20 x 5 minimum (pure); a group's windows are the panes
 ├─ paint.rs     antialiased shapes composited into the framebuffer (settings panel, prompt chips)
 ├─ bar.rs       the prompt chips: layout, icons, painting over the reserved prompt line (grid's own font); a command's status
 ├─ cmap.rs      a font's character map narrowed to what the interface draws (the UI font parses ~900 glyphs, not ~2 900)
@@ -518,7 +522,7 @@ Plan, decisions (ADRs), risks and measurements live in the knowledge tree at
 - Synthesized bold; no italics or ligatures; no color emoji.
 - Blur: a request to the compositor, not our own effect; GNOME (Mutter) offers none, so there it does nothing. Settings: fonts, opacity, blur, the prompt chips and the windows' panel (settings panel or `config.toml`); colours, shortcuts and themes are not configurable yet. The weight is synthesized.
 - Input: the chips sit above the prompt, but the line is still edited by the shell. An own input editor (Warp's "Input type") is the next step, not built yet. The chip colours are fixed; the chips are `wl` only, and zsh and fish need the `axon shell-init` line (and keep their own prompt text).
-- The session kept between runs is the windows, their folders, names and groups (ADR 0042), not the programs or the scrollback; the click that moves the shell's cursor needs the shell's hook to have spoken, and an agent is known by the word that starts it (`claude`, `codex`, `agy`: not an alias or `npx`); a split's panes cannot be resized by dragging yet; the overview has no context menus (ADR 0033 lists what is left out on purpose).
+- The session kept between runs is the windows, their folders, names and groups (ADR 0042), not the programs or the scrollback; the click that moves the shell's cursor needs the shell's hook to have spoken, and an agent is known by the word that starts it (`claude`, `codex`, `agy`: not an alias or `npx`); the overview has no context menus (ADR 0033 lists what is left out on purpose).
 - Windows (ADR 0039): not there yet are background blur, display scaling above 100 % (the window is then blurry, as on Wayland today) and prompt chips in PowerShell; `[windows] scope` is systemd's. It is verified by the self-test on a GitHub Actions runner (a real window, a real PowerShell, the installers), not yet by hand on real hardware: expect rough edges.
 - Linux is tested by hand on Wayland (GNOME); X11 only through the `winit` fallback.
 

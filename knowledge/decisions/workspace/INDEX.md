@@ -17,4 +17,5 @@ Windows, groups, panes, the overlays built on one kit, and the screens of the se
 - [0038 · A scope per window](0038-a-scope-per-window.md) — each shell in its own systemd scope, probed first; memory and oomd kills are per window.
 - [0042 · The session is kept between runs](0042-the-session-is-kept-between-runs.md) — windows, folders, names and groups reopen where they were; one owner; `[windows] restore`.
 - [0044 · An agent has its mark, not a spinner](0044-an-agent-has-its-mark-not-a-spinner.md) — superseded in part by 0046; the still mark instead of a ring, no timer, stand.
+- [0045 · A split can be resized](0045-a-split-can-be-resized.md) — drag a gap or `Alt+Shift+arrows`; weights per track on the group; kept between runs.
 - [0046 · The agents' own marks](0046-the-agents-own-marks.md) — published marks in their colours; faint while Claude works, a dot while it waits; title glyph cut.

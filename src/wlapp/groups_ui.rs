@@ -94,7 +94,7 @@ impl App {
         let name = groups::suggest_name(base, tr(Str::GroupName), &taken);
         let color = groups::next_color(&self.groups.iter().map(|g| g.color).collect::<Vec<_>>());
         let id = self.next_group_id();
-        self.groups.push(Group { id, name, color, collapsed: false, kind: panes::Kind::Single });
+        self.groups.push(Group { id, name, color, collapsed: false, kind: panes::Kind::Single, tracks: panes::Tracks::EVEN });
         let g = self.groups.len() - 1;
         self.wins[wi].group = Some(g);
         g
@@ -328,7 +328,7 @@ impl App {
             return;
         }
         let id = self.next_group_id();
-        self.groups.push(Group { id, name: s.name.clone(), color: s.color, collapsed: false, kind: panes::Kind::Single });
+        self.groups.push(Group { id, name: s.name.clone(), color: s.color, collapsed: false, kind: panes::Kind::Single, tracks: panes::Tracks::EVEN });
         let g = self.groups.len() - 1;
         let mut ticked = Vec::new();
         for &m in &s.members {

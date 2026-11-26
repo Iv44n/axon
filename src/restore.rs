@@ -8,19 +8,24 @@
 //! axon-session 1
 //! owner 4242
 //! cur 1
-//! group <colour> <folded 0|1> <layout>\t<name>
+//! group <colour> <folded 0|1> <layout>[ cols=<w>,<w>...][ rows=<w>,<w>...]\t<name>
 //! win <group index or ->\t<folder>\t<name>
 //! ```
 //!
 //! What a shell was running is not kept: only where it was. Names and folders are escaped (`\\`, `\t`, `\n`, `\r`), so
-//! whatever a folder is called fits on its line. Unknown lines are ignored, so a newer file still reads in an older axon.
+//! whatever a folder is called fits on its line. Unknown lines are ignored, so a newer file still reads in an older axon;
+//! so are the fields after a group's layout (the sizes of its split's columns and rows, ADR 0045, written only when the
+//! user resized them), which an axon from before them never reads.
 //!
 //! One axon owns the file at a time (`owner`, its process id): a second axon opened while the first runs starts fresh and
 //! leaves the first's session alone, instead of opening a copy of it. The pure part is here (the format, the rules); the
 //! app builds the snapshot and puts it back (`wlapp.rs`).
 use std::path::PathBuf;
 
-use crate::{groups::COLORS, panes::Kind};
+use crate::{
+    groups::COLORS,
+    panes::{Axis, Kind, MAX_TRACKS, Tracks},
+};
 
 /// The file's first line: what it is and which format.
 const HEADER: &str = "axon-session 1";
@@ -46,6 +51,7 @@ pub struct SavedGroup {
     pub color: u8,
     pub collapsed: bool,
     pub kind: Kind,
+    pub tracks: Tracks,
 }
 
 /// A whole session: the windows in the order of the list, the groups they index, the window that was on screen, and the
@@ -91,6 +97,47 @@ fn layout_of(name: &str) -> Kind {
     }
 }
 
+/// The names the sizes of a split's columns and rows go by in a `group` line.
+const AXES: [(Axis, &str); 2] = [(Axis::Cols, "cols="), (Axis::Rows, "rows=")];
+
+/// The sizes of the axes of `t` that have their own, as ` cols=612,400`, ` rows=...`.
+fn write_tracks(t: &Tracks, out: &mut String) {
+    use std::fmt::Write;
+    for (a, name) in AXES {
+        let n = t.n[a as usize] as usize;
+        if t.sized(a, n) {
+            out.push(' ');
+            out.push_str(name);
+            for (k, w) in t.weights(a, n).iter().enumerate() {
+                let _ = write!(out, "{}{w}", if k == 0 { "" } else { "," });
+            }
+        }
+    }
+}
+
+/// The sizes the fields `f` (after a group's layout) give; an axis that is not there, or not well formed, is even.
+fn read_tracks<'a>(f: impl Iterator<Item = &'a str>) -> Tracks {
+    let mut t = Tracks::EVEN;
+    for field in f {
+        let Some((a, list)) = AXES.iter().find_map(|&(a, name)| field.strip_prefix(name).map(|l| (a, l))) else { continue };
+        let mut w = [0u16; MAX_TRACKS];
+        let mut n = 0;
+        for v in list.split(',') {
+            match v.parse::<u16>() {
+                Ok(x) if x > 0 && n < MAX_TRACKS => (w[n], n) = (x, n + 1),
+                _ => {
+                    n = 0;
+                    break;
+                }
+            }
+        }
+        if n >= 2 {
+            (t.n[a as usize], t.w[a as usize]) = (n as u8, w);
+        }
+    }
+    t
+}
+
 /// `s` with what would break a line or a field written as `\\`, `\t`, `\n`, `\r`.
 fn escape(s: &str, out: &mut String) {
     for c in s.chars() {
@@ -128,7 +175,9 @@ pub fn encode(s: &Saved) -> String {
     use std::fmt::Write;
     let mut out = format!("{HEADER}\nowner {}\ncur {}\n", s.owner, s.cur);
     for g in &s.groups {
-        let _ = write!(out, "group {} {} {}\t", g.color, g.collapsed as u8, layout_name(g.kind));
+        let _ = write!(out, "group {} {} {}", g.color, g.collapsed as u8, layout_name(g.kind));
+        write_tracks(&g.tracks, &mut out);
+        out.push('\t');
         escape(&g.name, &mut out);
         out.push('\n');
     }
@@ -165,7 +214,8 @@ pub fn decode(text: &str) -> Option<Saved> {
                 let (head, name) = rest.split_once('\t').unwrap_or((rest, ""));
                 let mut f = head.split(' ');
                 let color: usize = f.next().and_then(|c| c.parse().ok()).unwrap_or(0);
-                s.groups.push(SavedGroup { name: unescape(name), color: (color % COLORS) as u8, collapsed: f.next() == Some("1"), kind: layout_of(f.next().unwrap_or("")) });
+                let (collapsed, kind) = (f.next() == Some("1"), layout_of(f.next().unwrap_or("")));
+                s.groups.push(SavedGroup { name: unescape(name), color: (color % COLORS) as u8, collapsed, kind, tracks: read_tracks(f) });
             }
             "win" if s.wins.len() < MAX_WINS => {
                 let mut f = rest.split('\t');
@@ -218,13 +268,21 @@ pub fn claims(owner: u32, me: u32, alive: impl Fn(u32) -> bool) -> bool {
 mod tests {
     use super::*;
 
+    /// Sizes for a split of two columns (612 and 400 px when set) and three rows.
+    fn resized() -> Tracks {
+        let mut t = Tracks { n: [2, 3], ..Tracks::EVEN };
+        t.w[0][..2].copy_from_slice(&[612, 400]);
+        t.w[1][..3].copy_from_slice(&[100, 250, 120]);
+        t
+    }
+
     fn sample() -> Saved {
         Saved {
             owner: 4242,
             cur: 2,
             groups: vec![
-                SavedGroup { name: "axon".into(), color: 3, collapsed: false, kind: Kind::Cols },
-                SavedGroup { name: "docs and notes".into(), color: 0, collapsed: true, kind: Kind::Single },
+                SavedGroup { name: "axon".into(), color: 3, collapsed: false, kind: Kind::Grid, tracks: resized() },
+                SavedGroup { name: "docs and notes".into(), color: 0, collapsed: true, kind: Kind::Single, tracks: Tracks::EVEN },
             ],
             wins: vec![
                 SavedWin { dir: "/home/ana/lab/axon".into(), name: String::new(), group: Some(0) },
@@ -271,6 +329,27 @@ mod tests {
         assert_eq!(s.owner, 0);
         let many: String = std::iter::once("axon-session 1\n".to_string()).chain((0..100).map(|i| format!("win -\t/d{i}\t\n"))).collect();
         assert_eq!(decode(&many).unwrap().wins.len(), MAX_WINS);
+    }
+
+    #[test]
+    fn the_sizes_of_a_split_are_extra_fields_an_older_axon_skips() {
+        let text = encode(&sample());
+        assert!(text.contains("group 3 0 grid cols=612,400 rows=100,250,120\taxon\n"), "{text}");
+        assert!(text.contains("group 0 1 single\tdocs and notes\n"), "an even split writes nothing");
+        // A file from before the sizes: even.
+        let old = decode("axon-session 1\ngroup 1 0 cols\tg\nwin 0\t/a\t\n").unwrap();
+        assert_eq!(old.groups[0].tracks, Tracks::EVEN);
+        // What an older axon reads of the line is the same three fields, the name after the tab.
+        let head = text.lines().find(|l| l.starts_with("group 3")).unwrap().split_once('\t').unwrap().0;
+        assert_eq!(head.split(' ').take(4).collect::<Vec<_>>(), ["group", "3", "0", "grid"]);
+        // Damaged sizes are even; one good axis is kept without the other; an unknown field is skipped.
+        for bad in ["cols=1", "cols=0,5", "cols=a,b", "cols=", "cols=70000,1", "cols=1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17"] {
+            let s = decode(&format!("axon-session 1\ngroup 1 0 cols {bad}\tg\nwin 0\t/a\t\n")).unwrap();
+            assert_eq!(s.groups[0].tracks, Tracks::EVEN, "{bad}");
+        }
+        let s = decode("axon-session 1\ngroup 1 0 grid later=9 rows=5,7 cols=x\tg\nwin 0\t/a\t\n").unwrap();
+        assert!(s.groups[0].tracks.sized(Axis::Rows, 2) && !s.groups[0].tracks.sized(Axis::Cols, 2));
+        assert_eq!(s.groups[0].tracks.weights(Axis::Rows, 2), [5, 7]);
     }
 
     #[test]

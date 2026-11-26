@@ -19,6 +19,9 @@ pub mod cursor {
     pub const SE_RESIZE: u32 = 23;
     pub const SW_RESIZE: u32 = 24;
     pub const W_RESIZE: u32 = 25;
+    /// The boundary between two panes (ADR 0045).
+    pub const COL_RESIZE: u32 = 30;
+    pub const ROW_RESIZE: u32 = 31;
 }
 
 /// What the window layer tells the application. Each layer says only some of these (Wayland has keymaps and a frame

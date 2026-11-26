@@ -18,6 +18,7 @@ pub const COLORS: usize = 8;
 /// A group of windows: a name, one of the eight colours, whether the panel shows its windows, and how they are laid
 /// side by side in the grid area (ADR 0034: the windows of a group are the panes of one split view). `kind` is the
 /// last choice (a split in columns or in rows); what it means for the windows there are now is `panes::fit_kind`.
+/// `tracks` are the sizes the user gave the split's columns and rows (ADR 0045; even until then).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Group {
     pub id: u32,
@@ -25,6 +26,7 @@ pub struct Group {
     pub color: u8,
     pub collapsed: bool,
     pub kind: panes::Kind,
+    pub tracks: panes::Tracks,
 }
 
 /// The first colour no group has, else the one the count points at (the reference's `nextColor`).
@@ -287,7 +289,7 @@ mod tests {
     use super::*;
 
     fn g(id: u32, name: &str) -> Group {
-        Group { id, name: name.into(), color: 0, collapsed: false, kind: panes::Kind::Single }
+        Group { id, name: name.into(), color: 0, collapsed: false, kind: panes::Kind::Single, tracks: panes::Tracks::EVEN }
     }
 
     #[test]

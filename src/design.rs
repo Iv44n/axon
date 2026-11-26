@@ -112,13 +112,30 @@ fn pane_status(i: usize) -> Status {
 }
 
 /// A group split into panes (ADR 0034: a split is the windows of a group): how many windows, how they are arranged,
-/// which is on screen and the cross shown at a pane's corner (the pane, and whether the pointer is on it).
+/// which is on screen and the cross shown at a pane's corner (the pane, and whether the pointer is on it). `resize`
+/// moves boundaries before the frame is drawn, as drags would (ADR 0045: the boundary, and where along its axis its gap
+/// goes, as a share of the workspace); `edge` is the boundary the pointer is on, and whether it drags it.
 #[derive(Clone, Copy)]
 struct PaneScene {
     n: usize,
     kind: panes::Kind,
     focus: usize,
     cross: Option<(usize, bool)>,
+    resize: &'static [(panes::Axis, usize, f32)],
+    edge: Option<(panes::Axis, usize, bool)>,
+}
+
+impl PaneScene {
+    /// The sizes the scene's drags give, in the workspace `ws`, with the app's minimum.
+    fn tracks(&self, ws: panes::Rect, soft: &Soft) -> panes::Tracks {
+        let mut t = panes::Tracks::EVEN;
+        let (min_w, min_h) = soft.min_pane(panes::MIN_COLS, panes::MIN_ROWS);
+        for &(axis, k, share) in self.resize {
+            let (o, len, min) = if axis == panes::Axis::Cols { (ws.x, ws.w, min_w) } else { (ws.y, ws.h, min_h) };
+            panes::drag(&mut t, self.kind, self.n, ws, panes::Edge { axis, k }, o + (len as f32 * share) as i32, min);
+        }
+        t
+    }
 }
 
 /// The records of the demo session's prompts: the first command ran in 12 ms, the second failed after 1.5 s.
@@ -283,7 +300,9 @@ fn scenes() -> Vec<Scene> {
     };
     let bar = |chips: &[Chip]| Some((sample_context(), chips.to_vec()));
     let chips3 = || bar(&[Chip::Time, Chip::Dir, Chip::Branch]);
-    let split = |n, kind, focus, cross| Some(PaneScene { n, kind, focus, cross });
+    let split = |n, kind, focus, cross| Some(PaneScene { n, kind, focus, cross, resize: &[], edge: None });
+    let resized = |n, kind, focus, resize, edge| Some(PaneScene { n, kind, focus, cross: None, resize, edge });
+    use panes::Axis::{Cols, Rows};
     let side_ui = Ui { side: 2, ..Ui::IDLE };
     let hooked: &'static str = Box::leak(with_hook("").into_boxed_str());
     let typing: &'static str = Box::leak(with_hook("git commit -m \"wire the chips to the prompt\"").into_boxed_str());
@@ -386,6 +405,10 @@ fn scenes() -> Vec<Scene> {
         Scene { panes: split(4, panes::Kind::Cols, 2, None), side: Some((TabsPos::Top, Some(crate::side::Part::Row(0)))), list: ListScene { grouped_tabs: true, ..NO_LIST }, bar: chips3(), ..base("panes-tabs-top", "A split in the tabs at the top: the group's chip and a tab for each of its windows, the one on screen lit", "panes", Ui { side: 0, ..Ui::IDLE }) },
         Scene { panes: split(3, panes::Kind::Grid, 1, None), side: Some((TabsPos::Left, None)), bar: chips3(), lang: Lang::Es, ..base("panes-es", "A split in Spanish", "panes", side_ui) },
         Scene { panes: split(2, panes::Kind::Cols, 0, None), bar: chips3(), ..base("panes-no-panel", "Two windows of a group with the panel hidden (Alt+B)", "panes", Ui { side: 1, ..Ui::IDLE }) },
+        Scene { panes: resized(3, panes::Kind::Cols, 0, &[(Cols, 0, 0.37)], Some((Cols, 0, false))), bar: chips3(), ..base("panes-resized-cols", "Columns of other sizes (ADR 0045): the first window was made wider by dragging the gap after it, the second gave the room and the third kept its size; the pointer is on that gap, which is lit and shows the column-resize pointer (a double click evens the columns again)", "panes", Ui { side: 1, ..Ui::IDLE }) },
+        Scene { panes: resized(2, panes::Kind::Rows, 1, &[(Rows, 0, 0.3)], Some((Rows, 0, true))), side: Some((TabsPos::Left, None)), bar: chips3(), ..base("panes-resized-rows", "Rows being resized: the gap above the window on screen is dragged up (lit stronger while it drags); the shells hear their new size as the boundary crosses a cell", "panes", side_ui) },
+        Scene { panes: resized(3, panes::Kind::Grid, 2, &[(Cols, 0, 0.6), (Rows, 0, 0.62)], Some((Cols, 0, false))), side: Some((TabsPos::Left, None)), bar: chips3(), ..base("panes-resized-grid", "A grid of three resized: a column and a row are shared by the panes in them, and the last pane still spans both columns; the lit gap between the columns stops above it", "panes", side_ui) },
+        Scene { panes: resized(2, panes::Kind::Cols, 0, &[(Cols, 0, 0.97)], None), bar: chips3(), ..base("panes-resized-min", "A gap dragged as far as it goes: the window beside it keeps 20 columns (Alt+Shift+arrows stop at the same place)", "panes", Ui { side: 1, ..Ui::IDLE }) },
         Scene { side: Some((TabsPos::Left, None)), list: ListScene { status: BUSY, ..NO_LIST }, ..base("status-side", "Status icons in the panel: the prompt (idle), a ring that turns (a command runs), a red dot (the last command failed); the cyan dot is output that came while it was hidden", "status", side_ui) },
         Scene { side: Some((TabsPos::Left, None)), list: ListScene { status: BUSY, phase: 0.6, ..NO_LIST }, ..base("status-side-turned", "The same a little later: the ring's bright quarter has gone round", "status", side_ui) },
         Scene { side: Some((TabsPos::Left, None)), list: ListScene { status: AGENTS, ..NO_LIST }, ..base("status-agents-side", "A window that runs an AI agent shows its mark instead of a ring: Claude at work, faint (arcton), Claude waiting for the user, with an amber dot (servidor), Codex (pruebas), Antigravity (~); the ring is for a command that will end (notas); nothing turns for an agent, so no timer runs for it", "status", side_ui) },
@@ -432,8 +455,10 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
     if let Some(ps) = s.panes {
         // A window split into panes: each has a terminal of the size of its own box, and is drawn in turn.
         let ws = soft.workspace(W, H);
-        let slots: Vec<Slot> = (0..ps.n).map(|i| Slot { rect: panes::rect(ps.kind, ps.n, i, ws), focus: i == ps.focus, framed: ps.n > 1 }).collect();
+        let t = ps.tracks(ws, &soft);
+        let slots: Vec<Slot> = (0..ps.n).map(|i| Slot { rect: panes::rect(ps.kind, ps.n, i, ws, &t), focus: i == ps.focus, framed: ps.n > 1 }).collect();
         soft.set_layout(&slots);
+        soft.set_handle(ps.edge.and_then(|(axis, k, drags)| Some((panes::edge_line(ps.kind, ps.n, ws, &t, panes::Edge { axis, k })?, drags))));
         let grids: Vec<panes::Grid> = slots.iter().map(|sl| soft.grid(sl.rect, sl.framed)).collect();
         soft.set_status("zsh", "main", grids[ps.focus].cols, grids[ps.focus].rows);
         for (i, g) in grids.iter().enumerate() {
@@ -846,7 +871,7 @@ fn panes_repaint_incrementally_like_a_full_frame() {
     let frame = |soft: &mut Soft, panes: &mut Vec<Pane>, fb: &mut Vec<u32>, kind: panes::Kind, focus: usize, cross: Option<usize>, last_cross: Option<usize>| {
         let n = panes.len();
         let ws = soft.workspace(W, H);
-        let slots: Vec<Slot> = (0..n).map(|i| Slot { rect: panes::rect(kind, n, i, ws), focus: i == focus, framed: n > 1 }).collect();
+        let slots: Vec<Slot> = (0..n).map(|i| Slot { rect: panes::rect(kind, n, i, ws, &panes::Tracks::EVEN), focus: i == focus, framed: n > 1 }).collect();
         soft.set_layout(&slots);
         soft.set_status("zsh", "main", 10, 5);
         for i in [last_cross, cross].into_iter().flatten().filter(|&i| i < n) {
@@ -871,7 +896,7 @@ fn panes_repaint_incrementally_like_a_full_frame() {
     };
     let new_term = |soft: &Soft, kind: panes::Kind, n: usize, i: usize, text: &str| {
         let ws = soft.workspace(W, H);
-        let g = soft.grid(panes::rect(kind, n, i, ws), n > 1);
+        let g = soft.grid(panes::rect(kind, n, i, ws, &panes::Tracks::EVEN), n > 1);
         let mut t = Term::new(Config::default(), &session::Size { cols: g.cols, rows: g.rows }, VoidListener);
         Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::new().advance(&mut t, text.as_bytes());
         t
