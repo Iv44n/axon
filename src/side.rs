@@ -5,7 +5,7 @@
 //! cleared (`Soft::clear_rect`). The text is the interface's proportional font (`Soft::ui_text`), at the
 //! reference's sizes: 12.5 px for a window, 12 for a group in the panel, 11.5 for the header.
 use crate::{
-    agent::Agent,
+    agent::{Agent, State},
     chrome::TITLE_H,
     icons::{self, Icon},
     dnd::{Grab, Target},
@@ -169,26 +169,34 @@ pub fn entries(win_group: &[Option<usize>], collapsed: &[bool], panes: &[usize],
 }
 
 /// What a pane's row says about its shell: nothing special, a command running, an AI agent running (its mark: it
-/// does not end by itself, so it is not "busy" and nothing turns), or the last command failed.
+/// does not end by itself, so it is not "busy" and nothing turns; and whether it works or waits for the user, as its
+/// title says), or the last command failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Status {
     #[default]
     Idle,
     Running,
-    Agent(Agent),
+    Agent(Agent, State),
     Failed,
 }
 
 impl Status {
-    /// What a window says about its panes (`Tab.status`): running if any pane runs a command, else the agent one of
-    /// them runs, else failed if any last command failed, else nothing special.
+    /// What a window says about its panes (`Tab.status`): an agent that waits for the user if one does (it is the
+    /// one thing there that needs them), else running if any pane runs a command, else the agent one of them runs,
+    /// else failed if any last command failed, else nothing special. The first pane wins among equals.
     pub fn of(panes: impl IntoIterator<Item = Status>) -> Status {
-        panes.into_iter().fold(Status::Idle, |a, s| match (a, s) {
-            (Status::Running, _) | (_, Status::Running) => Status::Running,
-            (Status::Agent(x), _) | (_, Status::Agent(x)) => Status::Agent(x),
-            (Status::Failed, _) | (_, Status::Failed) => Status::Failed,
-            _ => Status::Idle,
-        })
+        panes.into_iter().fold(Status::Idle, |a, s| if s.rank() > a.rank() { s } else { a })
+    }
+
+    /// How much a status says, for `of`.
+    fn rank(self) -> u8 {
+        match self {
+            Status::Idle => 0,
+            Status::Failed => 1,
+            Status::Agent(_, State::Waiting) => 4,
+            Status::Agent(..) => 2,
+            Status::Running => 3,
+        }
     }
 }
 
@@ -884,8 +892,9 @@ fn spinner(p: &mut Paint, cx: f32, cy: f32, d: f32, c: [f32; 3], track: f32, pha
 }
 
 /// The status icon of a row, centred on `(cx, cy)`: the prompt (a chevron and a dash, in `idle`) when nothing
-/// special is going on, a turning ring while a command runs, the mark of the agent (Claude, ChatGPT, Antigravity) that
-/// runs, a red dot when the last command failed.
+/// special is going on, a turning ring while a command runs, the mark of the agent (Claude, Codex, Antigravity) that
+/// runs (faint while it works, with a dot while it waits for the user: `icons::agent`), a red dot when the last command
+/// failed.
 fn status_icon(p: &mut Paint, cx: f32, cy: f32, st: Status, idle: [f32; 3], phase: f32) {
     match st {
         Status::Idle => {
@@ -896,7 +905,7 @@ fn status_icon(p: &mut Paint, cx: f32, cy: f32, st: Status, idle: [f32; 3], phas
             });
         }
         Status::Running => spinner(p, cx, cy, 11.0, palette::unit(palette::ACCENT), 0.28, phase),
-        Status::Agent(a) => icons::agent(p, a, cx, cy, 12.0, 1.0),
+        Status::Agent(a, s) => icons::agent(p, a, s, cx, cy, 14.0, 1.0),
         Status::Failed => p.disc(cx, cy, 3.5, palette::unit(palette::RED), 1.0),
     }
 }
@@ -1832,6 +1841,12 @@ mod tests {
         assert_eq!(Status::of([Idle, Failed]), Failed);
         assert_eq!(Status::of([Failed, Running, Idle]), Running, "a command running says more than a failed one");
         assert_eq!(Status::of([Running]), Running);
+        let (waits, works) = (Agent(crate::agent::Agent::Claude, State::Waiting), Agent(crate::agent::Agent::Claude, State::Working));
+        assert_eq!(Status::of([Failed, works, Idle]), works, "an agent says more than a failure");
+        assert_eq!(Status::of([works, Running]), Running, "a command running says more than an agent at work");
+        assert_eq!(Status::of([Running, waits, works]), waits, "an agent waiting for the user says the most");
+        let other = Agent(crate::agent::Agent::Codex, State::Unknown);
+        assert_eq!(Status::of([other, works]), other, "the first of equals");
     }
 
     #[test]

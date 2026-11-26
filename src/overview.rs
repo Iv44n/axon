@@ -1210,7 +1210,8 @@ fn paint_card(p: &mut Paint, t: &Text, r: Rect, c: &Card, active: bool, s: &Card
 
 /// What a window's shell is doing, as the reference's `.t-ico`: the prompt icon (amber on the active card), a
 /// ring with a bright quarter for a command that runs (the reference spins it; a still frame costs no timer),
-/// the mark of an AI agent that runs (Claude, ChatGPT, Antigravity: it does not end by itself), a red dot for a failure.
+/// the mark of an AI agent that runs (Claude, Codex, Antigravity: it does not end by itself; faint while it works, with
+/// a dot while it waits for the user), a red dot for a failure.
 fn status_icon(p: &mut Paint, st: Status, cx: f32, cy: f32, active: bool) {
     match st {
         Status::Idle => icons::paint(p, Icon::Prompt, cx, cy, 14.0, 1.5, if active { accent() } else { dim() }, 1.0),
@@ -1222,7 +1223,7 @@ fn status_icon(p: &mut Paint, st: Status, cx: f32, cy: f32, active: bool) {
                 if dx >= 0.0 && dy <= 0.0 { ring } else { ring * 0.28 }
             });
         }
-        Status::Agent(a) => icons::agent(p, a, cx, cy, 14.0, 1.0),
+        Status::Agent(a, s) => icons::agent(p, a, s, cx, cy, 16.0, 1.0),
         Status::Failed => p.disc(cx, cy, 3.5, palette::unit(palette::RED), 1.0),
     }
 }

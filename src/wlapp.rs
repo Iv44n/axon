@@ -25,7 +25,7 @@ use alacritty_terminal::{
 mod windows_overview;
 
 use crate::{
-    bar, caret,
+    agent, bar, caret,
     side,
     history::{self, History, Hook},
     i18n::{self, Str, tr},
@@ -189,8 +189,11 @@ struct Pane {
     report: Option<PathBuf>,
     flag: Option<PathBuf>,
     refresh: Refresh,
-    /// The title the program set (empty: the directory's name is used).
+    /// The title the program set (empty: the directory's name is used), without the status mark before it
+    /// (`status_mark`).
     title: String,
+    /// What that mark said about the agent that runs, if one does: working, or waiting for the user (ADR 0046).
+    agent_state: agent::State,
     /// The directory of its shell in short form (`~/lab/axon`), read again when the shell may have moved
     /// (`read_dir`): the list, the tabs and the title bar show it without asking the system each time.
     dir: String,
@@ -411,6 +414,21 @@ fn own_title(t: &str) -> bool {
     !(t.ends_with(".exe") || t == "windows powershell")
 }
 
+/// How many bytes at the start of title `t` are a status mark its program put there: one symbol (not a letter, a
+/// digit or ASCII, maybe with its emoji selector) and the spaces after it, or that symbol alone. Claude Code writes
+/// `✳` while it waits and `◐` `◑` in turn while it works; other agents and spinners write `✦`, `◇`, braille dots. The
+/// row beside the title has its own status icon (ADR 0044), and the interface's font has none of these glyphs: it drew
+/// its missing-glyph box instead, a thin upright bar.
+fn status_mark(t: &str) -> usize {
+    let Some(c) = t.chars().next() else { return 0 };
+    let rest = &t[c.len_utf8()..];
+    let rest = rest.strip_prefix('\u{fe0f}').unwrap_or(rest);
+    if c.is_ascii() || c.is_alphanumeric() || !(rest.is_empty() || rest.starts_with(char::is_whitespace)) {
+        return 0;
+    }
+    t.len() - rest.trim_start().len()
+}
+
 /// The last part of a directory in short form (`~/lab/axon`, `~\code\axon`, `…/a/b/c`, `/`, `C:\`): `axon`, `c`, the
 /// root itself.
 fn dir_name(dir: &str) -> &str {
@@ -481,7 +499,7 @@ fn pane_status(p: &Pane) -> side::Status {
     if running(p) {
         side::Status::Running
     } else if let Some(a) = p.history.agent() {
-        side::Status::Agent(a)
+        side::Status::Agent(a, p.agent_state)
     } else if p.history.failed() {
         side::Status::Failed
     } else {
@@ -686,6 +704,7 @@ impl Pane {
             flag,
             refresh: Refresh { due: chips.then(Instant::now), last: Instant::now(), running: Arc::new(AtomicBool::new(false)), done: Arc::default(), clock_at: None },
             title: String::new(),
+            agent_state: agent::State::Unknown,
             dir: String::new(),
             place: PathBuf::new(),
             size: (cols, rows),
@@ -1137,15 +1156,26 @@ impl App {
                     match e {
                         // Shells set the title at their prompt, with the directory in it: a moment to look where they are.
                         // (A program may set its title many times a second: the session is noted only when the folder changed.)
-                        TermEvent::Title(t) => {
-                            self.wins[i].panes[j].title = t;
-                            if self.wins[i].panes[j].read_dir() {
+                        // A program's own status mark before its title goes (`status_mark`), and what it says is kept:
+                        // Claude Code's says whether it works or waits for the user. It turns about once a second while
+                        // it works; only a change of the title or of the state is painted again.
+                        TermEvent::Title(mut t) => {
+                            let state = agent::State::of_title(&t);
+                            t.drain(..status_mark(&t));
+                            let pane = &mut self.wins[i].panes[j];
+                            let new = pane.title != t || pane.agent_state != state;
+                            (pane.title, pane.agent_state) = (t, state);
+                            let moved = pane.read_dir();
+                            if moved {
                                 self.note_session();
                             }
-                            self.titled(i);
+                            if new || moved {
+                                self.titled(i);
+                            }
                         }
                         TermEvent::ResetTitle => {
                             self.wins[i].panes[j].title.clear();
+                            self.wins[i].panes[j].agent_state = agent::State::Unknown;
                             if self.wins[i].panes[j].read_dir() {
                                 self.note_session();
                             }
@@ -3092,6 +3122,21 @@ mod tests {
         for own in ["vim main.rs", "htop", "Deploy: step 2", "build.exe is running"] {
             assert!(own_title(own), "{own:?}");
         }
+    }
+
+    #[test]
+    fn a_programs_status_mark_is_cut_from_its_title() {
+        let cut = |t: &'static str| &t[status_mark(t)..];
+        // Claude Code waiting and working, other agents' marks, a braille spinner, an emoji with its selector.
+        for (t, rest) in [("✳ Fix the icons", "Fix the icons"), ("◐ Fix the icons", "Fix the icons"), ("◑ Claude Code", "Claude Code"), ("✦  Working", "Working"), ("⠂ build", "build"), ("✳\u{fe0f} notes", "notes"), ("✳", "")] {
+            assert_eq!(cut(t), rest, "{t:?}");
+        }
+        // Letters, digits and ASCII stay, and so does a symbol that is part of a word.
+        for t in ["vim main.rs", "~ home", "* notes", "- list", "λ calc", "Ñandú", "1 · 2", "✳notes", "→", ""] {
+            assert_eq!(cut(t), if t == "→" { "" } else { t }, "{t:?}");
+        }
+        // Without its mark, a title that was only the mark is no title of its own: the command's name shows instead.
+        assert!(!own_title(cut("✳")));
     }
 
     #[test]

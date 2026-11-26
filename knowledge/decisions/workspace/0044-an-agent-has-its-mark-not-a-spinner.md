@@ -1,10 +1,15 @@
 ---
 type: decision
-status: accepted
+status: superseded-by-0046
 updated: 2026-11-26
-related: [0030-drag-groups-status.md, 0032-fidelity-second-reference.md, ../interface/0021-ui-refactor-terminal-reference.md]
+related: [0046-the-agents-own-marks.md, 0030-drag-groups-status.md, 0032-fidelity-second-reference.md, ../interface/0021-ui-refactor-terminal-reference.md]
 ---
 # 0044 · A window that runs an AI agent shows the agent's mark, not a spinner
+
+> Superseded in part by [0046](0046-the-agents-own-marks.md): the marks are the agents' own published ones, filled in
+> their own colours (Codex's cloud, not ChatGPT's knot), 14 px in the list and 16 in the overview; a program's status
+> mark is cut from its title, and Claude Code's says whether it works (the mark faint) or waits for the user (an amber
+> dot): axon can tell them apart. The mark instead of a ring, still and without a timer, stands.
 
 **Decision:** when the command that runs in a window is `claude`, `codex` (or `chatgpt`), or `agy` (or `antigravity`), its row,
 tab and overview card show that agent's mark (Claude's burst of rays in its orange, ChatGPT's knot in the text colour,

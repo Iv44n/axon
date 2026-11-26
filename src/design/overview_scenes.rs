@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use super::{H, OPACITY, PX, Scene, W, render, scenes};
 use crate::{
+    agent::{Agent, State},
     chrome::{self, Ui},
     config::FontCfg,
     i18n::{self, Lang},
@@ -180,6 +181,20 @@ fn defs() -> Vec<Def> {
         d("overview-drag", "Overview: a card carried over a group's section (the card at 40 %, the section's colour at 10 % and a dashed border)", Around::Panel, |a| open(a).state("", None, None, i32::MAX).carrying(5, Some(Some(1)))),
         d("overview-drag-tile", "Overview: a card carried onto the dashed tile (amber, tinted)", Around::Panel, |a| open(a).state("", None, None, i32::MAX).carrying(5, None)),
         d("overview-header", "Overview: the pointer over the header's new window button", Around::Panel, |a| open(a).over_button(1)),
+        d("overview-agents", "Overview: windows that run an AI agent show its mark in their card's foot (16 px): Claude at work, faint (arcton), Claude waiting for the user, with an amber dot (servidor), Codex (pruebas), Antigravity (~); notas runs a command", Around::Panel, |a| {
+            let (mut cards, groups) = windows();
+            for c in &mut cards {
+                c.status = match c.id {
+                    1 => Status::Agent(Agent::Claude, State::Working),
+                    2 => Status::Agent(Agent::Claude, State::Waiting),
+                    3 => Status::Agent(Agent::Codex, State::Unknown),
+                    4 => Status::Running,
+                    5 => Status::Agent(Agent::Antigravity, State::Unknown),
+                    _ => c.status,
+                };
+            }
+            Overview::new(cards, groups, a).shown()
+        }),
         d("overview-wide", "Overview without the panel (Alt+B): ten windows in three groups, three columns", Around::Plain, |a| {
             let (cards, groups) = many();
             Overview::new(cards, groups, a).shown()

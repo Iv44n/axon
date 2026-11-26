@@ -24,9 +24,23 @@ pub const MAGENTA: Rgb = hex(0xd86bdc);
 pub const YELLOW: Rgb = hex(0xf6b73c);
 pub const BLUE: Rgb = hex(0x6aa9ff);
 pub const CYAN: Rgb = hex(0x4fd6d0);
-/// Claude's own orange, for its mark beside a window that runs it (`icons::agent`); the user asked for the agents'
-/// marks to tell them from a command that is busy, and this is the one colour that is not from the reference.
+/// The colours of the agents' own marks beside a window that runs one (`icons::agent`, ADR 0044): the user asked for
+/// the agents' marks, as they look, to tell them from a command that is busy. They are the only colours here that are
+/// not from the reference, and nothing else uses them.
+///
+/// Claude's orange.
 pub const CLAUDE: Rgb = hex(0xd97757);
+/// Codex's cloud, from its top to its foot.
+pub const CODEX: [Rgb; 3] = [hex(0xb1a7ff), hex(0x7a9dff), hex(0x3941ff)];
+/// Antigravity's arch: its field of Google's colours, five by five over the arch's box, rows from the top (read
+/// from the published mark with its blurred patches of colour, and blended between them by `icons::antigravity_ink`).
+pub const ANTIGRAVITY: [[Rgb; 5]; 5] = [
+    [hex(0x8bcd53), hex(0xdad433), hex(0xf0802d), hex(0xfc423d), hex(0xfb413d)],
+    [hex(0x8fd551), hex(0x8dc766), hex(0x7a8898), hex(0xdf515a), hex(0xfa423f)],
+    [hex(0x33b973), hex(0x3b9bc6), hex(0x3385f7), hex(0x6e81db), hex(0xae6da1)],
+    [hex(0x1e98c4), hex(0x2f87fa), hex(0x3086ff), hex(0x3a88ff), hex(0x558cf7)],
+    [hex(0x2e87f9), hex(0x3186ff), hex(0x3186ff), hex(0x2f86ff), hex(0x3285fe)],
+];
 
 /// The reference's hues in the ANSI slots programs use. Index 8 (gray) is a step lighter than `DIM` (`#74747d` is 4.25:1 on `BG`, fine for chrome text) so programs' grey text keeps 4.5:1.
 const ANSI: [Rgb; 16] = [
