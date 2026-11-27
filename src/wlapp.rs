@@ -412,7 +412,8 @@ struct App {
     quit: bool,
     mouse: (f32, f32),
     /// The pane and viewport row the pointer is over in the grid, when it is: the status of the command whose block
-    /// that is shows at the end of its line (`bar::Chips::frame`).
+    /// that is shows at the end of its line (`bar::Chips::frame`). Taken at the last pointer move, so the pane may be
+    /// gone since (a shell ended, another window is shown): check it against `shown().n` before using it.
     grid_hover: Option<(usize, usize)>,
     selecting: bool,
     /// The button a program is being told about (mouse reporting), and the cell last reported.
@@ -1529,7 +1530,7 @@ impl App {
         if self.ui.focused && wi == self.cur && kept.is_none() {
             report_focus(&w.panes[w.focus], true);
         }
-        self.pane_hover = None;
+        (self.pane_hover, self.grid_hover) = (None, None);
         if wi == self.cur {
             (self.selecting, self.held, self.cross_down) = (false, None, None);
         }
@@ -1817,7 +1818,7 @@ impl App {
                 self.relist();
             }
         }
-        self.pane_hover = None;
+        (self.pane_hover, self.grid_hover) = (None, None);
         self.reveal_active();
         // Everything in sight is read again: the window, or all of its group.
         let run = self.shown().run();
@@ -1912,6 +1913,7 @@ impl App {
                     self.dirty = true;
                 }
                 if let Some((pi, r)) = self.grid_hover.take()
+                    && pi < self.shown().n
                     && self.chips_on()
                     && self.pane(pi).chips.block_of(r).is_some()
                 {
@@ -3005,7 +3007,10 @@ impl App {
         // Only a move into another command's block is drawn (with the chips on): a move within one changes nothing.
         let row = if now == Hit::Client { self.pane_under(x, y).map(|pi| (pi, self.viewport_cell(pi).1)) } else { None };
         if row != self.grid_hover {
-            let block = |h: Option<(usize, usize)>| h.and_then(|(pi, r)| self.pane(pi).chips.block_of(r).map(|b| (pi, b)));
+            // The last hover may name a pane that is no longer on screen (a window of the split closed under a still
+            // pointer): that one is over no block.
+            let n = self.shown().n;
+            let block = |h: Option<(usize, usize)>| h.filter(|&(pi, _)| pi < n).and_then(|(pi, r)| self.pane(pi).chips.block_of(r).map(|b| (pi, b)));
             if self.chips_on() && block(row) != block(self.grid_hover) {
                 self.dirty = true;
             }
