@@ -326,13 +326,13 @@ Measured with [`scripts/bench.sh`](scripts/bench.sh) (`--clean` adds a cold buil
 can move size or speed** (rule in `CLAUDE.md`); older numbers stay in the history table.
 
 Machine: AMD Ryzen 5 5600H (12 threads) + RTX 3050 Mobile, Ubuntu, kernel 7.0.0-44, GNOME Shell 50.1 on Wayland.
-Last measured: 2026-11-27, v0.4.0: `9b12d7e` plus the panel of SSH servers (ADR 0048: `ssh.rs`, `hosts.rs`, `wlapp/hosts_ui.rs`, the servers' button in the title bar, a window's ssh session from the hook's command line). +195.7 KB, 8,394,712 to 8,590,384 B, both built here with rustc 1.96.0 (the panel 80.7 KB of code, the settings panel being 86.6; `ssh.rs` 30.6; the app's side 26.9; `core`'s generics, the strings in two languages and the unwind tables the rest), no new dependency; idle and memory as before, 0 ticks (`bench.sh` printed 19 MB for `wl` under load, three runs on a quiet machine gave 18.1-18.3 MB); the panel open 22.6 MB, as the settings, 0 ticks in 5 s; the flood 1.51 s at load 1.5-2.6 (another session of work ran on the machine), nothing of this change is on the PTY or paint path while the panel is closed. Before it, 2026-11-26, v0.3.0: `b10df3d` plus a split that can be resized (ADR 0045: `panes::Tracks`, the gaps' hit test and drag, `Alt+Shift+arrows`, the sizes in the session file) and the agents' own marks, which say whether Claude works or waits, with the title's status mark cut (ADR 0046: the marks' outlines and their scanline fill in `icons.rs`, their colours in `palette.rs`, `agent::State`, `status_mark` in `wlapp.rs`). +28.2 KB, 8,366,520 to 8,394,712 B (the split +19.3 KB and the marks +5.0 KB on their own branches, the waiting state and the merge the rest), no new dependency; idle and memory as before, 0 ticks (`winit` with Cascadia once 1 tick in 3 s: its path is untouched); the flood 1.49 s at load 1.1-1.2, where the branches' own runs gave 1.70 s (another build on five cores) and 1.53 s, and neither change is on the PTY path or a row's paint; a group of four windows shown split 21.3 MB, as before; a window whose program turns its title's mark the way Claude Code does while it works, `◐`/`◑` every 0.96 s, costs 0-1 ticks in 10 s, 1-4 before, five runs of each build in turn: the title without its mark does not change, so nothing is painted unless Claude's state does. Before it, 2026-11-26, at `5ed8214` plus the kept session, the click that moves the shell's cursor and the agents' marks (ADR 0042-0044: `restore.rs`, `caret.rs`, `agent.rs`, `wlapp/keep.rs`, the marks in `icons.rs`; +24.3 KB over it, 8,342,256 to 8,366,520 B, no new dependency; idle and memory as before; the flood 1.52 s at load 1.2-1.5, not run against `5ed8214` side by side, and nothing of this change is on the PTY or paint path; a window that runs `claude`, `codex` or `agy` costs no timer: 0 ticks in 5 s, where the same window running `cargo` turns its ring, 2 ticks on this build and 10 before ADR 0041's cheaper painting). Before it, 2026-11-26, at `18ff573` plus the change that paints the rows outside the terminal's lock (ADR 0041: the UI thread held it 2.3 ms a frame during a flood, painting, and now 0.08 ms, reading the cells), paints a grid row's glass as a fill and skips a glyph's empty pixels; +3.7 KB; the flood is 13 % faster in an A/B (notes under the throughput table), idle and memory as before. The machine was busier than on 2026-11-25 (load average 1-4 after the builds), so the absolute flood times moved for both builds. The table of windows, groups and screens and the older notes under the tables come from earlier builds (ADR 0036-0039) and were not measured again: nothing in this change touches them. **Windows** has its own line below: it is measured by the self-test on a GitHub Actions runner, not on this machine.
+Last measured: 2026-11-27, `7bd7092` (v0.4.0) plus no `unsafe` (ADR 0049: `unsafe_code = "deny"` for the crate, allowed only in `xkb.rs`, `win.rs` and the pixels' mapping in `wl.rs`; an own reader of the time zone files, `tz.rs`, for the clock chip; the keymap read with `pread`; `malloc_trim` gone). +6.3 KB, 8,590,400 to 8,596,704 B, both built here (`tz.rs` most of it), no new dependency; idle and memory as before, 0 ticks; the flood 1.53 s at load 1.2-1.6, and an A/B against `7bd7092`, five floods of each in turn, 1.526 against 1.539 s on average (noise; axon's CPU 172 against 174 ticks, 40 MB after both); the design board's 163 frames byte-identical; `malloc_trim` gave back 0.2 MB after a toast (8.34 against 8.56 MB anon) and nothing at idle. Before it, 2026-11-27, v0.4.0: `9b12d7e` plus the panel of SSH servers (ADR 0048: `ssh.rs`, `hosts.rs`, `wlapp/hosts_ui.rs`, the servers' button in the title bar, a window's ssh session from the hook's command line). +195.7 KB, 8,394,712 to 8,590,384 B, both built here with rustc 1.96.0 (the panel 80.7 KB of code, the settings panel being 86.6; `ssh.rs` 30.6; the app's side 26.9; `core`'s generics, the strings in two languages and the unwind tables the rest), no new dependency; idle and memory as before, 0 ticks (`bench.sh` printed 19 MB for `wl` under load, three runs on a quiet machine gave 18.1-18.3 MB); the panel open 22.6 MB, as the settings, 0 ticks in 5 s; the flood 1.51 s at load 1.5-2.6 (another session of work ran on the machine), nothing of this change is on the PTY or paint path while the panel is closed. Before it, 2026-11-26, v0.3.0: `b10df3d` plus a split that can be resized (ADR 0045: `panes::Tracks`, the gaps' hit test and drag, `Alt+Shift+arrows`, the sizes in the session file) and the agents' own marks, which say whether Claude works or waits, with the title's status mark cut (ADR 0046: the marks' outlines and their scanline fill in `icons.rs`, their colours in `palette.rs`, `agent::State`, `status_mark` in `wlapp.rs`). +28.2 KB, 8,366,520 to 8,394,712 B (the split +19.3 KB and the marks +5.0 KB on their own branches, the waiting state and the merge the rest), no new dependency; idle and memory as before, 0 ticks (`winit` with Cascadia once 1 tick in 3 s: its path is untouched); the flood 1.49 s at load 1.1-1.2, where the branches' own runs gave 1.70 s (another build on five cores) and 1.53 s, and neither change is on the PTY path or a row's paint; a group of four windows shown split 21.3 MB, as before; a window whose program turns its title's mark the way Claude Code does while it works, `◐`/`◑` every 0.96 s, costs 0-1 ticks in 10 s, 1-4 before, five runs of each build in turn: the title without its mark does not change, so nothing is painted unless Claude's state does. Before it, 2026-11-26, at `5ed8214` plus the kept session, the click that moves the shell's cursor and the agents' marks (ADR 0042-0044: `restore.rs`, `caret.rs`, `agent.rs`, `wlapp/keep.rs`, the marks in `icons.rs`; +24.3 KB over it, 8,342,256 to 8,366,520 B, no new dependency; idle and memory as before; the flood 1.52 s at load 1.2-1.5, not run against `5ed8214` side by side, and nothing of this change is on the PTY or paint path; a window that runs `claude`, `codex` or `agy` costs no timer: 0 ticks in 5 s, where the same window running `cargo` turns its ring, 2 ticks on this build and 10 before ADR 0041's cheaper painting). Before it, 2026-11-26, at `18ff573` plus the change that paints the rows outside the terminal's lock (ADR 0041: the UI thread held it 2.3 ms a frame during a flood, painting, and now 0.08 ms, reading the cells), paints a grid row's glass as a fill and skips a glyph's empty pixels; +3.7 KB; the flood is 13 % faster in an A/B (notes under the throughput table), idle and memory as before. The machine was busier than on 2026-11-25 (load average 1-4 after the builds), so the absolute flood times moved for both builds. The table of windows, groups and screens and the older notes under the tables come from earlier builds (ADR 0036-0039) and were not measured again: nothing in this change touches them. **Windows** has its own line below: it is measured by the self-test on a GitHub Actions runner, not on this machine.
 
 **Build**
 
 | Binary | Cold release build |
 |---|---|
-| 8.2 MiB (8,590,384 bytes) | 101 s (before ADR 0036) |
+| 8.2 MiB (8,596,704 bytes) | 101 s (before ADR 0036) |
 
 **Idle memory and CPU** (`AXON_BACKEND` selects the backend; `wl` is the own Wayland client with the CPU renderer and the
 default on Wayland, `winit` is the `winit` + `wgpu` fallback)
@@ -340,11 +340,11 @@ default on Wayland, `winit` is the `winit` + `wgpu` fallback)
 | Backend | Font | RSS | PSS | Private (anon) | CPU |
 |---|---|---|---|---|---|
 | `wl` | JetBrains Mono (default) | **18 MB** | 14 MB | 8 MB | 0 ticks / 3 s |
-| `wl` | DejaVu Sans Mono | 24 MB | 20 MB | 14 MB | 0 ticks / 3 s |
-| `wl` | Cascadia Mono NF | 60 MB | 56 MB | 50 MB | 0 ticks / 3 s |
-| `winit` | JetBrains Mono (default) | 149 MB | 95 MB | 31 MB | 0 ticks / 3 s |
-| `winit` | DejaVu Sans Mono | 155 MB | 101 MB | 37 MB | 0 ticks / 3 s |
-| `winit` | Cascadia Mono NF | 192 MB | 138 MB | 74 MB | 0 ticks / 3 s |
+| `wl` | DejaVu Sans Mono | 24 MB | 19 MB | 14 MB | 0 ticks / 3 s |
+| `wl` | Cascadia Mono NF | 60 MB | 55 MB | 50 MB | 0 ticks / 3 s |
+| `winit` | JetBrains Mono (default) | 150 MB | 139 MB | 31 MB | 0 ticks / 3 s |
+| `winit` | DejaVu Sans Mono | 155 MB | 145 MB | 37 MB | 0 ticks / 3 s |
+| `winit` | Cascadia Mono NF | 191 MB | 181 MB | 74 MB | 0 ticks / 3 s |
 
 The idle target is under 50 MB of RSS. `wl` meets it with the default font (the 4 MB over the 15 MB of before are the UI
 font: 2.7 MB of its parsed outlines, narrowed to the characters an interface draws, and ~1.5 MB more of the binary's own code
@@ -352,7 +352,7 @@ paged in; opening the settings or an overlay no longer loads a font); a Nerd Fon
 ~45 MB inside `fontdue` (it parses every glyph), which the own font reader will remove. The `winit` backend cannot meet
 the target: the Vulkan loader and the drivers map ~94 MB. (`winit`'s PSS went from 56 to 96, 132 and now 72 MB with the RSS
 unchanged: PSS divides shared pages among every process that maps them, so it follows what else runs on the desktop; on
-2026-11-27 it was 95 MB.)
+2026-11-27 it was 95 MB, and 139 MB later that day.)
 
 **Windows, groups and screens** (`wl`, default font, idle shell in every window; the debugging knobs `AXON_WINDOWS`,
 `AXON_PANES`, `AXON_SETTINGS`, `AXON_HOSTS`, `AXON_OVERVIEW`)
@@ -376,13 +376,13 @@ A shell killed with `SIGKILL` closes only its own window; when the last one goes
 
 | Backend | Time | RSS afterwards |
 |---|---|---|
-| `wl` | 1.51 s | 38 MB |
-| `winit` | 1.36 s | 178 MB |
+| `wl` | 1.53 s | 40 MB |
+| `winit` | 1.28 s | 178 MB |
 
 For ADR 0041 (painting outside the terminal's lock), nine floods of each build in turn, the build before it first: 1.91/1.60, 1.93/1.57, 1.90/1.67, 1.72/1.49, 1.99/1.58, 2.06/1.81, 2.29/2.12, 1.91/1.71 and 2.07/1.88 s, every pair faster, 1.98 against 1.71 s on average (-13 %); axon's own CPU during the flood fell 20 % (the UI thread from 49 to 17 ticks in one run). A first `scripts/bench.sh` run gave 1.82 s and 68 MB after: the window opened larger that time (~229 columns of scrollback); the second, in the tables, 1.76 s and 39 MB. The PTY thread is now not saturated (~58 % of a core): what is left is parsing and the kernel's PTY, which `winit` shares.
 
 
-The 1.51 s and 1.36 s are the panel of SSH servers (ADR 0048) on 2026-11-27 at load 1.5-2.6, with another session of work on the machine; nothing of it is on the PTY path. The 1.49 s and 1.48 s before them are v0.3.0 (the resizable split and the agents' own marks, ADR 0045-0046), on 2026-11-26 at load 1.1-1.2; neither change is on the PTY path, and `winit`, whose code neither touches, moved from 1.28-1.41 s by the run. On their branches: 1.70 s with another build using five cores (ADR 0045) and 1.53 s at load 1.4-2.2 (ADR 0046). The 1.52 s and 1.28 s before them are the tree with ADR 0041's painting and the kept session, the click and the agents' marks (ADR 0042-0044) in, on 2026-11-26 at load 1.2-1.5, a quieter machine than the one of the A/B above: the two are not an A/B of each other, and none of the three later changes is on the PTY or paint path.
+The 1.53 s and 1.28 s are no `unsafe` (ADR 0049) on 2026-11-27 at load 1.2-1.6: the keymap, the clock and the pixels' mapping are not on the PTY path, and the copy into a second buffer is the same `memcpy` as before (the A/B is in the note at the top). The 1.51 s and 1.36 s before them are the panel of SSH servers (ADR 0048) on 2026-11-27 at load 1.5-2.6, with another session of work on the machine; nothing of it is on the PTY path. The 1.49 s and 1.48 s before them are v0.3.0 (the resizable split and the agents' own marks, ADR 0045-0046), on 2026-11-26 at load 1.1-1.2; neither change is on the PTY path, and `winit`, whose code neither touches, moved from 1.28-1.41 s by the run. On their branches: 1.70 s with another build using five cores (ADR 0045) and 1.53 s at load 1.4-2.2 (ADR 0046). The 1.52 s and 1.28 s before them are the tree with ADR 0041's painting and the kept session, the click and the agents' marks (ADR 0042-0044) in, on 2026-11-26 at load 1.2-1.5, a quieter machine than the one of the A/B above: the two are not an A/B of each other, and none of the three later changes is on the PTY or paint path.
 
 For ADR 0038 (a scope per window), four rounds with the scope on and off, in turn, at load 1.0-1.3: `wl` 2.39, 1.94, 1.89 and 1.93 s on against 1.78, 1.93, 1.78 and 2.07 s off (the first pair had a cold file cache; the rest average 1.92 against 1.93 s): the same within the noise, as it must be, since the scope changes where the shell is accounted and not what it does. The `scripts/bench.sh` run above, 2.01 s, is inside that spread. Startup to a window's first shell process, six launches in turn: 57, 59 and 59 ms without the scope, 65, 61 and 60 ms with it (the `systemd-run` that makes the scope runs in the shell's own process, and its probe overlaps the window's creation).
 
@@ -401,16 +401,17 @@ ADR 0039; not this machine, and a VM's numbers move from run to run)
 
 | What | Value |
 |---|---|
-| `axon.exe` | 1.8 MiB (1,880,576 bytes, v0.4.0; 1,690,112 at v0.3.0): no `wgpu` or `winit` in it |
+| `axon.exe` | 1.8 MiB (1,880,576 bytes, v0.4.0, the same after ADR 0049; 1,690,112 at v0.3.0): no `wgpu` or `winit` in it |
 | The release zip | 0.95 MB (`axon-x86_64-windows.zip`, v0.4.0) |
 | Idle CPU | 0 ms in 3 s (the self-test fails above 150 ms) |
-| Idle memory (working set, the process alone) | 30 MB (30.1 MB at v0.4.0): Windows counts the pages of `user32`, `gdi32` and the other system libraries the window needs |
+| Idle memory (working set, the process alone) | 30 MB (30.1 MB at v0.4.0, 30.0 after ADR 0049): Windows counts the pages of `user32`, `gdi32` and the other system libraries the window needs |
 | The self-test (a command typed and its output read, a directory change, clipboard, maximize and restore) | passes in under 2 s of steps |
 
 **History** (binary size and idle RSS with the default font; newest first)
 
 | Date | Change | Binary | Idle RSS `winit` | Idle RSS `wl` |
 |---|---|---|---|---|
+| 2026-11-27 | No `unsafe` (ADR 0049): `unsafe_code = "deny"`, allowed only in `xkb.rs`, `win.rs` and the mapping of the window's pixels (now sealed against shrinking); the clock chip's time zone from an own reader of the zone files (`tz.rs`, checked against glibc in 487 zones); the keymap read with `pread`; Windows' `Wake` in std's `OwnedHandle`; `malloc_trim` removed (0.2 MB after a toast, 0 at idle); flood 1.53 s, A/B 1.526 against 1.539 s; no new dependency; Windows exe 1,880,576 B (the same), 30.0 MB idle, 0 CPU (CI runner) | 8,596,704 B (+6.3 KB) | 150 MB | 18 MB |
 | 2026-11-27 | v0.4.0. The panel of SSH servers (ADR 0048): `Alt+H` and a title bar button, list with live status and when each was used, a pasted ssh command becomes an alias, import `~/.ssh/config`, export; servers in `~/.config/axon/ssh_config`, included from `~/.ssh/config`; a window in an ssh session is named after its server with a cyan dot; the palette lists `ssh <alias>`; no new dependency; panel open 22.6 MB, 0 ticks; flood 1.51 s; Windows exe 1,880,576 B (+190 KB), 30 MB idle, 0 CPU (CI runner) | 8,590,384 B (+195.7 KB) | 149 MB | 18 MB |
 | 2026-11-26 | v0.3.0. A split resized by dragging its gaps or with `Alt+Shift+arrows`, `Alt+=` evens it, the sizes kept with the group (ADR 0045, `panes::Tracks`); the agents' own marks (ADR 0046): Claude's burst, Codex's cloud with `>_`, Antigravity's arch, filled in their colours (14 px in the list, 16 in the overview), faint while Claude works and with an amber dot while it waits for you, a program's status glyph cut from its title (Claude Code's `✳` drew the UI font's missing-glyph box); no new dependency; a group of four split 21.3 MB, 0 ticks idle; a title that turns its mark costs 0-1 ticks in 10 s, 1-4 before; flood 1.49 s | 8,394,712 B (+28.2 KB) | 149 MB | 18 MB |
 | 2026-11-26 | The session kept between runs (ADR 0042, `[windows] restore`), a click on the typed line moves the shell's cursor (ADR 0043) and a window that runs `claude`, `codex` or `agy` shows the agent's mark, not a spinner (ADR 0044); no new dependency; the agent's window costs no timer (0 ticks in 5 s against 2 for a busy command); flood 1.52 s in `bench.sh` | 8,366,520 B (+24.3 KB over `5ed8214`) | 148 MB | 18 MB |
@@ -470,6 +471,7 @@ src/
 ├─ caret.rs     a click on the typed line: how many arrows move the shell's cursor to that cell; pure
 ├─ restore.rs   the session kept between runs: the file's format, where it lives, who owns it; pure
 ├─ context.rs   what the chips say: directory, git, Python, Kubernetes, time (read on a thread)
+├─ tz.rs        the local time's offset: own reader of the zone files (TZif, POSIX rules), as the C library reads them (Linux)
 ├─ settings.rs  the settings panel docked beside the grid (Font, Input and Windows pages)
 ├─ overlay.rs   the overlay kit: the `Overlay` trait, the stack that takes keys and pointer, the modal frame, text
 ├─ field.rs     a line of text being edited (caret, selection, paste) and its painting
@@ -490,7 +492,7 @@ src/
 ├─ view.rs      grid → cells for any renderer (damage, cursor, selection); `Fold`: the prompt docked at the bottom
 ├─ session.rs   Term + PTY thread; the shell of each OS (`pwsh`, `powershell`, `cmd` on Windows)
 ├─ plat.rs      the platform seam: `Event`, `Key`, `Mods`, cursor shapes, `Wake`; `Plat` is `wl::Wl` or `win::Win`
-├─ wl.rs        own Wayland client: wire protocol, window, shm buffers (Linux)
+├─ wl.rs        own Wayland client: wire protocol, window, shm buffers (their mapping: one of the three places allowed `unsafe`, ADR 0049) (Linux)
 ├─ win.rs       own Win32 window: layered, per-pixel alpha, own move/resize, keys, clipboard (Windows, ADR 0039)
 ├─ fallback.rs  the `winit` + `wgpu` app, the X11 fallback (Linux)
 ├─ wlapp.rs     the app on plat + soft.rs, on both systems: windows (a group's are shown split), keyboard, pointer, clipboard, one wait loop
@@ -499,7 +501,7 @@ src/
 │  ├─ hosts_ui.rs          the panel of servers, the app's side: connect, save, import, export; what the hook says of an ssh
 │  ├─ keep.rs              the session between runs: the snapshot, when it is written, opening it again
 │  └─ windows_overview.rs  the app's side of the overview: cards from the windows, the terminals' text for the previews
-├─ xkb.rs       keyboard layouts through libxkbcommon (dlopen)
+├─ xkb.rs       keyboard layouts through libxkbcommon (dlopen; allowed `unsafe` until the own keymap parser)
 ├─ input.rs     Keys → xterm sequences (pure)
 ├─ mouse.rs     mouse reports for programs (xterm 1000/1002/1003, SGR, UTF-8, classic; pure)
 ├─ design.rs    (tests) design board frames, own PNG encoder, incremental-repaint check
@@ -507,6 +509,9 @@ src/
 design/board.html   the design board (frames from scripts/design.sh)
 site/index.html     the website (GitHub Pages), built by scripts/site.sh
 ```
+
+No `unsafe` (ADR 0049): `Cargo.toml` denies it for the crate, and only `xkb.rs`, `win.rs` and the mapping of the
+window's pixels in `wl.rs` allow it, by name. Anything else that needs it does not build.
 
 Flow: `wl_keyboard → xkb → input → PTY → Term (alacritty) → coalesced Wakeup → View::build → soft → wl_shm buffer` (Linux); on Windows the keys come from `win.rs` (`ToUnicodeEx`), the PTY is ConPTY and the buffer goes out with `UpdateLayeredWindow`.
 

@@ -43,7 +43,7 @@ is most of the rest. A window with several panes (framed) still takes the whole 
 
 **The UI font.** `UiFont::shared` hands the settings panel and the overlays one parsed font (a `Weak` finds the live one:
 no copy kept, nothing to invalidate) and walks the font directories once for all candidates (`find_any`; before up to six
-walks, 1,875 `statx` for one toast); `release_memory` (`malloc_trim`) after the last holder goes gives the pages back: a
+walks, 1,875 `statx` for one toast); `release_memory` (`malloc_trim`) after the last holder goes gives the pages back (removed by [0049](../core/0049-no-unsafe-code.md): with the font shared since 0036 it gave back ~0.2 MB): a
 window with three shells measured 8.2 MB of anonymous memory, 11.8 after a toast, now 9.3 (a toast and the settings
 panel together hold one 3.6 MB font, not two). The font is parsed again at each open from empty (12 ms): the alternative,
 keeping it, is a permanent 3.6 MB. `find_family("Ubuntu Sans")` no longer picks `UbuntuSansMono` (same length, directory

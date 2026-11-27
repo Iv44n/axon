@@ -20,7 +20,8 @@ Numbers and caveats: [measurements](../performance/measurements.md).
 
 ## 1. Font reader and rasterizer (replaces `fontdue`)
 - **Payoff:** anon -45 MB (Cascadia NF) and -314 MB plus a ~600 ms stall (CJK), measured.
-- **Layout:** memory-map the file (file-backed, shared, no anon). `cmap` formats 4 and 12 into a
+- **Layout:** memory-map the file (file-backed, shared, no anon); mapping needs `unsafe`, which
+  [0049](../decisions/core/0049-no-unsafe-code.md) allows only at three named places: argue the exception there, or read it. `cmap` formats 4 and 12 into a
   flat `u16` glyph-id array per 256-code-point page. `loca`/`glyf`/`hmtx` read in place.
   Quadratic outlines to 8-bit scanline coverage, written straight into the atlas.
 - **Tile = glyph id** for the primary font, baked eagerly (13.5k glyphs x 171 B = 2.3 MB; measure

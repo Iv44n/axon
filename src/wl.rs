@@ -21,8 +21,8 @@ use std::{
 use crate::plat::{Event, cursor};
 use rustix::{
     event::{PollFd, PollFlags, poll},
-    fs::{MemfdFlags, ftruncate, memfd_create},
-    mm::{MapFlags, ProtFlags, mmap, munmap},
+    fs::{MemfdFlags, SealFlags, fcntl_add_seals, ftruncate, memfd_create},
+    io::pread,
     net::{
         RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SendAncillaryBuffer, SendAncillaryMessage, SendFlags,
         recvmsg, sendmsg,
@@ -108,10 +108,9 @@ enum Arg<'a> {
 }
 
 /// One shared-memory buffer and its mapping.
-#[derive(Clone, Copy)]
 struct Slot {
     id: u32,
-    ptr: *mut u32,
+    px: Option<shm::Pixels>,
     w: usize,
     h: usize,
     /// The compositor may still be reading it (between `attach` and `release`).
@@ -119,14 +118,52 @@ struct Slot {
 }
 
 impl Slot {
-    const EMPTY: Slot = Slot { id: 0, ptr: std::ptr::null_mut(), w: 0, h: 0, busy: false };
+    const EMPTY: Slot = Slot { id: 0, px: None, w: 0, h: 0, busy: false };
 
     fn allocated(&self) -> bool {
         self.id != 0
     }
+}
 
-    fn len(&self) -> usize {
-        self.w * self.h
+/// The shared memory the window's pixels live in, mapped: the Wayland client's only `unsafe` (ADR 0049). Writing them
+/// with `pwrite` instead would copy every frame whole and keep a second frame. The pool's file is sealed against
+/// shrinking, so the mapping stays valid whatever the compositor does with its copy of the descriptor.
+#[allow(unsafe_code)]
+mod shm {
+    use std::{io, os::fd::AsFd, ptr::NonNull};
+
+    use rustix::mm::{MapFlags, ProtFlags, mmap, munmap};
+
+    pub struct Pixels {
+        ptr: NonNull<u32>,
+        len: usize,
+    }
+
+    impl Pixels {
+        /// Maps `len` pixels of `fd`, a file of at least `len * 4` bytes that cannot shrink.
+        pub fn map(fd: impl AsFd, len: usize) -> io::Result<Pixels> {
+            // SAFETY: a new shared mapping, not aliased by anything of ours; unmapped in `drop`.
+            let ptr = unsafe { mmap(std::ptr::null_mut(), len * 4, ProtFlags::READ | ProtFlags::WRITE, MapFlags::SHARED, fd, 0)? };
+            let ptr = NonNull::new(ptr.cast::<u32>()).ok_or(io::ErrorKind::OutOfMemory)?;
+            Ok(Pixels { ptr, len })
+        }
+
+        pub fn get(&self) -> &[u32] {
+            // SAFETY: the mapping holds `len` pixels for as long as `self` lives; `&self` keeps out writers of ours.
+            unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
+        }
+
+        pub fn get_mut(&mut self) -> &mut [u32] {
+            // SAFETY: as in `get`, and `&mut self` makes this the only view of ours.
+            unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
+        }
+    }
+
+    impl Drop for Pixels {
+        fn drop(&mut self) {
+            // SAFETY: the mapping made in `map`, with its length; no slice of it outlives `self`.
+            unsafe { munmap(self.ptr.as_ptr().cast(), self.len * 4).ok() };
+        }
     }
 }
 
@@ -862,17 +899,18 @@ impl Wl {
 
     fn alloc_slot(&mut self, i: usize, w: usize, h: usize) -> io::Result<()> {
         let bytes = w * h * 4;
-        let fd = memfd_create("axon-shm", MemfdFlags::CLOEXEC)?;
+        let fd = memfd_create("axon-shm", MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING)?;
         ftruncate(&fd, bytes as u64)?;
-        // SAFETY: a fresh shared mapping of a file we just sized; unmapped in `free_slot`.
-        let ptr = unsafe { mmap(std::ptr::null_mut(), bytes, ProtFlags::READ | ProtFlags::WRITE, MapFlags::SHARED, &fd, 0)? };
+        // The compositor gets the file too: sealed, nobody can make it shorter than the mapping (a fault, not an error).
+        fcntl_add_seals(&fd, SealFlags::SHRINK | SealFlags::SEAL)?;
+        let px = shm::Pixels::map(&fd, w * h)?;
         let pool = self.new_obj(Kind::Pool);
         self.send(self.shm, 0, [Arg::U(pool), Arg::Fd(fd), Arg::I(bytes as i32)]); // create_pool
         let buf = self.new_obj(Kind::Buffer(i as u8));
         let (wi, hi) = (w as i32, h as i32);
         self.send(pool, 0, [Arg::U(buf), Arg::I(0), Arg::I(wi), Arg::I(hi), Arg::I(wi * 4), Arg::U(ARGB8888)]); // create_buffer
         self.send(pool, 1, []); // destroy: the buffer keeps the memory alive
-        self.slots[i] = Slot { id: buf, ptr: ptr as *mut u32, w, h, busy: false };
+        self.slots[i] = Slot { id: buf, px: Some(px), w, h, busy: false };
         self.flush()
     }
 
@@ -881,9 +919,8 @@ impl Wl {
         if s.allocated() {
             self.kinds[s.id as usize] = Kind::None; // a late `release` must not touch the next buffer in this slot
             self.send(s.id, 0, []); // wl_buffer.destroy
-            // SAFETY: the mapping created in `alloc_slot` with this length.
-            unsafe { munmap(s.ptr as *mut _, s.len() * 4).ok() };
         }
+        // `s` goes, and its mapping with it.
     }
 
     /// The compositor owes us a frame callback or a buffer release and has been silent too long (it
@@ -918,13 +955,13 @@ impl Wl {
             if !self.slots[o].allocated() {
                 self.alloc_slot(o, w, h).ok()?;
             }
-            // SAFETY: two distinct mappings of `len` pixels each.
-            unsafe { std::ptr::copy_nonoverlapping(self.slots[cur].ptr, self.slots[o].ptr, self.slots[o].len()) };
+            let [a, b] = &mut self.slots;
+            let (from, to) = if cur == 0 { (a, b) } else { (b, a) };
+            to.px.as_mut()?.get_mut().copy_from_slice(from.px.as_ref()?.get());
             self.cur = o;
         }
-        let s = self.slots[self.cur];
-        // SAFETY: the mapping holds `w * h` pixels and nothing else touches a non-busy buffer.
-        Some(unsafe { std::slice::from_raw_parts_mut(s.ptr, s.len()) })
+        // Nothing else of ours touches a buffer the compositor is not reading.
+        self.slots[self.cur].px.as_mut().map(shm::Pixels::get_mut)
     }
 
     /// Shows what was drawn into the slice `framebuffer` returned, and asks for a frame callback.
@@ -941,15 +978,21 @@ impl Wl {
     }
 }
 
-/// The keymap the compositor shares: `size` bytes of text in `fd` (mapped private, as the protocol asks).
+/// The keymap the compositor shares: `size` bytes of text in `fd`. Read at offsets (`pread`), not mapped: no
+/// `unsafe`, and the file's position, which other clients may share, is left where it was.
 fn read_keymap(fd: &OwnedFd, size: usize) -> Option<String> {
-    // SAFETY: a read-only private mapping of `size` bytes, unmapped before returning.
-    let ptr = unsafe { mmap(std::ptr::null_mut(), size, ProtFlags::READ, MapFlags::PRIVATE, fd, 0).ok()? };
-    // SAFETY: the mapping is `size` bytes long and nothing else writes to a private mapping of ours.
-    let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, size) };
-    let text = String::from_utf8_lossy(bytes.split(|&b| b == 0).next().unwrap_or(&[])).into_owned();
-    unsafe { munmap(ptr, size).ok() };
-    Some(text)
+    let mut bytes = vec![0u8; size];
+    let mut at = 0;
+    while at < size {
+        match pread(fd, &mut bytes[at..], at as u64) {
+            Ok(0) => break,
+            Ok(n) => at += n,
+            Err(rustix::io::Errno::INTR) => {}
+            Err(_) => return None,
+        }
+    }
+    let text = bytes[..at].split(|&b| b == 0).next().unwrap_or(&[]);
+    Some(String::from_utf8_lossy(text).into_owned())
 }
 
 impl Drop for Wl {
@@ -986,5 +1029,37 @@ mod tests {
         let mut a = Args { b: &[1, 0], p: 0 };
         assert_eq!(a.u32(), 0);
         assert_eq!(a.str(), "");
+    }
+
+    #[test]
+    fn the_keymap_is_read_whole_without_moving_the_shared_position() {
+        use std::io::{Seek, Write};
+        let text = "xkb_keymap {\n".to_string() + &"\tkey <AE01> { [ 1, exclam ] };\n".repeat(4000) + "};\n";
+        let fd = memfd_create("axon-keymap-test", MemfdFlags::CLOEXEC).unwrap();
+        let mut f = std::fs::File::from(fd.try_clone().unwrap());
+        f.write_all(text.as_bytes()).unwrap();
+        f.write_all(&[0]).unwrap();
+        // Another holder of the file left its position in the middle: the read must not care, nor move it.
+        f.seek(std::io::SeekFrom::Start(5)).unwrap();
+        assert_eq!(read_keymap(&fd, text.len() + 1).as_deref(), Some(&*text), "the text, without its NUL");
+        assert_eq!(f.stream_position().unwrap(), 5);
+        assert_eq!(read_keymap(&fd, 12).as_deref(), Some("xkb_keymap {"), "only the size it was told");
+        assert_eq!(read_keymap(&fd, text.len() + 100).as_deref(), Some(&*text), "a size past the end stops at the end");
+    }
+
+    #[test]
+    fn a_second_buffer_starts_with_the_pixels_of_the_first() {
+        let pool = |len: usize| {
+            let fd = memfd_create("axon-shm-test", MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING).unwrap();
+            ftruncate(&fd, len as u64 * 4).unwrap();
+            fcntl_add_seals(&fd, SealFlags::SHRINK | SealFlags::SEAL).unwrap();
+            assert!(ftruncate(&fd, 0).is_err(), "sealed: it cannot shrink under the mapping");
+            shm::Pixels::map(&fd, len).unwrap()
+        };
+        let (mut a, mut b) = (pool(300 * 200), pool(300 * 200));
+        a.get_mut().iter_mut().enumerate().for_each(|(i, p)| *p = i as u32);
+        b.get_mut().copy_from_slice(a.get());
+        assert_eq!(b.get()[299 * 200 + 7], 299 * 200 + 7);
+        assert_eq!(a.get(), b.get());
     }
 }

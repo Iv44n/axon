@@ -5,6 +5,9 @@
 //! `libxkbcommon.so.0` is missing the window still opens, it just cannot type. The plan is an own
 //! parser of the keymap text (`knowledge/plan/software-renderer.md`, stage C); until then this is
 //! the one place that knows the C API, behind a handful of plain functions.
+//!
+//! Every call into the library is `unsafe`: this module is allowed it (ADR 0049), and the own parser takes it away.
+#![allow(unsafe_code)]
 use crate::plat::{Key, Mods};
 use std::{
     ffi::{CStr, CString, c_char, c_int, c_void},

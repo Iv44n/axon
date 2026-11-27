@@ -40,6 +40,11 @@ windows-sys = { version = "0.59.0", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+# No `unsafe` (ADR 0049): the compiler refuses it everywhere but where a module allows it by name, at the system's edge
+# (`xkb.rs`, `win.rs`, the mapping of `wl.rs`).
+[lints.rust]
+unsafe_code = "deny"
+
 [profile.release]
 opt-level = 3
 lto = "fat"

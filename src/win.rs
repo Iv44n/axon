@@ -10,6 +10,9 @@
 //!
 //! Messages are pumped by `read_events` and the window procedure turns them into `Event`s in a queue; no reference to
 //! the state lives across a call into the system, because the window procedure runs inside many of them.
+//!
+//! Every call into Win32 is `unsafe`: this module is allowed it (ADR 0049), the rest of the crate is not.
+#![allow(unsafe_code)]
 use std::{
     collections::VecDeque,
     ffi::c_void,
@@ -45,7 +48,7 @@ use windows_sys::{
 
 use crate::{
     chrome,
-    plat::{Event, Key, Mods, Wake, cursor},
+    plat::{Event, Key, Mods, cursor},
 };
 
 /// Smallest window the title bar and a usable grid fit in (the same as the Wayland client's).
@@ -320,7 +323,7 @@ impl Win {
     /// Blocks until a message arrives, `wake` is signalled or `timeout` passes (`None` = forever): `(messages may be
     /// waiting, wake was signalled)`. Asking for the messages is cheap, so the first is always true.
     pub fn wait_wake(&self, wake: &Wake, timeout: Option<Duration>) -> io::Result<(bool, bool)> {
-        let woken = wait_messages(Some(wake.0), timeout)?;
+        let woken = wait_messages(Some(wake.raw()), timeout)?;
         Ok((true, woken))
     }
 
@@ -582,6 +585,45 @@ unsafe fn open_clipboard(hwnd: HWND) -> bool {
 }
 
 /// Waits for a message in this thread's queue or for `handle`, up to `timeout`. True when it was `handle`.
+/// What the PTY threads signal to wake the app's loop (`plat::Wake`): an auto-reset event, waited on together with
+/// the message queue. `OwnedHandle` closes it and may cross threads, so it needs no `Drop` and no `unsafe impl`.
+pub struct Wake(std::os::windows::io::OwnedHandle);
+
+impl Wake {
+    pub fn new() -> io::Result<Wake> {
+        use std::os::windows::io::{FromRawHandle, OwnedHandle};
+        // SAFETY: no security attributes and no name; a handle that is not null is a new one, ours alone to close.
+        unsafe {
+            let h = windows_sys::Win32::System::Threading::CreateEventW(null(), 0, 0, null());
+            if h.is_null() { Err(io::Error::last_os_error()) } else { Ok(Wake(OwnedHandle::from_raw_handle(h))) }
+        }
+    }
+
+    fn raw(&self) -> HANDLE {
+        std::os::windows::io::AsRawHandle::as_raw_handle(&self.0)
+    }
+
+    /// Makes the wait return; any number of signals before it count as one.
+    pub fn signal(&self) {
+        // SAFETY: a live event handle.
+        unsafe { windows_sys::Win32::System::Threading::SetEvent(self.raw()) };
+    }
+
+    /// Takes the signal back, so the next wait blocks again.
+    pub fn clear(&self) {
+        // SAFETY: a live event handle.
+        unsafe { windows_sys::Win32::System::Threading::ResetEvent(self.raw()) };
+    }
+}
+
+/// The local hour and minute, as the system's time zone says (the clock chip, `context.rs`).
+pub fn local_hm() -> (u32, u32) {
+    let mut t = SYSTEMTIME { wYear: 0, wMonth: 0, wDayOfWeek: 0, wDay: 0, wHour: 0, wMinute: 0, wSecond: 0, wMilliseconds: 0 };
+    // SAFETY: `t` is a valid SYSTEMTIME for the call to fill.
+    unsafe { windows_sys::Win32::System::SystemInformation::GetLocalTime(&mut t) };
+    ((t.wHour as u32).min(23), (t.wMinute as u32).min(59))
+}
+
 fn wait_messages(handle: Option<HANDLE>, timeout: Option<Duration>) -> io::Result<bool> {
     // Whole milliseconds, rounded up: a wait that ends a hair early would only go round again.
     let ms = timeout.map_or(INFINITE, |d| (d.as_nanos().div_ceil(1_000_000)).min(u128::from(u32::MAX - 1)) as u32);

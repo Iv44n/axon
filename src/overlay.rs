@@ -542,10 +542,10 @@ impl Stack {
         self.text.get_or_insert_with(Text::load);
     }
 
-    /// Drops the font once nothing is shown, and gives its memory back (it is kept by whoever else shares it).
+    /// Drops the font once nothing is shown (it is kept by whoever else shares it).
     fn trim(&mut self) {
-        if self.is_empty() && self.text.take().is_some() {
-            crate::font::release_memory();
+        if self.is_empty() {
+            self.text = None;
         }
     }
 

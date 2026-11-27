@@ -14,7 +14,7 @@ use alacritty_terminal::event::Notify;
 use super::{App, groups_ui::Spawn};
 use crate::{
     chrome::Hit,
-    commands, font,
+    commands,
     groups::Group,
     hosts::{Effect, Hosts},
     i18n::{Str, tr},
@@ -100,7 +100,6 @@ impl App {
         if self.hosts.take().is_none() {
             return;
         }
-        font::release_memory();
         self.ui.hosts = false;
         if self.hover == Hit::Prefs {
             self.hover = Hit::Client;
