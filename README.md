@@ -401,17 +401,17 @@ ADR 0039; not this machine, and a VM's numbers move from run to run)
 
 | What | Value |
 |---|---|
-| `axon.exe` | 1.8 MiB (1,880,576 bytes, v0.4.0; 1,690,112 at v0.3.0): no `wgpu` or `winit` in it |
+| `axon.exe` | 1.8 MiB (1,880,576 bytes, v0.4.0, the same after ADR 0049; 1,690,112 at v0.3.0): no `wgpu` or `winit` in it |
 | The release zip | 0.95 MB (`axon-x86_64-windows.zip`, v0.4.0) |
 | Idle CPU | 0 ms in 3 s (the self-test fails above 150 ms) |
-| Idle memory (working set, the process alone) | 30 MB (30.1 MB at v0.4.0): Windows counts the pages of `user32`, `gdi32` and the other system libraries the window needs |
+| Idle memory (working set, the process alone) | 30 MB (30.1 MB at v0.4.0, 30.0 after ADR 0049): Windows counts the pages of `user32`, `gdi32` and the other system libraries the window needs |
 | The self-test (a command typed and its output read, a directory change, clipboard, maximize and restore) | passes in under 2 s of steps |
 
 **History** (binary size and idle RSS with the default font; newest first)
 
 | Date | Change | Binary | Idle RSS `winit` | Idle RSS `wl` |
 |---|---|---|---|---|
-| 2026-11-27 | No `unsafe` (ADR 0049): `unsafe_code = "deny"`, allowed only in `xkb.rs`, `win.rs` and the mapping of the window's pixels (now sealed against shrinking); the clock chip's time zone from an own reader of the zone files (`tz.rs`, checked against glibc in 487 zones); the keymap read with `pread`; Windows' `Wake` in std's `OwnedHandle`; `malloc_trim` removed (0.2 MB after a toast, 0 at idle); flood 1.53 s, A/B 1.526 against 1.539 s; no new dependency | 8,596,704 B (+6.3 KB) | 150 MB | 18 MB |
+| 2026-11-27 | No `unsafe` (ADR 0049): `unsafe_code = "deny"`, allowed only in `xkb.rs`, `win.rs` and the mapping of the window's pixels (now sealed against shrinking); the clock chip's time zone from an own reader of the zone files (`tz.rs`, checked against glibc in 487 zones); the keymap read with `pread`; Windows' `Wake` in std's `OwnedHandle`; `malloc_trim` removed (0.2 MB after a toast, 0 at idle); flood 1.53 s, A/B 1.526 against 1.539 s; no new dependency; Windows exe 1,880,576 B (the same), 30.0 MB idle, 0 CPU (CI runner) | 8,596,704 B (+6.3 KB) | 150 MB | 18 MB |
 | 2026-11-27 | v0.4.0. The panel of SSH servers (ADR 0048): `Alt+H` and a title bar button, list with live status and when each was used, a pasted ssh command becomes an alias, import `~/.ssh/config`, export; servers in `~/.config/axon/ssh_config`, included from `~/.ssh/config`; a window in an ssh session is named after its server with a cyan dot; the palette lists `ssh <alias>`; no new dependency; panel open 22.6 MB, 0 ticks; flood 1.51 s; Windows exe 1,880,576 B (+190 KB), 30 MB idle, 0 CPU (CI runner) | 8,590,384 B (+195.7 KB) | 149 MB | 18 MB |
 | 2026-11-26 | v0.3.0. A split resized by dragging its gaps or with `Alt+Shift+arrows`, `Alt+=` evens it, the sizes kept with the group (ADR 0045, `panes::Tracks`); the agents' own marks (ADR 0046): Claude's burst, Codex's cloud with `>_`, Antigravity's arch, filled in their colours (14 px in the list, 16 in the overview), faint while Claude works and with an amber dot while it waits for you, a program's status glyph cut from its title (Claude Code's `✳` drew the UI font's missing-glyph box); no new dependency; a group of four split 21.3 MB, 0 ticks idle; a title that turns its mark costs 0-1 ticks in 10 s, 1-4 before; flood 1.49 s | 8,394,712 B (+28.2 KB) | 149 MB | 18 MB |
 | 2026-11-26 | The session kept between runs (ADR 0042, `[windows] restore`), a click on the typed line moves the shell's cursor (ADR 0043) and a window that runs `claude`, `codex` or `agy` shows the agent's mark, not a spinner (ADR 0044); no new dependency; the agent's window costs no timer (0 ticks in 5 s against 2 for a busy command); flood 1.52 s in `bench.sh` | 8,366,520 B (+24.3 KB over `5ed8214`) | 148 MB | 18 MB |
