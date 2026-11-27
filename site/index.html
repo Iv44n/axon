@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title data-i18n="meta.title">axon · a native terminal for Linux and Windows</title>
-<meta data-i18n-content="meta.desc" name="description" content="A native terminal emulator for Linux and Windows, written in Rust: its own window layer (Wayland, Win32) and a CPU renderer, 18 MB of memory and 0 % CPU when idle on Linux, windows in groups shown side by side, a command palette and prompt chips.">
+<meta data-i18n-content="meta.desc" name="description" content="A native terminal emulator for Linux and Windows, written in Rust: its own window layer (Wayland, Win32) and a CPU renderer, 18 MB of memory and 0 % CPU when idle on Linux, windows in groups shown side by side, a command palette, prompt chips and SSH servers by alias.">
 <meta name="theme-color" content="#09090a">
 <meta property="og:type" content="website">
 <meta property="og:title" content="axon · a native terminal for Linux and Windows">
-<meta property="og:description" content="Own window layer (Wayland, Win32), CPU renderer, 0 % CPU idle. Groups shown as split views, a command palette, prompt chips.">
+<meta property="og:description" content="Own window layer (Wayland, Win32), CPU renderer, 0 % CPU idle. Groups shown as split views, a command palette, prompt chips, SSH servers by alias.">
 <meta property="og:url" content="https://iv44n.github.io/axon/">
 <meta property="og:image" content="https://iv44n.github.io/axon/shots/split.png">
 <meta name="twitter:card" content="summary_large_image">
@@ -287,7 +287,7 @@ footer nav { font-size: 13.5px; }
       <h1 data-i18n="hero.h1">A terminal that idles at <em>18&nbsp;MB</em>.</h1>
       <p data-i18n="hero.lede" class="lede">axon draws itself: its own window layer (a Wayland client on Linux, a Win32 window on Windows) and a CPU
         renderer that paints only the rows that changed, with no GPU stack loaded. Windows in groups shown side by side,
-        a command palette, prompt chips, and 0&nbsp;% CPU while nothing happens.</p>
+        a command palette, prompt chips, SSH servers by alias, and 0&nbsp;% CPU while nothing happens.</p>
 
       <div class="os-row">
         <div class="os" role="group" data-i18n-aria-label="os.group" aria-label="Operating system">
@@ -327,11 +327,11 @@ footer nav { font-size: 13.5px; }
     <div class="stats">
       <div class="stat"><b>18<small>MB</small></b><span data-i18n="stat.mem">memory with an idle shell</span></div>
       <div class="stat"><b>0<small>%</small></b><span data-i18n="stat.cpu">CPU when idle: it paints only on events</span></div>
-      <div class="stat"><b>8.0<small>MiB</small></b><span data-i18n="stat.bin">one binary: fat LTO, stripped</span></div>
-      <div class="stat"><b>1.83<small>s</small></b><span data-i18n="stat.speed">to print 100 MB of text</span></div>
+      <div class="stat"><b>8.2<small>MiB</small></b><span data-i18n="stat.bin">one binary: fat LTO, stripped</span></div>
+      <div class="stat"><b>1.51<small>s</small></b><span data-i18n="stat.speed">to print 100 MB of text</span></div>
     </div>
-    <p data-i18n="stats.note" class="stats-note">RSS on the default Wayland backend with JetBrains Mono; Ryzen 5 5600H, GNOME 50, 2026-11-25. On Windows, measured on a GitHub
-      runner: a 1.6&nbsp;MiB exe, 30&nbsp;MB in use and 0&nbsp;% CPU when idle. Method and history in the
+    <p data-i18n="stats.note" class="stats-note">RSS on the default Wayland backend with JetBrains Mono; Ryzen 5 5600H, GNOME 50, 2026-11-27 (v0.4.0). On Windows, measured on a GitHub
+      runner: a 1.8&nbsp;MiB exe, 30&nbsp;MB in use and 0&nbsp;% CPU when idle. Method and history in the
       <a href="https://github.com/Iv44n/axon#benchmarks">README's benchmarks</a>.</p>
   </div>
 
@@ -409,6 +409,24 @@ footer nav { font-size: 13.5px; }
           </div>
           <div class="desk cool"><img data-i18n-alt="alt.settings" src="shots/settings.png" width="952" height="672" loading="lazy" decoding="async"
             alt="The settings panel docked beside the terminal: font, size, weight, bold text, letter spacing, line height, opacity and blur."></div>
+        </div>
+
+        <div class="feature">
+          <div class="copytext">
+            <span data-i18n="h.tag" class="tag">SSH servers</span>
+            <h3 data-i18n="h.h3">Paste the long ssh command once. From then on, <code>ssh web</code>.</h3>
+            <p data-i18n="h.p"><kbd>Alt</kbd><kbd>H</kbd> opens your servers beside the terminal, the last used first, with a green light on the
+              ones a window is connected to. Paste <code>ssh -i key.pem user@host -p 2222</code> and it fills in the address, user,
+              port and key, and proposes a name.</p>
+            <ul>
+              <li data-i18n="h.l1">Kept in a plain OpenSSH file that <code>~/.ssh/config</code> includes: the alias works in any shell</li>
+              <li data-i18n="h.l2">A click goes to the window already connected, types it at an empty prompt, or opens a new window</li>
+              <li data-i18n="h.l3">A window in an ssh session takes the server's name and a cyan dot</li>
+              <li data-i18n="h.l4">Import your <code>~/.ssh/config</code>, its mistakes pointed out line by line</li>
+            </ul>
+          </div>
+          <div class="desk"><img data-i18n-alt="alt.hosts" src="shots/hosts.png" width="952" height="672" loading="lazy" decoding="async"
+            alt="The panel of SSH servers docked beside the terminal: a search box and four servers with their addresses, one connected with a green light, the others with how long ago they were used; in the panel of windows, a window named web with a cyan dot."></div>
         </div>
       </div>
 
@@ -574,6 +592,7 @@ footer nav { font-size: 13.5px; }
         <div class="key"><span data-i18n="k.group">New group</span><span><kbd>Alt</kbd><kbd>G</kbd></span></div>
         <div class="key"><span data-i18n="k.focus">Focus the previous / next pane</span><span><kbd>Alt</kbd><kbd>,</kbd> <kbd>Alt</kbd><kbd>.</kbd></span></div>
         <div class="key"><span data-i18n="k.settings">Settings panel</span><span><kbd>Ctrl</kbd><kbd>,</kbd></span></div>
+        <div class="key"><span data-i18n="k.hosts">SSH servers</span><span><kbd>Alt</kbd><kbd>H</kbd></span></div>
         <div class="key"><span data-i18n="k.panel">Show or hide the windows' panel</span><span><kbd>Alt</kbd><kbd>B</kbd></span></div>
         <div class="key"><span data-i18n="k.copy">Copy / paste</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>C</kbd> <kbd>V</kbd></span></div>
         <div class="key"><span data-i18n="k.font">Font size</span><span><kbd>Ctrl</kbd><kbd>+</kbd> <kbd>-</kbd> <kbd>0</kbd></span></div>
@@ -604,7 +623,7 @@ footer nav { font-size: 13.5px; }
 (function () {
   var ES = {
   "meta.title": "axon · una terminal nativa para Linux y Windows",
-  "meta.desc": "Un emulador de terminal nativo para Linux y Windows, escrito en Rust: su propia capa de ventanas (Wayland, Win32) y un renderizador por CPU, 18 MB de memoria y 0 % de CPU en reposo en Linux, ventanas en grupos mostradas lado a lado, una paleta de comandos y chips en el prompt.",
+  "meta.desc": "Un emulador de terminal nativo para Linux y Windows, escrito en Rust: su propia capa de ventanas (Wayland, Win32) y un renderizador por CPU, 18 MB de memoria y 0 % de CPU en reposo en Linux, ventanas en grupos mostradas lado a lado, una paleta de comandos, chips en el prompt y servidores SSH por alias.",
   "nav.sections": "Secciones",
   "nav.features": "Funciones",
   "nav.numbers": "Cifras",
@@ -614,7 +633,7 @@ footer nav { font-size: 13.5px; }
   "hero.eyebrow": "Terminal nativa · Linux · Windows · Rust",
   "hero.h1": "Una terminal que en reposo usa <em>18&nbsp;MB</em>.",
   "os.group": "Sistema operativo",
-  "hero.lede": "axon se dibuja a sí mismo: su propia capa de ventanas (un cliente Wayland en Linux, una ventana Win32 en Windows) y un renderizador por CPU que pinta solo las filas que cambiaron, sin cargar ninguna pila de GPU. Ventanas en grupos mostradas lado a lado, una paleta de comandos, chips en el prompt y 0&nbsp;% de CPU mientras no pasa nada.",
+  "hero.lede": "axon se dibuja a sí mismo: su propia capa de ventanas (un cliente Wayland en Linux, una ventana Win32 en Windows) y un renderizador por CPU que pinta solo las filas que cambiaron, sin cargar ninguna pila de GPU. Ventanas en grupos mostradas lado a lado, una paleta de comandos, chips en el prompt, servidores SSH por alias y 0&nbsp;% de CPU mientras no pasa nada.",
   "hero.bar": "instalación",
   "copy.aria": "Copiar el comando de instalación",
   "hero.under": "Linux en x86_64 o aarch64, glibc 2.35 o superior. Se instala en <code>~/.local</code> con una entrada en el lanzador de aplicaciones. <a href=\"#install\">Otras formas</a>",
@@ -625,7 +644,7 @@ footer nav { font-size: 13.5px; }
   "stat.cpu": "de CPU en reposo: solo pinta ante eventos",
   "stat.bin": "un solo binario: LTO completo, sin símbolos",
   "stat.speed": "para imprimir 100 MB de texto",
-  "stats.note": "RSS con el backend Wayland por defecto y JetBrains Mono; Ryzen 5 5600H, GNOME 50, 2026-11-25. En Windows, medido en un runner de GitHub: un exe de 1,6&nbsp;MiB, 30&nbsp;MB en uso y 0&nbsp;% de CPU en reposo. Método e historial en los <a href=\"https://github.com/Iv44n/axon#benchmarks\">benchmarks del README</a>.",
+  "stats.note": "RSS con el backend Wayland por defecto y JetBrains Mono; Ryzen 5 5600H, GNOME 50, 2026-11-27 (v0.4.0). En Windows, medido en un runner de GitHub: un exe de 1,8&nbsp;MiB, 30&nbsp;MB en uso y 0&nbsp;% de CPU en reposo. Método e historial en los <a href=\"https://github.com/Iv44n/axon#benchmarks\">benchmarks del README</a>.",
   "feat.eyebrow": "Funciones",
   "feat.h2": "Cristal tranquilo, un acento ámbar y las herramientas que buscas.",
   "feat.lede": "Cristal oscuro translúcido con líneas finas en lugar de paneles; cada píxel del marco se calcula, sin imágenes. El resto va de moverte rápido entre muchas shells.",
@@ -655,6 +674,14 @@ footer nav { font-size: 13.5px; }
   "s.p1": "<kbd>Ctrl</kbd><kbd>,</kbd> acopla los ajustes junto a la cuadrícula, así juzgas la fuente en tu propia terminal mientras la cambias. Sin botón Guardar: cada cambio va a <code>~/.config/axon/config.toml</code> al instante, respetando tus comentarios.",
   "s.p2": "O edita el archivo a mano y pulsa <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>R</kbd>.",
   "alt.settings": "El panel de ajustes acoplado junto a la terminal: fuente, tamaño, grosor, texto en negrita, espaciado entre letras, interlineado, opacidad y desenfoque.",
+  "h.tag": "Servidores SSH",
+  "h.h3": "Pega una vez el comando ssh largo. Desde entonces, <code>ssh web</code>.",
+  "h.p": "<kbd>Alt</kbd><kbd>H</kbd> abre tus servidores junto a la terminal, el último usado primero, con una luz verde en los que tienen una ventana conectada. Pega <code>ssh -i llave.pem usuario@host -p 2222</code> y se rellenan la dirección, el usuario, el puerto y la llave, con un nombre propuesto.",
+  "h.l1": "Se guardan en un archivo normal de OpenSSH que <code>~/.ssh/config</code> incluye: el alias funciona en cualquier shell",
+  "h.l2": "Un clic te lleva a la ventana ya conectada, lo escribe en un prompt vacío o abre una ventana nueva",
+  "h.l3": "Una ventana en una sesión ssh toma el nombre del servidor y un punto cian",
+  "h.l4": "Importa tu <code>~/.ssh/config</code>, con sus errores señalados línea a línea",
+  "alt.hosts": "El panel de servidores SSH acoplado junto a la terminal: un buscador y cuatro servidores con sus direcciones, uno conectado con una luz verde y los demás con cuánto hace que se usaron; en el panel de ventanas, una ventana llamada web con un punto cian.",
   "cell1.h": "Su propio cliente Wayland",
   "cell1.p": "Sin toolkit, sin Vulkan ni GL: la cuadrícula se pinta en la CPU directamente en un buffer <code>wl_shm</code>. X11 usa un respaldo con <code>winit</code> + <code>wgpu</code>.",
   "cell2.h": "Emulación VT completa",
@@ -708,6 +735,7 @@ footer nav { font-size: 13.5px; }
   "k.group": "Nuevo grupo",
   "k.focus": "Enfocar el panel anterior / siguiente",
   "k.settings": "Panel de ajustes",
+  "k.hosts": "Servidores SSH",
   "k.panel": "Mostrar u ocultar el panel de ventanas",
   "k.copy": "Copiar / pegar",
   "k.font": "Tamaño de fuente",

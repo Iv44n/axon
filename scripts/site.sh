@@ -23,7 +23,7 @@ done
 
 if [ "$SHOTS" = 1 ]; then
   # site/shots/<name>.png <- design/frames/<scene>.png
-  for pair in split:panes-3 groups:group-dialog palette:palette-typed overview:overview chips:chips settings:prefs; do
+  for pair in split:panes-3 groups:group-dialog palette:palette-typed overview:overview chips:chips settings:prefs hosts:hosts; do
     frame="design/frames/${pair#*:}.png"
     [ -f "$frame" ] || { echo "site: $frame is missing (run scripts/design.sh)" >&2; exit 1; }
     cp "$frame" "site/shots/${pair%%:*}.png"
