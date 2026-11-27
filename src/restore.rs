@@ -72,11 +72,17 @@ pub fn path() -> Option<PathBuf> {
         Some(v) if !v.is_empty() => return Some(PathBuf::from(v)),
         _ => {}
     }
+    path_named("session")
+}
+
+/// A file of axon's in the state directory: `$XDG_STATE_HOME/axon/<name>` (`~/.local/state/axon/<name>`), or
+/// `%LOCALAPPDATA%\axon\<name>` on Windows. None where there is no home.
+pub fn path_named(name: &str) -> Option<PathBuf> {
     #[cfg(target_os = "linux")]
     let base = std::env::var_os("XDG_STATE_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).or_else(|| crate::context::home_dir().map(|h| h.join(".local").join("state")))?;
     #[cfg(windows)]
     let base = std::env::var_os("LOCALAPPDATA").filter(|v| !v.is_empty()).map(PathBuf::from).or_else(|| crate::context::home_dir().map(|h| h.join("AppData").join("Local")))?;
-    Some(base.join("axon").join("session"))
+    Some(base.join("axon").join(name))
 }
 
 fn layout_name(k: Kind) -> &'static str {

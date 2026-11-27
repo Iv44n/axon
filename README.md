@@ -15,9 +15,10 @@ Written in Rust, for **Linux** (Wayland: own client, CPU-rendered into `wl_shm`,
 - **Dark glass look** (after the `terminal.html` reference, ADR 0021, 0036 and 0037): one rounded translucent pane with a soft shadow; a title bar divided from the grid by a hairline, the line you type at docked at the bottom below another (output rises above it; it is still your shell's own prompt and line editor), grey window buttons that turn red/yellow/green on hover, one amber accent and six clear hues (also the ANSI colours), a proportional UI font (Geist, else Inter) around the monospaced grid, the reference's airy margins, quiet outline-icon chips and a settings panel docked beside the terminal; the status bar is there if you ask for it (`[window] status_bar`). The frame is computed per pixel (`src/chrome.rs`), no images. On the default backend; the `winit` fallback only has the black-and-white colours.
 - **Windows, groups and panes**: one shell per window, listed in a panel at the left or right or as tabs in the title bar; windows can be put in coloured groups (a dialog with templates that open real windows with their commands typed in), renamed in place, reordered and regrouped by dragging, and closed with an *Undo*; each row says what its shell is doing (the prompt, a turning ring while a command runs, a red dot when the last one failed, and the mark of Claude, Codex or Antigravity when one runs there: faint while Claude works, with an amber dot while it waits for you). **A group is a split view**, as a tab with split panes is in Warp: the windows of the group you are in are shown side by side (columns, rows or a grid), and `Ctrl+Space` on a window in no group makes the group; drag the gap between two of them (or `Alt+Shift+arrows`) to make one bigger or smaller. Right click opens the menu of whatever is under the pointer. See [Shortcuts](#shortcuts).
 - **Command palette and overview**: `Ctrl+K` lists actions, windows and groups (ranked as you type, each with its shortcut); `Alt+O` shows every window as a card with the last rows of its terminal, in a section per group, with a filter and drag and drop between groups.
+- **SSH servers by alias** (ADR 0048): `Alt+H` (or the server button in the title bar) opens a panel beside the terminal with your servers, the last used first, each with a green light while a window has a session to it. Paste a long `ssh -i key.pem user@host -p 2222` and it becomes an alias; the servers are written to `~/.config/axon/ssh_config`, which axon includes from the top of `~/.ssh/config` the first time (one line; nothing else there is touched), so `ssh web` works in any shell, inside axon or not. A click connects where it makes sense (the window already in that session, the pane at an empty prompt, or a new window in the group *Servers*); import your `~/.ssh/config`, export or copy axon's file. A window in an ssh session is named after the server and shows a cyan dot.
 - **Prompt chips** (opt-in): a row of context chips on the line above your prompt (time, user, directory, git branch and changes, conda/venv, pyenv, Kubernetes), chosen and ordered by you. See [Prompt chips](#prompt-chips).
-- **Design board**: `design/board.html` shows frames of every screen (the window, the settings panel, the panes, the palette, the overview, the group dialog and menus, in English and Spanish) from the real renderer over different desktops, zoomed to the pixel and compared with a baseline (see [Design](#design)).
-- **Small binary** (8.0 MiB on Linux, see [Benchmarks](#benchmarks)) with LTO, `panic=abort` and `strip`.
+- **Design board**: `design/board.html` shows frames of every screen (the window, the settings panel, the panel of servers, the panes, the palette, the overview, the group dialog and menus, in English and Spanish) from the real renderer over different desktops, zoomed to the pixel and compared with a baseline (see [Design](#design)).
+- **Small binary** (8.2 MiB on Linux, see [Benchmarks](#benchmarks)) with LTO, `panic=abort` and `strip`.
 
 ## Requirements
 
@@ -102,6 +103,7 @@ Always use `--release`: debug mode is much slower.
 | `Alt+O` | The overview of windows: every window as a card (the last rows of its terminal, status, name, directory) in a section per group; type to filter (name, directory, group or terminal text), arrows or `Tab` to move, `Enter` or a click to go to a window, `Alt+N` for a new one, `Esc` clears the filter and then closes it |
 | Drag a card in the overview | Drop it on a group's section to put the window into the group (on the *No group* one to take it out), or on the dashed tile to make a group with it; `Esc` puts it back |
 | Drag a row or a tab | Reorder windows: drop it before or after another (it takes that window's group), on a group's header or chip to put it into the group, on the empty part of the list to take it out of its group. Drag a group's header or chip to move the group. `Esc` cancels. A status icon says what the shell is doing: the prompt, a turning ring while a command runs, the mark of the agent when the command is `claude` (Claude's burst of rays), `codex` (ChatGPT's knot) or `agy` (Antigravity's arch), which do not end by themselves and so do not turn, a red dot when the last command failed (all need the shell's hook: `axon shell-init`; bash gets it from axon) |
+| `Alt+H` | The panel of SSH servers (the server button left of the gear does the same; it takes the settings' place): type to filter (alias, initials, then address or user), `↑`/`↓` to choose, `Enter` or a click to connect, `Ctrl+Enter` or a row's first button in a new window, its pencil to edit; *+ Server* to add one (paste an ssh command, `Enter` saves it with the proposed name), *More* to import `~/.ssh/config`, export or copy axon's file; `Esc` clears the search and then closes it |
 | `Alt+B` | Show or hide the panel of windows (`[windows] tabs = "left" \| "right" \| "top"`, `side`, `side_width`); the button right of the window buttons does the same |
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copy / paste |
 | `Ctrl+Shift+Q` | Quit |
@@ -264,6 +266,7 @@ axis of a font like `JetBrainsMono[wght].ttf`; the own font reader (task 12) wil
 | `AXON_DECORATIONS` | off | `1` to use the system title bar (`winit` fallback only) |
 | `AXON_BACKEND` | `wl` on Wayland, else `winit` | `wl`: own Wayland client + CPU renderer (~18 MB idle). `winit`: `winit` + `wgpu` (~150 MB idle), also the automatic fallback if `wl` cannot start |
 | `AXON_SETTINGS` | — | A debugging aid: start with the settings panel open (screenshots, measurements) |
+| `AXON_HOSTS` | — | A debugging aid: start with the panel of SSH servers open, on `list`, `new`, `edit` (the first server), `import` or `export`, over your own servers |
 | `AXON_WINDOWS` | `1` | A debugging aid: start with *n* windows (up to 9) |
 | `AXON_PANES` | `1` | A debugging aid: start with *n* terminals split in a group around the first window (up to 12) |
 | `AXON_GROUPS` | — | A debugging aid: set (any value) with `AXON_WINDOWS` of 2 or more, the first two windows start in one group |
@@ -323,35 +326,36 @@ Measured with [`scripts/bench.sh`](scripts/bench.sh) (`--clean` adds a cold buil
 can move size or speed** (rule in `CLAUDE.md`); older numbers stay in the history table.
 
 Machine: AMD Ryzen 5 5600H (12 threads) + RTX 3050 Mobile, Ubuntu, kernel 7.0.0-44, GNOME Shell 50.1 on Wayland.
-Last measured: 2026-11-26, v0.3.0: `b10df3d` plus a split that can be resized (ADR 0045: `panes::Tracks`, the gaps' hit test and drag, `Alt+Shift+arrows`, the sizes in the session file) and the agents' own marks, which say whether Claude works or waits, with the title's status mark cut (ADR 0046: the marks' outlines and their scanline fill in `icons.rs`, their colours in `palette.rs`, `agent::State`, `status_mark` in `wlapp.rs`). +28.2 KB, 8,366,520 to 8,394,712 B (the split +19.3 KB and the marks +5.0 KB on their own branches, the waiting state and the merge the rest), no new dependency; idle and memory as before, 0 ticks (`winit` with Cascadia once 1 tick in 3 s: its path is untouched); the flood 1.49 s at load 1.1-1.2, where the branches' own runs gave 1.70 s (another build on five cores) and 1.53 s, and neither change is on the PTY path or a row's paint; a group of four windows shown split 21.3 MB, as before; a window whose program turns its title's mark the way Claude Code does while it works, `◐`/`◑` every 0.96 s, costs 0-1 ticks in 10 s, 1-4 before, five runs of each build in turn: the title without its mark does not change, so nothing is painted unless Claude's state does. Before it, 2026-11-26, at `5ed8214` plus the kept session, the click that moves the shell's cursor and the agents' marks (ADR 0042-0044: `restore.rs`, `caret.rs`, `agent.rs`, `wlapp/keep.rs`, the marks in `icons.rs`; +24.3 KB over it, 8,342,256 to 8,366,520 B, no new dependency; idle and memory as before; the flood 1.52 s at load 1.2-1.5, not run against `5ed8214` side by side, and nothing of this change is on the PTY or paint path; a window that runs `claude`, `codex` or `agy` costs no timer: 0 ticks in 5 s, where the same window running `cargo` turns its ring, 2 ticks on this build and 10 before ADR 0041's cheaper painting). Before it, 2026-11-26, at `18ff573` plus the change that paints the rows outside the terminal's lock (ADR 0041: the UI thread held it 2.3 ms a frame during a flood, painting, and now 0.08 ms, reading the cells), paints a grid row's glass as a fill and skips a glyph's empty pixels; +3.7 KB; the flood is 13 % faster in an A/B (notes under the throughput table), idle and memory as before. The machine was busier than on 2026-11-25 (load average 1-4 after the builds), so the absolute flood times moved for both builds. The table of windows, groups and screens and the older notes under the tables come from earlier builds (ADR 0036-0039) and were not measured again: nothing in this change touches them. **Windows** has its own line below: it is measured by the self-test on a GitHub Actions runner, not on this machine.
+Last measured: 2026-11-27, v0.4.0: `9b12d7e` plus the panel of SSH servers (ADR 0048: `ssh.rs`, `hosts.rs`, `wlapp/hosts_ui.rs`, the servers' button in the title bar, a window's ssh session from the hook's command line). +195.7 KB, 8,394,712 to 8,590,384 B, both built here with rustc 1.96.0 (the panel 80.7 KB of code, the settings panel being 86.6; `ssh.rs` 30.6; the app's side 26.9; `core`'s generics, the strings in two languages and the unwind tables the rest), no new dependency; idle and memory as before, 0 ticks; the panel open 22.6 MB, as the settings, 0 ticks in 5 s; the flood 1.51 s at load 1.5-2.6 (another session of work ran on the machine), nothing of this change is on the PTY or paint path while the panel is closed. Before it, 2026-11-26, v0.3.0: `b10df3d` plus a split that can be resized (ADR 0045: `panes::Tracks`, the gaps' hit test and drag, `Alt+Shift+arrows`, the sizes in the session file) and the agents' own marks, which say whether Claude works or waits, with the title's status mark cut (ADR 0046: the marks' outlines and their scanline fill in `icons.rs`, their colours in `palette.rs`, `agent::State`, `status_mark` in `wlapp.rs`). +28.2 KB, 8,366,520 to 8,394,712 B (the split +19.3 KB and the marks +5.0 KB on their own branches, the waiting state and the merge the rest), no new dependency; idle and memory as before, 0 ticks (`winit` with Cascadia once 1 tick in 3 s: its path is untouched); the flood 1.49 s at load 1.1-1.2, where the branches' own runs gave 1.70 s (another build on five cores) and 1.53 s, and neither change is on the PTY path or a row's paint; a group of four windows shown split 21.3 MB, as before; a window whose program turns its title's mark the way Claude Code does while it works, `◐`/`◑` every 0.96 s, costs 0-1 ticks in 10 s, 1-4 before, five runs of each build in turn: the title without its mark does not change, so nothing is painted unless Claude's state does. Before it, 2026-11-26, at `5ed8214` plus the kept session, the click that moves the shell's cursor and the agents' marks (ADR 0042-0044: `restore.rs`, `caret.rs`, `agent.rs`, `wlapp/keep.rs`, the marks in `icons.rs`; +24.3 KB over it, 8,342,256 to 8,366,520 B, no new dependency; idle and memory as before; the flood 1.52 s at load 1.2-1.5, not run against `5ed8214` side by side, and nothing of this change is on the PTY or paint path; a window that runs `claude`, `codex` or `agy` costs no timer: 0 ticks in 5 s, where the same window running `cargo` turns its ring, 2 ticks on this build and 10 before ADR 0041's cheaper painting). Before it, 2026-11-26, at `18ff573` plus the change that paints the rows outside the terminal's lock (ADR 0041: the UI thread held it 2.3 ms a frame during a flood, painting, and now 0.08 ms, reading the cells), paints a grid row's glass as a fill and skips a glyph's empty pixels; +3.7 KB; the flood is 13 % faster in an A/B (notes under the throughput table), idle and memory as before. The machine was busier than on 2026-11-25 (load average 1-4 after the builds), so the absolute flood times moved for both builds. The table of windows, groups and screens and the older notes under the tables come from earlier builds (ADR 0036-0039) and were not measured again: nothing in this change touches them. **Windows** has its own line below: it is measured by the self-test on a GitHub Actions runner, not on this machine.
 
 **Build**
 
 | Binary | Cold release build |
 |---|---|
-| 8.0 MiB (8,394,712 bytes) | 101 s (before ADR 0036) |
+| 8.2 MiB (8,590,384 bytes) | 101 s (before ADR 0036) |
 
 **Idle memory and CPU** (`AXON_BACKEND` selects the backend; `wl` is the own Wayland client with the CPU renderer and the
 default on Wayland, `winit` is the `winit` + `wgpu` fallback)
 
 | Backend | Font | RSS | PSS | Private (anon) | CPU |
 |---|---|---|---|---|---|
-| `wl` | JetBrains Mono (default) | **18 MB** | 14 MB | 8 MB | 0 ticks / 3 s |
-| `wl` | DejaVu Sans Mono | 24 MB | 19 MB | 14 MB | 0 ticks / 3 s |
+| `wl` | JetBrains Mono (default) | **19 MB** | 14 MB | 8 MB | 0 ticks / 3 s |
+| `wl` | DejaVu Sans Mono | 24 MB | 20 MB | 14 MB | 0 ticks / 3 s |
 | `wl` | Cascadia Mono NF | 60 MB | 56 MB | 50 MB | 0 ticks / 3 s |
-| `winit` | JetBrains Mono (default) | 149 MB | 72 MB | 31 MB | 0 ticks / 3 s |
-| `winit` | DejaVu Sans Mono | 155 MB | 77 MB | 37 MB | 0 ticks / 3 s |
-| `winit` | Cascadia Mono NF | 191 MB | 114 MB | 74 MB | 0 ticks / 3 s |
+| `winit` | JetBrains Mono (default) | 149 MB | 95 MB | 31 MB | 0 ticks / 3 s |
+| `winit` | DejaVu Sans Mono | 155 MB | 101 MB | 37 MB | 0 ticks / 3 s |
+| `winit` | Cascadia Mono NF | 192 MB | 138 MB | 74 MB | 0 ticks / 3 s |
 
 The idle target is under 50 MB of RSS. `wl` meets it with the default font (the 4 MB over the 15 MB of before are the UI
 font: 2.7 MB of its parsed outlines, narrowed to the characters an interface draws, and ~1.5 MB more of the binary's own code
 paged in; opening the settings or an overlay no longer loads a font); a Nerd Font such as Cascadia Mono NF costs
 ~45 MB inside `fontdue` (it parses every glyph), which the own font reader will remove. The `winit` backend cannot meet
 the target: the Vulkan loader and the drivers map ~94 MB. (`winit`'s PSS went from 56 to 96, 132 and now 72 MB with the RSS
-unchanged: PSS divides shared pages among every process that maps them, so it follows what else runs on the desktop.)
+unchanged: PSS divides shared pages among every process that maps them, so it follows what else runs on the desktop; on
+2026-11-27 it was 95 MB.)
 
 **Windows, groups and screens** (`wl`, default font, idle shell in every window; the debugging knobs `AXON_WINDOWS`,
-`AXON_PANES`, `AXON_SETTINGS`, `AXON_OVERVIEW`)
+`AXON_PANES`, `AXON_SETTINGS`, `AXON_HOSTS`, `AXON_OVERVIEW`)
 
 | State | RSS | Private (anon) | CPU |
 |---|---|---|---|
@@ -359,6 +363,7 @@ unchanged: PSS divides shared pages among every process that maps them, so it fo
 | Three windows (grouped or not) | 21.1 MB | 10.6 MB | 0 ticks / 5 s |
 | A group of four windows shown split (`AXON_PANES=4`) | 21.3 MB | 11.7 MB | 0 ticks / 5 s |
 | Settings panel open | 22.8 MB | 11.8 MB | 0 ticks / 5 s |
+| Panel of SSH servers open (`AXON_HOSTS=list`, 2026-11-27; the settings open measured 22.6 MB in the same run) | 22.6 MB | 12.0 MB | 0 ticks / 5 s |
 | Overview of windows open (one window) | 19.1 MB | 8.4 MB | 0 ticks / 5 s |
 | Three windows, each marked as running (the status spinners turn) | 21.3 MB | 10.6 MB | 11 ticks / 5 s |
 | One window whose command is `cargo` (the hook's label: its ring turns) | - | - | 2 ticks / 5 s (10 before ADR 0041's cheaper painting) |
@@ -371,13 +376,13 @@ A shell killed with `SIGKILL` closes only its own window; when the last one goes
 
 | Backend | Time | RSS afterwards |
 |---|---|---|
-| `wl` | 1.49 s | 40 MB |
-| `winit` | 1.48 s | 178 MB |
+| `wl` | 1.51 s | 38 MB |
+| `winit` | 1.36 s | 178 MB |
 
 For ADR 0041 (painting outside the terminal's lock), nine floods of each build in turn, the build before it first: 1.91/1.60, 1.93/1.57, 1.90/1.67, 1.72/1.49, 1.99/1.58, 2.06/1.81, 2.29/2.12, 1.91/1.71 and 2.07/1.88 s, every pair faster, 1.98 against 1.71 s on average (-13 %); axon's own CPU during the flood fell 20 % (the UI thread from 49 to 17 ticks in one run). A first `scripts/bench.sh` run gave 1.82 s and 68 MB after: the window opened larger that time (~229 columns of scrollback); the second, in the tables, 1.76 s and 39 MB. The PTY thread is now not saturated (~58 % of a core): what is left is parsing and the kernel's PTY, which `winit` shares.
 
 
-The 1.49 s and 1.48 s are v0.3.0 (the resizable split and the agents' own marks, ADR 0045-0046), on 2026-11-26 at load 1.1-1.2; neither change is on the PTY path, and `winit`, whose code neither touches, moved from 1.28-1.41 s by the run. On their branches: 1.70 s with another build using five cores (ADR 0045) and 1.53 s at load 1.4-2.2 (ADR 0046). The 1.52 s and 1.28 s before them are the tree with ADR 0041's painting and the kept session, the click and the agents' marks (ADR 0042-0044) in, on 2026-11-26 at load 1.2-1.5, a quieter machine than the one of the A/B above: the two are not an A/B of each other, and none of the three later changes is on the PTY or paint path.
+The 1.51 s and 1.36 s are the panel of SSH servers (ADR 0048) on 2026-11-27 at load 1.5-2.6, with another session of work on the machine; nothing of it is on the PTY path. The 1.49 s and 1.48 s before them are v0.3.0 (the resizable split and the agents' own marks, ADR 0045-0046), on 2026-11-26 at load 1.1-1.2; neither change is on the PTY path, and `winit`, whose code neither touches, moved from 1.28-1.41 s by the run. On their branches: 1.70 s with another build using five cores (ADR 0045) and 1.53 s at load 1.4-2.2 (ADR 0046). The 1.52 s and 1.28 s before them are the tree with ADR 0041's painting and the kept session, the click and the agents' marks (ADR 0042-0044) in, on 2026-11-26 at load 1.2-1.5, a quieter machine than the one of the A/B above: the two are not an A/B of each other, and none of the three later changes is on the PTY or paint path.
 
 For ADR 0038 (a scope per window), four rounds with the scope on and off, in turn, at load 1.0-1.3: `wl` 2.39, 1.94, 1.89 and 1.93 s on against 1.78, 1.93, 1.78 and 2.07 s off (the first pair had a cold file cache; the rest average 1.92 against 1.93 s): the same within the noise, as it must be, since the scope changes where the shell is accounted and not what it does. The `scripts/bench.sh` run above, 2.01 s, is inside that spread. Startup to a window's first shell process, six launches in turn: 57, 59 and 59 ms without the scope, 65, 61 and 60 ms with it (the `systemd-run` that makes the scope runs in the shell's own process, and its probe overlaps the window's creation).
 
@@ -406,6 +411,7 @@ ADR 0039; not this machine, and a VM's numbers move from run to run)
 
 | Date | Change | Binary | Idle RSS `winit` | Idle RSS `wl` |
 |---|---|---|---|---|
+| 2026-11-27 | v0.4.0. The panel of SSH servers (ADR 0048): `Alt+H` and a title bar button, list with live status and when each was used, a pasted ssh command becomes an alias, import `~/.ssh/config`, export; servers in `~/.config/axon/ssh_config`, included from `~/.ssh/config`; a window in an ssh session is named after its server with a cyan dot; the palette lists `ssh <alias>`; no new dependency; panel open 22.6 MB, 0 ticks; flood 1.51 s | 8,590,384 B (+195.7 KB) | 149 MB | 19 MB |
 | 2026-11-26 | v0.3.0. A split resized by dragging its gaps or with `Alt+Shift+arrows`, `Alt+=` evens it, the sizes kept with the group (ADR 0045, `panes::Tracks`); the agents' own marks (ADR 0046): Claude's burst, Codex's cloud with `>_`, Antigravity's arch, filled in their colours (14 px in the list, 16 in the overview), faint while Claude works and with an amber dot while it waits for you, a program's status glyph cut from its title (Claude Code's `✳` drew the UI font's missing-glyph box); no new dependency; a group of four split 21.3 MB, 0 ticks idle; a title that turns its mark costs 0-1 ticks in 10 s, 1-4 before; flood 1.49 s | 8,394,712 B (+28.2 KB) | 149 MB | 18 MB |
 | 2026-11-26 | The session kept between runs (ADR 0042, `[windows] restore`), a click on the typed line moves the shell's cursor (ADR 0043) and a window that runs `claude`, `codex` or `agy` shows the agent's mark, not a spinner (ADR 0044); no new dependency; the agent's window costs no timer (0 ticks in 5 s against 2 for a busy command); flood 1.52 s in `bench.sh` | 8,366,520 B (+24.3 KB over `5ed8214`) | 148 MB | 18 MB |
 | 2026-11-26 | The rows painted outside the terminal's lock (ADR 0041), a grid row's glass as one fill (`chrome::flat_from`; it also fixes the lit panel button's bottom row), a glyph's empty pixels skipped, a configured font parsed once (it was twice: +88 ms of startup with a Nerd Font); flood 13 % faster in an A/B, 1.76 s in `bench.sh` | 8,342,256 B (+3.7 KB) | 148 MB | 18 MB |
@@ -478,6 +484,8 @@ src/
 ├─ icons.rs     the overlays' outline icons, and the agents' marks
 ├─ overlay_demo.rs  the kit's debug screens (`AXON_DEMO_OVERLAY`)
 ├─ overview.rs  the overview of windows (`Alt+O`): cards, sections, filter, keyboard and pointer, an overlay
+├─ ssh.rs       SSH servers by alias: ssh's options, the form's checks, axon's OpenSSH file and the `Include` (pure but for `Book`)
+├─ hosts.rs     the panel of SSH servers (`Alt+H`): list, edit, import, export; docked where the settings go
 ├─ config.rs    the settings file: parser, writer, `axon config`, `axon shell-init`
 ├─ view.rs      grid → cells for any renderer (damage, cursor, selection); `Fold`: the prompt docked at the bottom
 ├─ session.rs   Term + PTY thread; the shell of each OS (`pwsh`, `powershell`, `cmd` on Windows)
@@ -488,6 +496,7 @@ src/
 ├─ wlapp.rs     the app on plat + soft.rs, on both systems: windows (a group's are shown split), keyboard, pointer, clipboard, one wait loop
 │  ├─ selftest.rs          `AXON_SELFTEST`: the app tests itself in CI
 │  ├─ groups_ui.rs         windows, groups, menus, rename and undo: what owns the shells
+│  ├─ hosts_ui.rs          the panel of servers, the app's side: connect, save, import, export; what the hook says of an ssh
 │  ├─ keep.rs              the session between runs: the snapshot, when it is written, opening it again
 │  └─ windows_overview.rs  the app's side of the overview: cards from the windows, the terminals' text for the previews
 ├─ xkb.rs       keyboard layouts through libxkbcommon (dlopen)

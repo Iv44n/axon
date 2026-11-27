@@ -40,7 +40,9 @@ use crate::{
     overlay::{self, Click, Geo, Overlay, Ran, Reply, Stack},
     paint::Paint,
     overlay_demo, overview, palette, panes, picker::Picker, session,
+    hosts::Hosts,
     settings::{self, Effect, Settings},
+    ssh,
     soft::{Dock, Slot, Soft, UNFOCUSED},
     view::View,
     plat::{Event, Key, Mods, Plat, Wake, cursor},
@@ -50,6 +52,7 @@ use crate::xkb::Xkb;
 use windows_overview::AppGrid;
 
 mod groups_ui;
+mod hosts_ui;
 mod keep;
 mod selftest;
 
@@ -85,7 +88,7 @@ const KS_DOWN: u32 = 0xff54;
 
 fn cursor_for(hit: Hit) -> u32 {
     match hit {
-        Hit::Close | Hit::Minimize | Hit::Maximize | Hit::Settings | Hit::SideBtn | Hit::NewGroup => cursor::POINTER,
+        Hit::Close | Hit::Minimize | Hit::Maximize | Hit::Settings | Hit::SideBtn | Hit::NewGroup | Hit::Hosts => cursor::POINTER,
         Hit::Edge(e) => match e {
             EDGE_TOP => cursor::N_RESIZE,
             EDGE_BOTTOM => cursor::S_RESIZE,
@@ -389,6 +392,14 @@ struct App {
     /// The settings panel, while it is open (docked beside the grid), whether it has to be painted again, and
     /// when what it changed is written to the file (a moment after the last change, or at once when a gesture ends).
     panel: Option<Box<Settings>>,
+    /// The panel of SSH servers, while it is open (it takes the settings' place: one of the two at a time, ADR 0048); the
+    /// servers, read when first needed; a deleted one for the toast's *Undo*; an ssh the shell ran that a toast offers to
+    /// save; and the presses on the panel's fields, counted for a double click.
+    hosts: Option<Box<Hosts>>,
+    book: Option<ssh::Book>,
+    host_undo: Option<(usize, ssh::Host)>,
+    host_offer: Option<ssh::Form>,
+    hosts_clicks: overlay::Clicks,
     /// The overlays (palette, dialogs, menus) and the toast: the first to get the keyboard and the pointer
     /// (`overlay.rs`), and the pointer image they asked for last.
     overlays: Stack,
@@ -527,6 +538,8 @@ fn pane_status(p: &Pane) -> side::Status {
         side::Status::Running
     } else if let Some(a) = p.history.agent() {
         side::Status::Agent(a, p.agent_state)
+    } else if p.history.remote().is_some() {
+        side::Status::Remote
     } else if p.history.failed() {
         side::Status::Failed
     } else {
@@ -871,6 +884,11 @@ impl App {
             cfg,
             opacity,
             panel: None,
+            hosts: None,
+            book: None,
+            host_undo: None,
+            host_offer: None,
+            hosts_clicks: overlay::Clicks::default(),
             overlays: Stack::default(),
             overlay_cursor: None,
             prefs_dirty: false,
@@ -932,6 +950,12 @@ impl App {
         // Another: start with the overview of windows open (screenshots, memory measurements).
         if std::env::var_os("AXON_OVERVIEW").is_some() {
             app.toggle_overview();
+        }
+        // Another: start with the panel of SSH servers open, on one of its views.
+        if let Ok(kind) = std::env::var("AXON_HOSTS")
+            && !app.hosts_ui(&kind)
+        {
+            eprintln!("axon: AXON_HOSTS is one of list, new, edit, import, export");
         }
         // Another: start with one of the window list's screens open (the group dialog, a menu, a rename, a close with its toast).
         if let Ok(kind) = std::env::var("AXON_LIST_UI")
@@ -1122,6 +1146,15 @@ impl App {
                 p.draw(fb, w, h, (ml, mt));
             }
         }
+        // The panel of servers has the same place, and is painted the same way.
+        if let (Some(p), Some(b), Some(rect)) = (self.hosts.as_mut(), self.book.as_ref(), self.soft.prefs_rect()) {
+            let was = p.animating();
+            animating |= p.step(Instant::now());
+            if self.soft.last_full || self.prefs_dirty || was || animating {
+                self.soft.clear_rect(fb, rect);
+                p.draw(fb, w, h, (ml, mt), &b.hosts);
+            }
+        }
         self.prefs_dirty = false;
         let mut grid = AppGrid { soft: &self.soft, wins: &self.wins, scratch: &mut self.side_scratch };
         animating |= self.overlays.draw_with(fb, (w, h), (ml, mt), geo, Instant::now(), &mut grid);
@@ -1152,15 +1185,18 @@ impl App {
                     let Some((at, hook)) = self.wins[i].panes[j].proxy.hooks.lock().unwrap().pop_front() else { break };
                     let p = &mut self.wins[i].panes[j];
                     let named = p.history.command().is_some();
-                    let said = matches!(hook, Hook::Label(_));
+                    let said = matches!(hook, Hook::Label(..));
+                    let prompt = matches!(hook, Hook::Prompt { .. });
+                    let mut session = None;
                     let moved = match hook {
                         Hook::Start => {
                             p.history.start(at);
                             false
                         }
-                        // What runs: the window's label while it does.
-                        Hook::Label(word) => {
+                        // What runs: the window's label while it does (an ssh session's: its server, below).
+                        Hook::Label(word, ssh) => {
                             p.history.set_label(&word);
+                            session = ssh;
                             false
                         }
                         // A prompt is where the shell has moved to, if it did.
@@ -1173,6 +1209,12 @@ impl App {
                             p.read_dir()
                         }
                     };
+                    if let Some(d) = session {
+                        self.ssh_session(i, j, d);
+                    } else if self.hosts.is_some() && prompt {
+                        // A session that ended: the panel's dot goes out.
+                        self.hosts_refresh();
+                    }
                     // The panel and the tabs say whether a command runs or failed (a folded group, that one does).
                     self.refresh_groups();
                     if moved {
@@ -1259,13 +1301,17 @@ impl App {
     /// Leaves the panels' room beside the grid, at the sides the settings say, and tells the settings panel where
     /// its box is.
     fn apply_inset(&mut self) {
-        let prefs_w = if self.panel.is_some() { settings::panel_width(self.w) } else { 0 };
+        let prefs_w = if self.panel.is_some() || self.hosts.is_some() { settings::panel_width(self.w) } else { 0 };
         let (side, prefs) = docks(&self.cfg.windows, prefs_w, self.w);
         self.soft.set_ui(self.ui);
         self.soft.set_docks(side, prefs);
         self.soft.set_tabs_top(self.cfg.windows.tabs == config::TabsPos::Top);
         if let (Some(p), Some(b)) = (self.panel.as_mut(), self.soft.prefs_box((self.w, self.h))) {
             p.place(b, prefs.left);
+            self.prefs_dirty = true;
+        }
+        if let (Some(p), Some(bk), Some(b)) = (self.hosts.as_mut(), self.book.as_ref(), self.soft.prefs_box((self.w, self.h))) {
+            p.place(b, prefs.left, self.w <= crate::hosts::NARROW, &bk.hosts);
             self.prefs_dirty = true;
         }
         self.ui.side = match (self.cfg.windows.tabs, self.cfg.windows.side) {
@@ -1649,6 +1695,10 @@ impl App {
         // Windows or groups came or went, so what a drag in progress points at is not what it was.
         self.dnd_cancel();
         self.relist();
+        // A window in a session that went takes its server's green light with it.
+        if self.hosts.is_some() {
+            self.hosts_refresh();
+        }
     }
 
     /// Lists what the panel or the tabs show for the windows and groups as they are: a folded group still shows
@@ -1848,6 +1898,7 @@ impl App {
                     let e = p.pointer(-1.0, -1.0);
                     self.panel_effect(e);
                 }
+                self.hosts_pointer(-1.0, -1.0);
                 if self.side_hover.take().is_some() {
                     self.side_dirty = true;
                     self.dirty = true;
@@ -1896,6 +1947,9 @@ impl App {
                     return;
                 }
                 if self.panel.is_some() && b == 0 && self.panel_button(pressed) {
+                    return;
+                }
+                if self.hosts.is_some() && b == 0 && self.hosts_button(pressed, time) {
                     return;
                 }
                 // A press on a pane gives it the focus, whatever the program does with the click.
@@ -2082,6 +2136,9 @@ impl App {
             self.close_settings();
             return;
         }
+        if self.hosts.is_some() {
+            self.close_hosts();
+        }
         let mut s = self.make_settings();
         s.start_faded();
         self.panel = Some(Box::new(s));
@@ -2237,7 +2294,9 @@ impl App {
 
     /// The settings panel's box in window pixels, when it is open.
     fn prefs_box(&self) -> Option<(i32, i32, i32, i32)> {
-        self.panel.as_ref()?;
+        if self.panel.is_none() && self.hosts.is_none() {
+            return None;
+        }
         self.soft.prefs_box((self.w, self.h))
     }
 
@@ -2398,6 +2457,7 @@ impl App {
         // The settings panel has the keyboard (it opened, or was clicked, and the terminal was not clicked since):
         // the app's own shortcuts still work, and everything else is for the panel. Escape closes it.
         let docked = self.panel.as_ref().is_some_and(|p| p.focus);
+        let hosts_keys = self.hosts.as_ref().is_some_and(|h| h.focused);
         // Ctrl+Space: one more pane in this window (the reference takes it from the shell too).
         if m.ctrl && !m.alt && !m.shift && k.sym == 0x20 {
             self.split(panes::Dir::Auto);
@@ -2425,6 +2485,10 @@ impl App {
                 }
                 (Some('o'), _) => {
                     self.toggle_overview();
+                    return false;
+                }
+                (Some('h'), _) if !m.shift => {
+                    self.toggle_hosts();
                     return false;
                 }
                 (Some('g'), _) if m.shift => self.ungroup(),
@@ -2459,6 +2523,7 @@ impl App {
                 (_, d @ 0x31..=0x39) if ((d - 0x31) as usize) < self.wins.len() => self.switch_to((d - 0x31) as usize),
                 // Alt with the arrows moves a chip in the panel.
                 _ if docked => return self.panel_key(k),
+                _ if hosts_keys => return self.hosts_key(k),
                 _ => return false,
             }
             return true;
@@ -2480,6 +2545,9 @@ impl App {
         }
         if docked {
             return self.panel_key(k);
+        }
+        if hosts_keys {
+            return self.hosts_key(k);
         }
         if m.ctrl && !m.alt {
             match k.sym {
@@ -2533,6 +2601,9 @@ impl App {
         if let Some(p) = self.panel.as_mut() {
             let e = p.release();
             self.panel_effect(e);
+        }
+        if let Some(h) = self.hosts.as_mut() {
+            h.release();
         }
     }
 
@@ -2602,6 +2673,7 @@ impl App {
             overview::TAG => self.overview_ran(ran.id),
             overlay::TOAST => self.toast_ran(ran.id),
             ctxmenu::TAG => self.menu_ran(ran.id),
+            hosts_ui::MENU_TAG => self.hosts_menu_ran(ran.id),
             group_dialog::TAG => self.dialog_ran(ran.id),
             _ => {}
         }
@@ -2613,7 +2685,8 @@ impl App {
         let groups = group_items(&self.groups, &self.wins);
         let sh = self.shown();
         let split = if self.split_on_screen() { panes::dims(sh.kind, sh.n) } else { (1, 1) };
-        let state = commands::State { wins: &wins, groups: &groups, cur: self.cur, panes: sh.n, split, overview: true };
+        let hosts = self.host_infos();
+        let state = commands::State { wins: &wins, hosts: &hosts, groups: &groups, cur: self.cur, panes: sh.n, split, overview: true };
         let list = commands::build(&state);
         self.open_overlay(commands::TAG, Box::new(Picker::new(list)));
     }
@@ -2632,6 +2705,8 @@ impl App {
             Cmd::HistorySearch => self.type_into_shell(b"\x12"),
             Cmd::ClearScreen => self.type_into_shell(b"\x0c"),
             Cmd::Settings => self.open_settings(),
+            Cmd::Hosts => self.open_hosts(),
+            Cmd::Ssh(i) => self.connect_host(i as usize, false),
             Cmd::CloseWindow => self.close_wins(&[self.wins[self.cur].id], None),
             Cmd::ClosePane => self.close_pane_asked(self.cur, self.wins[self.cur].focus),
             Cmd::Ungroup => self.ungroup(),
@@ -2713,7 +2788,7 @@ impl App {
             return overlay::inside(self.overview_area(), x, y);
         }
         match chrome::hit(x, y, self.w, self.h, self.ui.maximized, self.ui.side != 0) {
-            Hit::Client | Hit::Side | Hit::Prefs | Hit::Settings | Hit::SideBtn | Hit::NewGroup => true,
+            Hit::Client | Hit::Side | Hit::Prefs | Hit::Settings | Hit::SideBtn | Hit::NewGroup | Hit::Hosts => true,
             // The tabs in the title bar are part of what is dimmed; the bar itself still moves the window.
             Hit::Title => self.side_part_at(x, y).is_some(),
             Hit::Close | Hit::Minimize | Hit::Maximize | Hit::Edge(_) => false,
@@ -2858,6 +2933,7 @@ impl App {
                     let e = p.pointer(-1.0, -1.0);
                     self.panel_effect(e);
                 }
+                self.hosts_pointer(-1.0, -1.0);
                 return;
             }
             // Off the overlays, the window's own pointer image is back: the next reply sets theirs again.
@@ -2876,6 +2952,7 @@ impl App {
             let e = p.pointer(x, y);
             self.panel_effect(e);
         }
+        self.hosts_pointer(x, y);
         // A gesture goes on in the pane it began in; a plain move is the business of the pane under the pointer.
         let target = if self.held.is_some() || self.selecting {
             Some(self.drag_pane())
@@ -2953,6 +3030,8 @@ impl App {
             cursor::POINTER
         } else if let Some(e) = edge {
             if e.axis == panes::Axis::Cols { cursor::COL_RESIZE } else { cursor::ROW_RESIZE }
+        } else if now == Hit::Prefs && self.hosts.is_some() {
+            self.hosts_cursor()
         } else if now == Hit::Prefs {
             self.prefs_cursor()
         } else if part.is_some() {
@@ -2997,6 +3076,7 @@ impl App {
                     Hit::Settings => self.toggle_settings(),
                     Hit::SideBtn => self.toggle_side(),
                     Hit::NewGroup => self.group_dialog_here(),
+                    Hit::Hosts => self.toggle_hosts(),
                     _ => {}
                 }
             }
@@ -3004,7 +3084,7 @@ impl App {
         }
         self.click = None;
         match self.hover {
-            Hit::Close | Hit::Minimize | Hit::Maximize | Hit::Settings | Hit::SideBtn | Hit::NewGroup => {
+            Hit::Close | Hit::Minimize | Hit::Maximize | Hit::Settings | Hit::SideBtn | Hit::NewGroup | Hit::Hosts => {
                 self.ui.down = true;
                 self.dirty = true;
             }
@@ -3091,6 +3171,10 @@ impl App {
             let px = if clicks != 0 { clicks * settings::WHEEL_PX } else { pixels.round() as i32 };
             let e = self.panel.as_mut().map_or(Effect::None, |p| p.scroll_by(px));
             self.panel_effect(e);
+            if self.hosts.is_some() {
+                let px = if clicks != 0 { clicks * crate::hosts::WHEEL_PX } else { pixels.round() as i32 };
+                self.hosts_scroll(px);
+            }
             return;
         }
         if self.overlays.is_open() {

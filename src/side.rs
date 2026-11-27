@@ -177,6 +177,8 @@ pub enum Status {
     Idle,
     Running,
     Agent(Agent, State),
+    /// An ssh session runs (`history::History::remote`): a dot in the cyan of the servers, as the reference's remote tabs.
+    Remote,
     Failed,
 }
 
@@ -194,7 +196,7 @@ impl Status {
             Status::Idle => 0,
             Status::Failed => 1,
             Status::Agent(_, State::Waiting) => 4,
-            Status::Agent(..) => 2,
+            Status::Agent(..) | Status::Remote => 2,
             Status::Running => 3,
         }
     }
@@ -906,6 +908,7 @@ fn status_icon(p: &mut Paint, cx: f32, cy: f32, st: Status, idle: [f32; 3], phas
         }
         Status::Running => spinner(p, cx, cy, 11.0, palette::unit(palette::ACCENT), 0.28, phase),
         Status::Agent(a, s) => icons::agent(p, a, s, cx, cy, 14.0, 1.0),
+        Status::Remote => p.disc(cx, cy, 4.0, palette::unit(palette::CYAN), 1.0),
         Status::Failed => p.disc(cx, cy, 3.5, palette::unit(palette::RED), 1.0),
     }
 }

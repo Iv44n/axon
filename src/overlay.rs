@@ -245,7 +245,6 @@ impl Fade {
     }
 
     /// Already fully shown.
-    #[cfg(test)]
     pub const fn full() -> Fade {
         Fade { t: 1.0, clock: None, secs: 0.0 }
     }
@@ -257,7 +256,6 @@ impl Fade {
         self.t < 1.0
     }
 
-    #[cfg(test)]
     pub fn animating(&self) -> bool {
         self.t < 1.0
     }

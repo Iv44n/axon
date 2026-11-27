@@ -52,7 +52,7 @@ fn typed(d: &mut Dialog) {
 /// overview is listed as it will be with the overview screen (ADR 0027: the app lists it once it has one).
 fn palette(query: &str, sel: usize) -> Box<dyn Overlay> {
     let (wins, groups) = commands::sample();
-    let state = commands::State { wins: &wins, groups: &groups, cur: 0, panes: 1, split: (1, 1), overview: true };
+    let state = commands::State { wins: &wins, hosts: &[], groups: &groups, cur: 0, panes: 1, split: (1, 1), overview: true };
     Box::new(Picker::new(commands::build(&state)).state(query, sel))
 }
 

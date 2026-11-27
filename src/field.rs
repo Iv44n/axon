@@ -43,7 +43,7 @@ pub struct Field {
     anchor: usize,
     /// The longest text in characters (0: no limit).
     max: usize,
-    placeholder: &'static str,
+    placeholder: std::borrow::Cow<'static, str>,
     /// Which characters it takes (none: any): a number's box takes digits, a sign and a point.
     accept: Option<fn(char) -> bool>,
     /// The primary button is down in the field: a pointer move extends the selection.
@@ -56,7 +56,13 @@ fn is_word(c: char) -> bool {
 
 impl Field {
     pub fn new(max: usize, placeholder: &'static str) -> Field {
-        Field { max, placeholder, ..Field::default() }
+        Field { max, placeholder: placeholder.into(), ..Field::default() }
+    }
+
+    /// A field whose placeholder is made when it opens (the local user's name).
+    pub fn with_placeholder(mut self, s: String) -> Field {
+        self.placeholder = s.into();
+        self
     }
 
     /// The field takes only the characters `accept` says yes to (typed or pasted).
@@ -87,8 +93,8 @@ impl Field {
         self.text.is_empty()
     }
 
-    pub fn placeholder(&self) -> &'static str {
-        self.placeholder
+    pub fn placeholder(&self) -> &str {
+        &self.placeholder
     }
 
     /// Replaces the text; the caret goes to the end and nothing is selected.
@@ -375,6 +381,8 @@ pub enum Look {
     Box,
     /// `.ov-search`: a 30 px box with a search icon, 220 px wide in the overview's header.
     Search,
+    /// `.h-search`: the same box in the panel of servers, whose outline turns white (25 %), not amber, with the keyboard.
+    Find,
     /// `.pal-input-row`: no box, a 16 px icon and 14.5 px text in a row with a hairline under it.
     Row,
 }
@@ -397,7 +405,7 @@ pub struct Place {
 pub fn place((x, y, w, h): Rect, look: Look) -> Place {
     match look {
         Look::Box => Place { tx: x + 1 + 12, inner: w - 2 - 24, px: PX, cy: y + h / 2 },
-        Look::Search => Place { tx: x + 1 + 10 + 14 + 8, inner: w - 2 - 10 - 14 - 8 - 10, px: PX, cy: y + h / 2 },
+        Look::Search | Look::Find => Place { tx: x + 1 + 10 + 14 + 8, inner: w - 2 - 10 - 14 - 8 - 10, px: PX, cy: y + h / 2 },
         Look::Row => Place { tx: x + 16 + 16 + 10, inner: w - 16 - 16 - 10 - 16, px: PX_INPUT, cy: y + (h - 1) / 2 },
     }
 }
@@ -436,9 +444,14 @@ pub fn paint(p: &mut Paint, t: &Text, f: &Field, r: Rect, look: Look, focused: b
                 p.outline(x, y, w, h, 9.0, WHITE, line);
             }
         }
-        Look::Search => {
+        Look::Search | Look::Find => {
             p.rrect(x, y, w, h, 9.0, [0.0; 3], 0.30);
-            p.outline(x, y, w, h, 9.0, if focused { accent() } else { WHITE }, if focused { 0.60 } else { line });
+            let (c, a) = match (look, focused) {
+                (Look::Search, true) => (accent(), 0.60),
+                (Look::Find, true) => (WHITE, 0.25),
+                _ => (WHITE, line),
+            };
+            p.outline(x, y, w, h, 9.0, c, a);
             icons::paint(p, Icon::Search, (x + 1 + 10) as f32 + 7.0, pl.cy as f32, 14.0, 1.6, if focused { fg() } else { dim() }, 1.0);
         }
         Look::Row => {
@@ -762,7 +775,7 @@ mod tests {
         let render = |f: &Field, look: Look, focused: bool| {
             let h = match look {
                 Look::Box => H_BOX,
-                Look::Search => H_SEARCH,
+                Look::Search | Look::Find => H_SEARCH,
                 Look::Row => H_ROW,
             };
             let mut fb = vec![0u32; 320 * 60];
@@ -770,7 +783,7 @@ mod tests {
             paint(&mut p, &t, f, (10, 5, 300, h), look, focused);
             fb
         };
-        for look in [Look::Box, Look::Search, Look::Row] {
+        for look in [Look::Box, Look::Search, Look::Find, Look::Row] {
             let empty = Field::new(0, "Search windows");
             let (idle, focused) = (render(&empty, look, false), render(&empty, look, true));
             assert!(idle.iter().any(|&p| p >> 24 != 0), "{look:?}: the placeholder is drawn");

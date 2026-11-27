@@ -81,7 +81,7 @@ impl App {
         self.wins[wi].pane().cwd_now()
     }
 
-    fn next_group_id(&mut self) -> u32 {
+    pub(super) fn next_group_id(&mut self) -> u32 {
         self.groups_made += 1;
         self.groups_made as u32
     }
@@ -477,6 +477,8 @@ impl App {
     pub(super) fn toast_ran(&mut self, id: u32) {
         if id == CMD_UNDO {
             self.undo_close();
+        } else {
+            self.hosts_toast_ran(id);
         }
     }
 

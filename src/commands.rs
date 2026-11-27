@@ -14,6 +14,9 @@
 //!   split out again (ADR 0045).
 //! - *Windows*: one per window, its directory and group as the description, `Alt+1..9` as the shortcut.
 //! - *Groups*: one to go to the group's first window, one to collapse or expand it in the panel.
+//! - *Servers*: `ssh <alias>` for each saved server, the last used first, its `user@address` as the description (ADR 0048);
+//!   the action *SSH servers* (`Alt+H`) opens their panel, after the overview as in the reference (which has *Full screen*
+//!   between them, a window manager's business here).
 //!
 //! The reference's *History* entries (its last eight commands, typed into its own editor) have no
 //! counterpart: the shell owns the line, axon never sees the commands, so the palette offers *Search the
@@ -59,10 +62,14 @@ pub enum Cmd {
     Group(u32),
     /// Collapse or expand the group with this id.
     Fold(u32),
+    /// The panel of SSH servers.
+    Hosts,
+    /// Connect to the server with this index in the book (`ssh::Book::hosts`).
+    Ssh(u32),
 }
 
 /// The commands with nothing to say but their name, in the order of their ids.
-const FIXED: [Cmd; 21] = [
+const FIXED: [Cmd; 22] = [
     Cmd::NewWindow,
     Cmd::NewGroup,
     Cmd::NewPane,
@@ -84,6 +91,7 @@ const FIXED: [Cmd; 21] = [
     Cmd::Taller,
     Cmd::Shorter,
     Cmd::EvenPanes,
+    Cmd::Hosts,
 ];
 
 /// The id of a command that takes a number: the kind in the two high bits, the number in the other thirty.
@@ -93,6 +101,8 @@ const GROUP: u32 = 2 << 30;
 const FOLD: u32 = 3 << 30;
 /// The largest number a window or a group can carry (a window's id counts every window ever opened).
 const MAX_N: u32 = !KIND;
+/// A server's id: in the fixed commands' kind, this bit and the server's index under it.
+const SSH: u32 = 1 << 29;
 
 /// A window's id as `Cmd::Window` carries it.
 pub fn short(id: u64) -> u32 {
@@ -106,6 +116,7 @@ impl Cmd {
             Cmd::Window(n) => WINDOW | n.min(MAX_N),
             Cmd::Group(n) => GROUP | n.min(MAX_N),
             Cmd::Fold(n) => FOLD | n.min(MAX_N),
+            Cmd::Ssh(n) => SSH | n.min(SSH - 1),
             // The rest are numbered from 1 in the order of `FIXED`.
             c => FIXED.iter().position(|&f| f == c).map_or(0, |i| i as u32 + 1),
         }
@@ -115,6 +126,7 @@ impl Cmd {
     pub fn from_id(id: u32) -> Option<Cmd> {
         let n = id & MAX_N;
         match id & KIND {
+            0 if id & SSH != 0 => Some(Cmd::Ssh(id & (SSH - 1))),
             0 => FIXED.get((id as usize).checked_sub(1)?).copied(),
             WINDOW => Some(Cmd::Window(n)),
             GROUP => Some(Cmd::Group(n)),
@@ -135,9 +147,21 @@ pub struct WinInfo {
     pub group: Option<usize>,
 }
 
+/// A saved server as the palette lists it.
+pub struct HostInfo {
+    /// Its index in the book.
+    pub index: u32,
+    pub alias: String,
+    /// `user@address:port`.
+    pub target: String,
+    pub hostname: String,
+}
+
 /// What the palette is built from: the app's windows and groups at the moment it opens.
 pub struct State<'a> {
     pub wins: &'a [WinInfo],
+    /// The saved servers, the last used first.
+    pub hosts: &'a [HostInfo],
     pub groups: &'a [GroupItem],
     /// The window on screen and how many panes it has.
     pub cur: usize,
@@ -167,6 +191,8 @@ mod kw {
     pub const GROUP: &str = "grupo group";
     pub const FOLD: &str = "grupo group fold plegar collapse expand contraer expandir";
     pub const RESIZE: &str = "agrandar achicar tamaño redimensionar ampliar reducir panel resize size bigger smaller grow shrink pane split";
+    pub const HOSTS: &str = "ssh alias conectar servidor ip connect server host";
+    pub const SERVER: &str = "servidor conectar server connect";
 }
 
 /// The shortcut of the command that opens window `i`: `Alt+1` to `Alt+9`, none beyond.
@@ -195,6 +221,7 @@ pub fn build(s: &State) -> List {
     if s.overview {
         act(Cmd::Overview, tr(Str::OvActOverview), "Alt+O", Icon::Grid, kw::OVERVIEW);
     }
+    act(Cmd::Hosts, tr(Str::HostsTitle), "Alt+H", Icon::Host, kw::HOSTS);
     act(Cmd::TogglePanel, tr(Str::OvActPanel), "Alt+B", Icon::Panel, kw::PANEL);
     act(Cmd::Tabs(TabsPos::Left), tr(Str::CmdTabsLeft), "", Icon::Panel, kw::PLACE);
     act(Cmd::Tabs(TabsPos::Right), tr(Str::CmdTabsRight), "", Icon::Panel, kw::PLACE);
@@ -242,6 +269,14 @@ pub fn build(s: &State) -> List {
         let label = format!("{verb} {}", x.name);
         list.push(Entry { label: &label, keywords: kw::FOLD, group: heading, mark: Mark::Dot(x.color), id: Cmd::Fold(x.id).id(), ..Entry::default() });
     }
+
+    // The servers, in the cyan of their group (`Dot(2)`).
+    let heading = tr(Str::HostsGroup);
+    for h in s.hosts {
+        let label = format!("ssh {}", h.alias);
+        let keywords = format!("{} {}", kw::SERVER, h.hostname);
+        list.push(Entry { label: &label, desc: &h.target, keywords: &keywords, group: heading, mark: Mark::Dot(2), id: Cmd::Ssh(h.index).id(), ..Entry::default() });
+    }
     list.filter("");
     list
 }
@@ -268,7 +303,7 @@ mod tests {
 
     fn state<'a>(wins: &'a [WinInfo], groups: &'a [GroupItem]) -> State<'a> {
         // The window on screen is the one in no group.
-        State { wins, groups, cur: 3, panes: 1, split: (1, 1), overview: false }
+        State { wins, hosts: &[], groups, cur: 3, panes: 1, split: (1, 1), overview: false }
     }
 
     /// The commands the list shows, in order.
@@ -286,7 +321,7 @@ mod tests {
     #[test]
     fn every_command_has_its_own_id_and_the_id_gives_it_back() {
         let mut ids = std::collections::HashSet::new();
-        let all = FIXED.iter().copied().chain([Cmd::Window(0), Cmd::Window(9), Cmd::Window(MAX_N), Cmd::Group(0), Cmd::Group(3), Cmd::Fold(0), Cmd::Fold(7), Cmd::Fold(MAX_N)]);
+        let all = FIXED.iter().copied().chain([Cmd::Window(0), Cmd::Window(9), Cmd::Window(MAX_N), Cmd::Group(0), Cmd::Group(3), Cmd::Fold(0), Cmd::Fold(7), Cmd::Fold(MAX_N), Cmd::Ssh(0), Cmd::Ssh(5), Cmd::Ssh(SSH - 1)]);
         for c in all {
             assert!(ids.insert(c.id()), "{c:?} shares its id");
             assert_eq!(Cmd::from_id(c.id()), Some(c), "{c:?}");
@@ -301,11 +336,11 @@ mod tests {
         let (wins, groups) = sample();
         let l = build(&state(&wins, &groups));
         let cmds = shown(&l);
-        // The reference's fourteen actions, less the overview this app has not got, then each window, then the group's two.
-        assert_eq!(cmds.len(), 13 + 4 + 2, "{cmds:?}");
+        // The reference's actions, less the overview this app has not got, then each window, then the group's two.
+        assert_eq!(cmds.len(), 14 + 4 + 2, "{cmds:?}");
         assert_eq!(&cmds[..3], &[Cmd::NewWindow, Cmd::NewGroup, Cmd::NewPane], "the reference's order");
-        assert_eq!(cmds[12], Cmd::CloseWindow);
-        assert_eq!(&cmds[13..], &[Cmd::Window(0), Cmd::Window(1), Cmd::Window(2), Cmd::Window(3), Cmd::Group(0), Cmd::Fold(0)]);
+        assert_eq!(cmds[13], Cmd::CloseWindow);
+        assert_eq!(&cmds[14..], &[Cmd::Window(0), Cmd::Window(1), Cmd::Window(2), Cmd::Window(3), Cmd::Group(0), Cmd::Fold(0)]);
         assert!(!cmds.contains(&Cmd::Overview), "no overview, no entry");
         // The groups are the headings of a list with no query: three, in that order.
         let heads: Vec<&str> = (0..l.len()).map(|n| l.group(l.index(n).unwrap())).fold(Vec::new(), |mut v, g| {
@@ -318,13 +353,13 @@ mod tests {
     }
 
     #[test]
-    fn the_first_fourteen_rows_are_the_references_actions_in_its_order() {
+    fn the_first_fifteen_rows_are_the_references_actions_in_its_order() {
         let (wins, groups) = sample();
         // Whatever the window on screen is: the reference's list is never reordered, the extras come after it.
         for (cur, panes) in [(3, 1), (0, 1), (0, 3)] {
-            let cmds = shown(&build(&State { wins: &wins, groups: &groups, cur, panes, split: (panes, 1), overview: true }));
+            let cmds = shown(&build(&State { wins: &wins, hosts: &[], groups: &groups, cur, panes, split: (panes, 1), overview: true }));
             assert_eq!(
-                &cmds[..14],
+                &cmds[..15],
                 [
                     Cmd::NewWindow,
                     Cmd::NewGroup,
@@ -332,6 +367,7 @@ mod tests {
                     Cmd::SplitCols,
                     Cmd::SplitRows,
                     Cmd::Overview,
+                    Cmd::Hosts,
                     Cmd::TogglePanel,
                     Cmd::Tabs(TabsPos::Left),
                     Cmd::Tabs(TabsPos::Right),
@@ -350,7 +386,7 @@ mod tests {
     fn some_actions_are_listed_only_where_they_apply() {
         let (wins, groups) = sample();
         let with = |cur, panes, overview| {
-            let l = build(&State { wins: &wins, groups: &groups, cur, panes, split: (panes, 1), overview });
+            let l = build(&State { wins: &wins, hosts: &[], groups: &groups, cur, panes, split: (panes, 1), overview });
             shown(&l)
         };
         // Window 0 is in a group: it can leave it; window 3 is not.
@@ -363,20 +399,20 @@ mod tests {
         let cmds = with(0, 1, true);
         let at = cmds.iter().position(|&c| c == Cmd::Overview).unwrap();
         assert_eq!(cmds[at - 1], Cmd::SplitRows);
-        assert_eq!(cmds[at + 1], Cmd::TogglePanel);
+        assert_eq!(cmds[at + 1], Cmd::Hosts, "then the servers, as the reference (less its full screen)");
         // Both extras come after the reference's last action, close the pane first.
         let cmds = with(0, 2, true);
         let close = cmds.iter().position(|&c| c == Cmd::CloseWindow).unwrap();
         assert_eq!(&cmds[close + 1..close + 3], &[Cmd::ClosePane, Cmd::Ungroup]);
         // No windows at all (the app always has one, but the list must not index past what it was given).
-        assert!(shown(&build(&State { wins: &[], groups: &[], cur: 0, panes: 1, split: (1, 1), overview: false })).len() >= 13);
+        assert!(shown(&build(&State { wins: &[], hosts: &[], groups: &[], cur: 0, panes: 1, split: (1, 1), overview: false })).len() >= 14);
     }
 
     #[test]
     fn resizing_is_listed_for_the_axes_the_split_has_and_found_by_its_words() {
         let (wins, groups) = sample();
         let with = |split, query: &str| {
-            let mut l = build(&State { wins: &wins, groups: &groups, cur: 0, panes: 3, split, overview: false });
+            let mut l = build(&State { wins: &wins, hosts: &[], groups: &groups, cur: 0, panes: 3, split, overview: false });
             l.filter(query);
             shown(&l)
         };
@@ -397,6 +433,26 @@ mod tests {
     }
 
     #[test]
+    fn the_servers_come_last_as_ssh_aliases_found_by_their_address_too() {
+        let (wins, groups) = sample();
+        let hosts = [
+            HostInfo { index: 3, alias: "produccion".into(), target: "admin@192.168.1.100:2222".into(), hostname: "192.168.1.100".into() },
+            HostInfo { index: 0, alias: "web".into(), target: "deploy@10.10.0.11".into(), hostname: "10.10.0.11".into() },
+        ];
+        let mut l = build(&State { wins: &wins, hosts: &hosts, groups: &groups, cur: 3, panes: 1, split: (1, 1), overview: true });
+        let cmds = shown(&l);
+        assert_eq!(&cmds[cmds.len() - 2..], &[Cmd::Ssh(3), Cmd::Ssh(0)], "in the order given: the last used first");
+        let e = (0..l.total()).find(|&e| l.id(e) == Cmd::Ssh(0).id()).unwrap();
+        assert_eq!((l.label(e), l.desc(e), l.mark(e)), ("ssh web", "deploy@10.10.0.11", Mark::Dot(2)));
+        l.filter("192.168");
+        assert_eq!(shown(&l), [Cmd::Ssh(3)]);
+        for q in ["SSH servers", "servidor", "alias"] {
+            l.filter(q);
+            assert!(shown(&l).contains(&Cmd::Hosts), "{q}");
+        }
+    }
+
+    #[test]
     fn a_window_shows_its_directory_and_group_and_the_first_nine_have_their_alt_digit() {
         let (wins, groups) = sample();
         let l = build(&state(&wins, &groups));
@@ -410,7 +466,7 @@ mod tests {
         assert_eq!((l.label(g), l.desc(g), l.mark(g)), ("arcton", "3 windows", Mark::Dot(1)));
         // Ten windows: the tenth has no digit.
         let many: Vec<WinInfo> = (0..10).map(|i| WinInfo { id: i, title: format!("w{i}"), place: "~".into(), group: None }).collect();
-        let l = build(&State { wins: &many, groups: &[], cur: 0, panes: 1, split: (1, 1), overview: false });
+        let l = build(&State { wins: &many, hosts: &[], groups: &[], cur: 0, panes: 1, split: (1, 1), overview: false });
         let tenth = (0..l.total()).find(|&e| l.id(e) == Cmd::Window(9).id()).unwrap();
         assert_eq!(l.keys(tenth), "");
         // A group of one says "1 window".
@@ -437,7 +493,7 @@ mod tests {
     #[test]
     fn the_actions_show_the_shortcuts_that_run_them() {
         let (wins, groups) = sample();
-        let l = build(&State { wins: &wins, groups: &groups, cur: 0, panes: 2, split: (2, 1), overview: true });
+        let l = build(&State { wins: &wins, hosts: &[], groups: &groups, cur: 0, panes: 2, split: (2, 1), overview: true });
         let keys = |c: Cmd| (0..l.total()).find(|&e| l.id(e) == c.id()).map(|e| l.keys(e).to_string()).unwrap();
         assert_eq!(keys(Cmd::NewWindow), "Alt+N");
         assert_eq!(keys(Cmd::NewGroup), "Alt+G");

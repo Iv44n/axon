@@ -23,6 +23,7 @@ mod gpu;
 mod group_dialog;
 mod groups;
 mod history;
+mod hosts;
 mod i18n;
 mod icons;
 mod input;
@@ -42,6 +43,7 @@ mod session;
 mod settings;
 mod side;
 mod soft;
+mod ssh;
 mod toast;
 mod view;
 #[cfg(windows)]

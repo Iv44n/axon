@@ -1192,18 +1192,19 @@ mod tests {
 
     #[test]
     fn the_title_is_centred_between_the_panel_button_and_the_gear() {
-        // The reference's `.win-title` is `flex: 1` from 114 (the panel button ends at 104, 10 px of gap) to 46 px short of
-        // the right edge (the gear, 28 px, 8 of padding and 10 of gap): its middle is 34 px right of the window's.
+        // The reference's `.win-title` is `flex: 1` from 114 (the panel button ends at 104, 10 px of gap) to 76 px short of
+        // the right edge (the servers' button and the gear, 28 px each and 2 between, 8 of padding and 10 of gap): its middle
+        // is 19 px right of the window's.
         let mut s = Soft::new(&FontCfg::sized(15.0), 0.88);
         let (w, h) = (1000, 700);
         let ink = |s: &mut Soft| {
             let mut fb = vec![0u32; w * h];
             s.begin_frame(&mut fb, w, h, 10, 40, &Fold::default());
             let (ox, oy) = s.origin();
-            // The bar's text rows, between the buttons' columns and the gear's.
+            // The bar's text rows, between the buttons' columns and the servers' button.
             let mut xs = (usize::MAX, 0);
             for y in oy + 4..oy + TITLE_H - 4 {
-                for x in ox + 100..w - ox - 40 {
+                for x in ox + 100..w - ox - 68 {
                     if fb[y * w + x] & 0xff > 120 {
                         xs = (xs.0.min(x - ox), xs.1.max(x - ox));
                     }

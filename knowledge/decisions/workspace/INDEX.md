@@ -19,3 +19,4 @@ Windows, groups, panes, the overlays built on one kit, and the screens of the se
 - [0044 · An agent has its mark, not a spinner](0044-an-agent-has-its-mark-not-a-spinner.md) — superseded in part by 0046; the still mark instead of a ring, no timer, stand.
 - [0045 · A split can be resized](0045-a-split-can-be-resized.md) — drag a gap or `Alt+Shift+arrows`; weights per track on the group; kept between runs.
 - [0046 · The agents' own marks](0046-the-agents-own-marks.md) — published marks in their colours; faint while Claude works, a dot while it waits; title glyph cut.
+- [0048 · SSH servers by alias](0048-ssh-servers-by-alias.md) — `Alt+H` panel over an OpenSSH file `~/.ssh/config` includes; sessions shown per window.

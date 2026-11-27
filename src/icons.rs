@@ -26,12 +26,19 @@ pub enum Icon {
     Up,
     Down,
     Enter,
+    /// A server (`#btn-hosts`): two stacked racks with a light each.
+    Host,
+    /// Open in a new window: a box with an arrow out of its corner.
+    Open,
+    Pencil,
+    /// Back: a chevron pointing left (the reference's `chev` turned a quarter).
+    Back,
 }
 
 impl Icon {
     /// Every icon (the test that draws each one).
     #[cfg(test)]
-    pub const ALL: [Icon; 14] = [
+    pub const ALL: [Icon; 18] = [
         Icon::Search,
         Icon::Plus,
         Icon::Group,
@@ -46,6 +53,10 @@ impl Icon {
         Icon::Up,
         Icon::Down,
         Icon::Enter,
+        Icon::Host,
+        Icon::Open,
+        Icon::Pencil,
+        Icon::Back,
     ];
 }
 
@@ -81,6 +92,22 @@ fn coverage(icon: Icon, x: f32, y: f32, u: f32, t: f32) -> f32 {
         Icon::Up => poly(&[(8.0, 12.5), (8.0, 3.5)]).max(poly(&[(4.5, 7.0), (8.0, 3.5), (11.5, 7.0)])),
         Icon::Down => poly(&[(8.0, 3.5), (8.0, 12.5)]).max(poly(&[(4.5, 9.0), (8.0, 12.5), (11.5, 9.0)])),
         Icon::Enter => poly(&[(12.5, 4.0), (12.5, 9.0), (4.0, 9.0)]).max(poly(&[(7.0, 6.0), (4.0, 9.0), (7.0, 12.0)])),
+        Icon::Host => rect(2.0, 3.0, 12.0, 4.0, 1.2).max(rect(2.0, 9.0, 12.0, 4.0, 1.2)).max(poly(&[(4.6, 5.0), (4.61, 5.0)])).max(poly(&[(4.6, 11.0), (4.61, 11.0)])),
+        Icon::Open => poly(&[(9.0, 3.0), (13.0, 3.0), (13.0, 7.0)]).max(poly(&[(13.0, 3.0), (7.5, 8.5)])).max(poly(&[
+            (7.0, 4.0),
+            (4.5, 4.0),
+            (3.44, 4.44),
+            (3.0, 5.5),
+            (3.0, 11.5),
+            (3.44, 12.56),
+            (4.5, 13.0),
+            (10.5, 13.0),
+            (11.56, 12.56),
+            (12.0, 11.5),
+            (12.0, 9.0),
+        ])),
+        Icon::Pencil => poly(&[(3.0, 13.0), (3.7, 10.0), (10.5, 3.2), (11.5, 2.79), (12.5, 3.2), (12.91, 4.2), (12.5, 5.2), (5.7, 12.0), (3.0, 13.0)]),
+        Icon::Back => poly(&[(10.0, 4.0), (6.0, 8.0), (10.0, 12.0)]),
     }
 }
 

@@ -1224,6 +1224,7 @@ fn status_icon(p: &mut Paint, st: Status, cx: f32, cy: f32, active: bool) {
             });
         }
         Status::Agent(a, s) => icons::agent(p, a, s, cx, cy, 16.0, 1.0),
+        Status::Remote => p.disc(cx, cy, 4.0, palette::unit(palette::CYAN), 1.0),
         Status::Failed => p.disc(cx, cy, 3.5, palette::unit(palette::RED), 1.0),
     }
 }

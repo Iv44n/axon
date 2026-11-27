@@ -28,7 +28,9 @@ use crate::{
     history::History,
     i18n::{self, Lang},
     palette, panes, session,
+    hosts::{Btn, Fld, Focus, Hit as HostHit, Hosts, Tool},
     settings::{self, Settings},
+    ssh,
     side::{self, Status},
     soft::{Dock, Slot, Soft, Target, UNFOCUSED},
     view::View,
@@ -253,7 +255,36 @@ struct Scene {
     list: ListScene,
     /// The terminal line the pointer is over, in the grid: the status of the command whose block that is shows.
     hover: Option<usize>,
+    /// The panel of SSH servers docked beside the grid (where the settings go), over the sample servers, and what the
+    /// scene does to it (`hosts_scene`).
+    hosts: Option<HostsScene>,
 }
+
+/// The panel of servers in a scene: over which servers, and what is done to it.
+#[derive(Clone, Copy)]
+struct HostsScene {
+    book: fn() -> Vec<ssh::Host>,
+    setup: fn(&mut Hosts, &[ssh::Host]),
+}
+
+/// The panel over the sample servers.
+fn hs(setup: fn(&mut Hosts, &[ssh::Host])) -> Option<HostsScene> {
+    Some(HostsScene { book: sample_hosts, setup })
+}
+
+/// The servers of the panel's scenes (the reference's four): `web` has a session open, `produccion` was used three hours
+/// ago, `db` yesterday, `staging` never. The times are from now, so every machine shows the same words.
+fn sample_hosts() -> Vec<ssh::Host> {
+    let mut h = ssh::sample();
+    let now = ssh::now();
+    h[0].last = now - 60;
+    h[3].last = now - 3 * 3600;
+    h[1].last = now - 30 * 3600;
+    h
+}
+
+/// The reference's session with a window in an ssh session to `web` (the one in no group): a cyan dot, the alias as its name.
+const REMOTE: [Status; 5] = [Status::Idle, Status::Running, Status::Idle, Status::Remote, Status::Idle];
 
 /// What the bar says in the board's scenes: made-up values, the same on every machine.
 fn sample_context() -> Context {
@@ -297,6 +328,7 @@ fn scenes() -> Vec<Scene> {
         list: NO_LIST,
         lang: Lang::En,
         hover: None,
+        hosts: None,
     };
     let bar = |chips: &[Chip]| Some((sample_context(), chips.to_vec()));
     let chips3 = || bar(&[Chip::Time, Chip::Dir, Chip::Branch]);
@@ -311,6 +343,8 @@ fn scenes() -> Vec<Scene> {
     let font = |weight, letter_spacing, line_height| FontCfg { weight, letter_spacing, line_height, ..FontCfg::sized(PX) };
     // The settings panel is open: the gear in the title bar is lit.
     let open = Ui { prefs: true, ..Ui::IDLE };
+    // The panel of servers is open: its button is lit, and the windows' panel is shown.
+    let hosts_ui = Ui { hosts: true, side: 2, ..Ui::IDLE };
     use settings::{Hit, Page, Row};
     vec![
         base("rest", "Focused, at rest", "window", Ui::IDLE),
@@ -428,6 +462,30 @@ fn scenes() -> Vec<Scene> {
         Scene { font: font(500, 0.0, 1.0), ..base("font-medium", "Weight 500 (medium)", "font", Ui::IDLE) },
         Scene { font: font(400, 1.0, 1.0), ..base("font-spaced", "Letter spacing +1 px", "font", Ui::IDLE) },
         Scene { font: font(400, 0.0, 1.3), ..base("font-tall", "Line height 1.3", "font", Ui::IDLE) },
+        base("hosts-hover", "Pointer over the servers' button (Alt+H), left of the gear", "servers", Ui { hover: 7, ..Ui::IDLE }),
+        Scene { side: Some((TabsPos::Left, None)), list: ListScene { status: REMOTE, ..NO_LIST }, hosts: hs(|_, _| {}), ..base("hosts", "The panel of SSH servers (Alt+H) where the settings go: the search and the line of keys fixed, the servers last used first; web has a session open (a green light, “connected”, and its window in the list is named web with a cyan dot), the selected row shows its two buttons (open in a new window, edit)", "servers", hosts_ui) },
+        Scene { side: Some((TabsPos::Left, None)), hosts: hs(|p, _| p.over(HostHit::Tool(2, Tool::Window))), ..base("hosts-row-hover", "Pointer over a row's “open in a new window” button: the row is lit and shows its buttons instead of when it was used", "servers", hosts_ui) },
+        Scene { side: Some((TabsPos::Left, None)), hosts: hs(|p, b| p.search("pro", b)), ..base("hosts-search", "Typing filters by alias (or initials, then by address and user); the first Esc clears it, the second closes", "servers", hosts_ui) },
+        Scene { side: Some((TabsPos::Left, None)), hosts: Some(HostsScene { book: Vec::new, setup: |_, _| {} }), ..base("hosts-empty", "No servers yet: what to do", "servers", hosts_ui) },
+        Scene { side: Some((TabsPos::Left, None)), hosts: hs(|p, b| {
+            p.edit(b, None, None, false);
+            p.paste("ssh -i ~/.ssh/keys/api.pem root@203.0.113.9 -p 2200", b);
+        }), ..base("hosts-new", "+ Server: a long ssh command pasted fills the form and proposes a name; Enter saves it; the command it amounts to below", "servers", hosts_ui) },
+        Scene { side: Some((TabsPos::Left, None)), hosts: hs(|p, b| {
+            p.edit(b, None, Some(ssh::Form { alias: "web".into(), hostname: "10.0.0.1".into(), port: "99999".into(), ..ssh::Form::default() }), true);
+            p.focus_on(Focus::Field(Fld::Port));
+            p.scroll_to_end(b);
+        }), ..base("hosts-errors", "A form with errors, shown once touched (Enter brings them into view): Save is off, dimmed", "servers", hosts_ui) },
+        Scene { side: Some((TabsPos::Left, None)), hosts: hs(|p, b| {
+            p.edit(b, Some(3), None, false);
+            p.over(HostHit::Btn(Btn::Delete));
+        }), ..base("hosts-edit", "Editing a server: Delete at the left in red (the pointer over it), Duplicate, Cancel, Save; what it runs on arrival", "servers", hosts_ui) },
+        Scene { side: Some((TabsPos::Left, None)), hosts: hs(|p, _| {
+            p.import(Ok("Include ~/.config/axon/ssh_config\nServerAliveInterval 30\n\nHost web\n    HostName 10.10.0.11\n    User deploy\n\nHost github.com\n    User git\n\nHost bastion\n    HostName 198.51.100.4\n    Port 2222\n    Prot 22\n".into()));
+        }), ..base("hosts-import", "Import ~/.ssh/config (More): what the file has, what it defines, its mistakes by line, Import n for the new ones", "servers", hosts_ui) },
+        Scene { side: Some((TabsPos::Left, None)), hosts: hs(|p, b| p.export(ssh::write_config(b), "~/.config/axon/ssh_config".into())), ..base("hosts-export", "Export: axon's own file, which ~/.ssh/config includes", "servers", hosts_ui) },
+        Scene { side: Some((TabsPos::Left, None)), lang: Lang::Es, list: ListScene { status: REMOTE, ..NO_LIST }, hosts: hs(|_, _| {}), ..base("hosts-es", "The panel of servers in Spanish", "servers", hosts_ui) },
+        Scene { side: Some((TabsPos::Left, None)), lang: Lang::Es, hosts: hs(|p, b| p.edit(b, Some(3), None, false)), ..base("hosts-es-edit", "Editing in Spanish: the footer's four buttons do not fit one row, so Save goes under", "servers", hosts_ui) },
     ]
 }
 
@@ -441,7 +499,7 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
     let (cw, ch) = soft.cell();
     let side_w = if matches!(s.side, Some((TabsPos::Left | TabsPos::Right, _))) { 220 } else { 0 };
     let tabs = s.side.map_or(TabsPos::Left, |(pos, _)| pos);
-    let prefs_w = if s.prefs.is_some() { settings::panel_width(W) } else { 0 };
+    let prefs_w = if s.prefs.is_some() || s.hosts.is_some() { settings::panel_width(W) } else { 0 };
     // The settings are at the edge opposite the windows' panel (`wlapp::docks`).
     soft.set_docks(Dock { w: side_w, left: tabs != TabsPos::Right }, Dock { w: prefs_w, left: tabs == TabsPos::Right });
     if s.side.is_some() {
@@ -505,7 +563,8 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
             }
             None => {
                 let titles = [("arcton", true, false), ("servidor", false, false), ("pruebas", false, true), ("~", false, false), ("notas", false, false)];
-                let rows = titles.into_iter().zip(s.list.status).map(|((t, sel, un), st)| (t, sel, un, st)).collect();
+                // A window in an ssh session is named after its server (`web`), as the app labels it.
+                let rows = titles.into_iter().zip(s.list.status).map(|((t, sel, un), st)| (if st == Status::Remote { "web" } else { t }, sel, un, st)).collect();
                 (rows, vec![Some(0), Some(0), Some(0), None, Some(1)], 0)
             }
         };
@@ -601,6 +660,15 @@ fn render(s: &Scene) -> (Vec<u32>, usize, usize) {
         panel.scroll_by(pf.scroll);
         soft.clear_rect(&mut fb, rect);
         panel.draw(&mut fb, w, h, (ml, mt));
+    }
+    if let (Some(HostsScene { book, setup }), Some(rect), Some(b)) = (s.hosts, soft.prefs_rect(), soft.prefs_box((W, H))) {
+        let book = book();
+        let live = (0..book.len()).map(|i| i == 0).collect();
+        let mut panel = Hosts::new(&book, live).with_local("alice");
+        panel.place(b, tabs == TabsPos::Right, false, &book);
+        setup(&mut panel, &book);
+        soft.clear_rect(&mut fb, rect);
+        panel.draw(&mut fb, w, h, (ml, mt), &book);
     }
     i18n::set(Lang::En);
     (fb, w, h)

@@ -44,12 +44,12 @@ pub const STATUS_H: usize = 28;
 pub const REACH: usize = 32;
 /// Where the title bar's middle part runs (`.win-title`, `.top-slot`): the title between the panel button (which ends at 104)
 /// and the actions, the tabs between the lights (which end at 66) and the actions. Each is 10 px (the bar's gap) from what it
-/// follows. `*_FROM_RIGHT` is how far the part's far end is from the window's right edge: the gear alone is 36 px wide (8 of
-/// padding), and the new-group button of the tabs' mode and the 2 px between them add 30.
+/// follows. `*_FROM_RIGHT` is how far the part's far end is from the window's right edge: the servers' button and the gear
+/// are 66 px wide (8 of padding, 2 between them), and the new-group button of the tabs' mode and its 2 px add 30.
 pub const TITLE_X0: usize = 114;
-pub const TITLE_FROM_RIGHT: usize = 46;
+pub const TITLE_FROM_RIGHT: usize = 76;
 pub const TABS_X0: usize = 76;
-pub const TABS_FROM_RIGHT: usize = 76;
+pub const TABS_FROM_RIGHT: usize = 106;
 
 // Pixels are sampled at their centre (`x + 0.5`), so the button centres sit on `n + 0.5`: a 13 px
 // disc then ends exactly on pixel borders and a 1 px stroke through the centre fills one row.
@@ -60,9 +60,11 @@ const BTN_DX: f32 = 20.0;
 // and lines the buttons up with the tabs (`side::TAB_H`, a tab at y = 5).
 const BTN_CY: f32 = 19.0;
 /// The settings button is a 28 px square whose centre is this far from the right edge of the window (`.topbar`: 8 px of
-/// padding on the right); the new-group button of the tabs' mode is the next one, 2 px to its left.
+/// padding on the right); the servers' button (`#btn-hosts`) is the next one, 2 px to its left, and the new-group button of
+/// the tabs' mode the one after.
 const GEAR_FROM_RIGHT: f32 = 22.0;
-const GROUP_FROM_RIGHT: f32 = 52.0;
+const HOSTS_FROM_RIGHT: f32 = 52.0;
+const GROUP_FROM_RIGHT: f32 = 82.0;
 const GEAR_HALF: f32 = 14.0;
 /// The button that shows and hides the panel of windows: a 28 px square right of the window buttons.
 const SIDE_CX: f32 = 90.0;
@@ -97,8 +99,10 @@ pub enum Hit {
     Settings,
     /// The button right of the window buttons: shows or hides the panel of windows.
     SideBtn,
-    /// The button left of the gear when the windows are tabs at the top (`#btn-newgroup`): the dialog for a new group.
+    /// The button left of the servers' one when the windows are tabs at the top (`#btn-newgroup`): the dialog for a new group.
     NewGroup,
+    /// The button left of the gear (`#btn-hosts`): the panel of SSH servers.
+    Hosts,
     Title,
     /// The panel of windows (the app finds out what in it; `side.rs`).
     Side,
@@ -109,7 +113,8 @@ pub enum Hit {
 }
 
 impl Hit {
-    /// 1..=3 for the window buttons, 4 for the gear, 5 for the panel button, 6 for the new-group button, 0 for everything else.
+    /// 1..=3 for the window buttons, 4 for the gear, 5 for the panel button, 6 for the new-group button, 7 for the servers'
+    /// button, 0 for everything else.
     pub fn button(self) -> u8 {
         match self {
             Hit::Close => 1,
@@ -118,6 +123,7 @@ impl Hit {
             Hit::Settings => 4,
             Hit::SideBtn => 5,
             Hit::NewGroup => 6,
+            Hit::Hosts => 7,
             _ => 0,
         }
     }
@@ -139,10 +145,12 @@ pub struct Ui {
     pub side: u8,
     /// The settings panel is open: the gear stays lit, as the reference's `aria-expanded`.
     pub prefs: bool,
+    /// The panel of servers is open: its button stays lit.
+    pub hosts: bool,
 }
 
 impl Ui {
-    pub const IDLE: Ui = Ui { hover: 0, down: false, focused: true, maximized: false, status: false, side: 1, prefs: false };
+    pub const IDLE: Ui = Ui { hover: 0, down: false, focused: true, maximized: false, status: false, side: 1, prefs: false, hosts: false };
 }
 
 fn button_center(i: u8) -> (f32, f32) {
@@ -204,6 +212,9 @@ pub fn hit(x: f32, y: f32, w: u32, h: u32, maximized: bool, side_btn: bool) -> H
     }
     if (x - (w - GEAR_FROM_RIGHT)).abs() <= GEAR_HALF && (y - BTN_CY).abs() <= GEAR_HALF {
         return Hit::Settings;
+    }
+    if (x - (w - HOSTS_FROM_RIGHT)).abs() <= GEAR_HALF && (y - BTN_CY).abs() <= GEAR_HALF {
+        return Hit::Hosts;
     }
     if !side_btn && (x - (w - GROUP_FROM_RIGHT)).abs() <= GEAR_HALF && (y - BTN_CY).abs() <= GEAR_HALF {
         return Hit::NewGroup;
@@ -364,6 +375,34 @@ fn side_button(base: P, px: f32, py: f32, ui: &Ui) -> P {
     tint(colour, a * sidebar(dx, dy)).over(p)
 }
 
+/// Coverage of the servers' icon (two racks, each with its light, on a 16 px grid) at offset `(dx, dy)` from its centre.
+fn server_icon(dx: f32, dy: f32) -> f32 {
+    let (x, y) = (dx + 8.0, dy + 8.0);
+    let rack = |top: f32| (0.75 + 0.5 - rounded_rect(x - 2.0, y - top, 12.0, 4.0, 1.2).abs()).clamp(0.0, 1.0);
+    let light = |cy: f32| (0.75 + 0.5 - (x - 4.6).hypot(y - cy)).clamp(0.0, 1.0);
+    rack(3.0).max(rack(9.0)).max(light(5.0)).max(light(11.0))
+}
+
+/// The servers' button over `base`: dim, lit on a rounded highlight under the pointer and while its panel is open.
+fn hosts_button(base: P, px: f32, py: f32, wf: f32, ui: &Ui) -> P {
+    let (dx, dy) = (px - (wf - HOSTS_FROM_RIGHT), py - BTN_CY);
+    if dx.abs() > GEAR_HALF + 1.0 || dy.abs() > GEAR_HALF + 1.0 {
+        return base;
+    }
+    let (hovered, on) = (ui.hover == 7, ui.hosts);
+    let mut p = base;
+    if hovered || on {
+        let d = rounded_rect(dx + GEAR_HALF, dy + GEAR_HALF, 2.0 * GEAR_HALF, 2.0 * GEAR_HALF, 8.0);
+        p = P::white(if hovered && ui.down { 0.12 } else { 0.07 } * (0.5 - d).clamp(0.0, 1.0)).over(p);
+    }
+    let (colour, a) = match (hovered || on, ui.focused) {
+        (true, _) => (ICON_FG, 1.0),
+        (false, true) => (ICON_DIM, 1.0),
+        (false, false) => (ICON_DIM, 0.55),
+    };
+    tint(colour, a * server_icon(dx, dy)).over(p)
+}
+
 /// Coverage of the new-group icon (a rounded frame with a plus in it, on a 16 px grid) at offset `(dx, dy)` from its centre.
 fn group_icon(dx: f32, dy: f32) -> f32 {
     let (x, y) = (dx + 8.0, dy + 8.0);
@@ -495,6 +534,7 @@ pub fn pixel(x: usize, y: usize, w: usize, h: usize, opacity: f32, ui: &Ui) -> u
     p = gear_button(p, px, py, wf, ui);
     p = side_button(p, px, py, ui);
     p = group_button(p, px, py, wf, ui);
+    p = hosts_button(p, px, py, wf, ui);
 
     // The window over its own shadow (only its anti-aliased edge lets any through).
     let p = p.scale(cov);
@@ -615,6 +655,8 @@ mod tests {
             Ui { side: 2, ..UI },
             Ui { hover: 5, down: true, ..UI },
             Ui { side: 0, hover: 6, ..UI },
+            Ui { hover: 7, down: true, ..UI },
+            Ui { hosts: true, ..UI },
             Ui { maximized: true, ..UI },
         ];
         for ui in states {
@@ -653,7 +695,9 @@ mod tests {
         assert_eq!(h(60.0, 19.0), Hit::Maximize);
         assert_eq!(h(400.0, 19.0), Hit::Title);
         assert_eq!(h(800.0 - 22.0, 19.0), Hit::Settings);
-        assert_eq!(h(800.0 - 50.0, 19.0), Hit::Title, "the new-group button is the tabs' mode's");
+        assert_eq!(h(800.0 - 52.0, 19.0), Hit::Hosts, "the servers' button, 2 px left of the gear");
+        assert_eq!(Hit::Hosts.button(), 7);
+        assert_eq!(h(800.0 - 80.0, 19.0), Hit::Title, "the new-group button is the tabs' mode's");
         assert_eq!(Hit::Settings.button(), 4);
         // The bar is 40 px with its hairline: its buttons are 28 px boxes from y = 5.
         assert_eq!(h(800.0 - 22.0, 5.0), Hit::Settings);
@@ -671,9 +715,9 @@ mod tests {
         assert_eq!(hit(SIDE_CX, 19.0, 800, 600, false, true), Hit::SideBtn);
         assert_eq!(hit(SIDE_CX, 19.0, 800, 600, false, false), Hit::Title);
         assert_eq!(Hit::SideBtn.button(), 5);
-        // ...and the new-group button is there only without it, 2 px left of the gear (`.topbar-actions`).
-        assert_eq!(hit(800.0 - 52.0, 19.0, 800, 600, false, false), Hit::NewGroup);
-        assert_eq!(hit(800.0 - 52.0, 19.0, 800, 600, false, true), Hit::Title);
+        // ...and the new-group button is there only without it, 2 px left of the servers' one (`.topbar-actions`).
+        assert_eq!(hit(800.0 - 82.0, 19.0, 800, 600, false, false), Hit::NewGroup);
+        assert_eq!(hit(800.0 - 82.0, 19.0, 800, 600, false, true), Hit::Title);
         assert_eq!(hit(800.0 - 22.0, 19.0, 800, 600, false, false), Hit::Settings);
         assert_eq!(Hit::NewGroup.button(), 6);
         // Over the shadow: a grab zone just outside the edge, nothing beyond it.
@@ -690,7 +734,7 @@ mod tests {
             let (bw, bh) = (WIN.0 + 2 * ml, WIN.1 + mt + mb);
             pixel(ml + x, mt + y, bw, bh, 0.88, ui) >> 8 & 255
         };
-        let (cx, cy) = (WIN.0 - 52, 19usize);
+        let (cx, cy) = (WIN.0 - 82, 19usize);
         let ink = |ui: &Ui| (cx - 8..cx + 8).flat_map(|x| (cy - 8..cy + 8).map(move |y| (x, y))).map(|(x, y)| lum(ui, x, y)).max().unwrap();
         let tabs = Ui { side: 0, ..UI };
         let off = lum(&tabs, 700, 19);

@@ -15,7 +15,7 @@ const DELAY: Duration = Duration::from_millis(1500);
 
 /// The debugging aids that start a screen or a state for screenshots and measurements: a run with one of them is not
 /// the user's session, so it neither reads nor writes it.
-const AIDS: [&str; 9] = ["AXON_WINDOWS", "AXON_GROUPS", "AXON_PANES", "AXON_RUNNING", "AXON_SETTINGS", "AXON_OVERVIEW", "AXON_LIST_UI", "AXON_DEMO_OVERLAY", "AXON_SELFTEST"];
+const AIDS: [&str; 10] = ["AXON_WINDOWS", "AXON_GROUPS", "AXON_PANES", "AXON_RUNNING", "AXON_SETTINGS", "AXON_OVERVIEW", "AXON_HOSTS", "AXON_LIST_UI", "AXON_DEMO_OVERLAY", "AXON_SELFTEST"];
 
 /// Whether `pid` is another axon that runs: a process with that id exists and, where the system says what a process is called,
 /// it is called as this one. An id that another program took after the owner ended must not keep the session from being

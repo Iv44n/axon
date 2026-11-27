@@ -10,7 +10,7 @@
 //! after a scroll finds its record again. A bounded ring: the oldest prompts forget their chips.
 use std::{collections::VecDeque, time::Instant};
 
-use crate::{agent::Agent, context::Context};
+use crate::{agent::Agent, context::Context, ssh::Dest};
 
 /// How many prompts are remembered.
 const KEEP: usize = 256;
@@ -26,8 +26,9 @@ const LABEL_MAX: usize = 24;
 pub enum Hook {
     /// A command is about to run.
     Start,
-    /// The command that runs, as a window's label: its first word (`cargo` of `cargo build --release`).
-    Label(String),
+    /// The command that runs, as a window's label: its first word (`cargo` of `cargo build --release`), and where it goes
+    /// when it is an ssh that opens a session (`ssh::session`: the server and user, never the rest of the line).
+    Label(String, Option<Dest>),
     /// A new prompt, number `n`; the command before it ended with `status`.
     Prompt { n: u32, status: i32 },
     /// The directory the shell is in, for a shell whose process does not move when it does (PowerShell's `cd`).
@@ -41,7 +42,7 @@ pub fn parse(title: &str) -> Option<Hook> {
     match kind {
         // What follows an `S` is bash's arming token: nothing to read.
         "S" if !arg.contains(' ') => Some(Hook::Start),
-        "L" => Some(Hook::Label(command_word(arg).to_string())),
+        "L" => Some(Hook::Label(command_word(arg).to_string(), crate::ssh::session(arg))),
         "D" if !arg.is_empty() => Some(Hook::Dir(arg.to_string())),
         "E" => match arg.split(' ').collect::<Vec<_>>()[..] {
             [n, status] => Some(Hook::Prompt { n: n.parse().ok()?, status: status.parse().ok()? }),
@@ -87,6 +88,8 @@ pub struct History {
     started: Option<Instant>,
     /// What the command now running is called (`command_word`), empty when the shell has not said.
     label: String,
+    /// Where the command now running is an ssh session to, when it is one.
+    remote: Option<Dest>,
     rev: u32,
 }
 
@@ -95,6 +98,19 @@ impl History {
     pub fn start(&mut self, at: Instant) {
         self.started = Some(at);
         self.label.clear();
+        self.remote = None;
+    }
+
+    /// The command that runs is an ssh session to `d` (its label is then the server's alias, `set_label`).
+    pub fn set_remote(&mut self, d: Option<Dest>) {
+        if self.started.is_some() {
+            self.remote = d;
+        }
+    }
+
+    /// Where the ssh session running now goes, while one runs.
+    pub fn remote(&self) -> Option<&Dest> {
+        self.started.and(self.remote.as_ref())
     }
 
     /// The command that started is called `word`; said when none runs, it is ignored.
@@ -114,6 +130,7 @@ impl History {
     /// is what the new prompt shows for now.
     pub fn prompt(&mut self, n: u32, status: i32, at: Instant, ctx: &Context) {
         self.label.clear();
+        self.remote = None;
         if let (Some(t0), Some(last)) = (self.started.take(), self.recs.back_mut()) {
             last.run = Some(Run { status, ms: at.saturating_duration_since(t0).as_millis() as u64 });
             self.rev += 1;
@@ -165,9 +182,10 @@ impl History {
         self.command().and_then(Agent::of)
     }
 
-    /// A command that is not an agent is running: what a spinner says.
+    /// A command that is not an agent nor an ssh session is running: what a spinner says. A session, like an agent,
+    /// lasts until the user ends it, and has its mark (a dot in the cyan of the servers).
     pub fn busy(&self) -> bool {
-        self.running() && self.agent().is_none()
+        self.running() && self.agent().is_none() && self.remote().is_none()
     }
 
     /// The last command that ran failed (interrupting one with Ctrl+C, status 130, is not a failure).
@@ -229,8 +247,11 @@ mod tests {
         ] {
             assert_eq!(command_word(line), word, "{line:?}");
         }
-        assert_eq!(parse("axon!hook L cargo build"), Some(Hook::Label("cargo".into())));
-        assert_eq!(parse("axon!hook L"), Some(Hook::Label(String::new())));
+        assert_eq!(parse("axon!hook L cargo build"), Some(Hook::Label("cargo".into(), None)));
+        assert_eq!(parse("axon!hook L"), Some(Hook::Label(String::new(), None)));
+        let web = Dest { host: "web".into(), ..Dest::default() };
+        assert_eq!(parse("axon!hook L ssh web"), Some(Hook::Label("ssh".into(), Some(web))));
+        assert_eq!(parse("axon!hook L ssh web uptime"), Some(Hook::Label("ssh".into(), None)), "runs and comes back");
         // The directory a shell says it is in (PowerShell): the whole rest of the title, spaces included.
         assert_eq!(parse("axon!hook D C:\\Users\\Ana Perez\\code"), Some(Hook::Dir("C:\\Users\\Ana Perez\\code".into())));
         assert_eq!(parse("axon!hook D"), None);
@@ -251,6 +272,24 @@ mod tests {
         h.start(t0);
         h.set_label("cargo");
         assert!(h.busy() && h.agent().is_none());
+    }
+
+    #[test]
+    fn an_ssh_session_runs_but_is_not_busy_and_ends_with_its_prompt() {
+        let mut h = History::default();
+        let t0 = Instant::now();
+        let d = Dest { host: "web".into(), ..Dest::default() };
+        h.set_remote(Some(d.clone()));
+        assert_eq!(h.remote(), None, "said when nothing runs: ignored");
+        h.start(t0);
+        h.set_label("web");
+        h.set_remote(Some(d.clone()));
+        assert!(h.running() && !h.busy());
+        assert_eq!((h.remote(), h.command()), (Some(&d), Some("web")));
+        h.prompt(1, 0, t0, &ctx("~"));
+        assert!(!h.running() && h.remote().is_none(), "the session ended");
+        h.start(t0);
+        assert!(h.remote().is_none() && h.busy(), "the next command is another");
     }
 
     #[test]
