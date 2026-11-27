@@ -55,7 +55,8 @@ old prompts keep a blank line. Marks are invisible, one column each, copied as s
   so the last prompt is always read) and when the minute changes. A 100 MB flood in a repository: 1.74 s with chips
   (1.72 s without).
 - *Idle is still zero.* The only timer is the minute boundary, and only while the `time` chip is shown.
-- *No dependency.* Time comes from `localtime_r` (declared by hand; `std` has no time zone), the rest from files.
+- *No dependency.* Time comes from our own reader of the zone files (`tz.rs`, [0049](../core/0049-no-unsafe-code.md); `std` has no
+  time zone; it was `localtime_r` declared by hand until then), the rest from files.
 
 **Where each chip's data comes from:** directory `/proc/<shell>/cwd`; branch `.git/HEAD` (worktrees and submodules);
 changes `git diff HEAD --numstat` run by the shell's hook; pyenv `$PYENV_VERSION`, else the nearest `.python-version`, else

@@ -45,6 +45,8 @@ mod side;
 mod soft;
 mod ssh;
 mod toast;
+#[cfg(target_os = "linux")]
+mod tz;
 mod view;
 #[cfg(windows)]
 mod win;

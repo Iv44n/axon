@@ -512,47 +512,20 @@ pub fn kube_context(text: &str) -> Option<String> {
 
 // ------------------------------------------------------------------ time --
 
-#[cfg(target_os = "linux")]
-#[repr(C)]
-struct Tm {
-    sec: i32,
-    min: i32,
-    hour: i32,
-    mday: i32,
-    mon: i32,
-    year: i32,
-    wday: i32,
-    yday: i32,
-    isdst: i32,
-    gmtoff: i64,
-    zone: *const std::ffi::c_char,
-}
-
-#[cfg(target_os = "linux")]
-unsafe extern "C" {
-    fn localtime_r(t: *const i64, out: *mut Tm) -> *mut Tm;
-}
-
 fn epoch() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 
-/// The local hour and minute (the C library knows the time zone; `std` does not).
+/// The local hour and minute (`std` does not know the time zone): Windows asks the system, in `win.rs`.
 #[cfg(windows)]
-fn local_hm() -> (u32, u32) {
-    let mut t = windows_sys::Win32::Foundation::SYSTEMTIME { wYear: 0, wMonth: 0, wDayOfWeek: 0, wDay: 0, wHour: 0, wMinute: 0, wSecond: 0, wMilliseconds: 0 };
-    // SAFETY: `t` is a valid SYSTEMTIME for the call to fill.
-    unsafe { windows_sys::Win32::System::SystemInformation::GetLocalTime(&mut t) };
-    ((t.wHour as u32).min(23), (t.wMinute as u32).min(59))
-}
+use crate::win::local_hm;
 
+/// The local hour and minute: the time zone's offset comes from our own reader of the zone files (`tz.rs`).
 #[cfg(target_os = "linux")]
 fn local_hm() -> (u32, u32) {
     let t = epoch();
-    let mut tm = Tm { sec: 0, min: 0, hour: 0, mday: 0, mon: 0, year: 0, wday: 0, yday: 0, isdst: 0, gmtoff: 0, zone: std::ptr::null() };
-    // SAFETY: `tm` has the layout of glibc's and musl's `struct tm` on 64-bit Linux, and both pointers are valid.
-    let ok = unsafe { !localtime_r(&t, &mut tm).is_null() };
-    if ok { (tm.hour.clamp(0, 23) as u32, tm.min.clamp(0, 59) as u32) } else { ((t / 3600 % 24) as u32, (t / 60 % 60) as u32) }
+    let s = (t + i64::from(crate::tz::offset(t))).rem_euclid(86_400);
+    ((s / 3600) as u32, (s / 60 % 60) as u32)
 }
 
 /// How long until the minute changes: when the time chip has to be repainted.

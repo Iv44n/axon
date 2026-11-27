@@ -16,3 +16,4 @@ The stack, the renderer, the data layout and the rule of owning what we ship. Ne
 - [0013 · Wayland default, xkb via dlopen](0013-wayland-default-xkb-dlopen.md) — `wl` is the default backend; `libxkbcommon` loaded at run time; `winit` fallback.
 - [0039 · Windows port](0039-windows-port.md) — own Win32 layered window behind `plat.rs`, ConPTY shell, self-test on CI; no blur or HiDPI yet.
 - [0041 · Paint outside the terminal's lock](0041-paint-outside-the-terminal-lock.md) — the lock covers reading cells; flood 13 % faster, lock held 30x less.
+- [0049 · No `unsafe` code](0049-no-unsafe-code.md) — `unsafe_code = "deny"`; only `xkb.rs`, `win.rs` and the pixels' mapping allowed; own time zone reader.

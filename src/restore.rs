@@ -20,7 +20,7 @@
 //! One axon owns the file at a time (`owner`, its process id): a second axon opened while the first runs starts fresh and
 //! leaves the first's session alone, instead of opening a copy of it. The pure part is here (the format, the rules); the
 //! app builds the snapshot and puts it back (`wlapp.rs`).
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::{
     groups::COLORS,
@@ -67,7 +67,12 @@ pub struct Saved {
 /// Where the session is kept: `AXON_SESSION` if it names a file, nowhere if it is `off` (benchmarks and tests: the user's
 /// own session is not touched), else the state directory. None where there is no home to keep it in.
 pub fn path() -> Option<PathBuf> {
-    match std::env::var_os("AXON_SESSION") {
+    path_in(std::env::var_os("AXON_SESSION"))
+}
+
+/// `path` for this value of `AXON_SESSION` (the tests give one without touching the process's environment).
+fn path_in(var: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    match var {
         Some(v) if v == "off" || v == "0" => return None,
         Some(v) if !v.is_empty() => return Some(PathBuf::from(v)),
         _ => {}
@@ -243,8 +248,11 @@ pub fn decode(text: &str) -> Option<Saved> {
 
 /// Reads the session, if there is a good one.
 pub fn load() -> Option<Saved> {
-    let path = path()?;
-    let meta = std::fs::metadata(&path).ok()?;
+    load_from(&path()?)
+}
+
+fn load_from(path: &Path) -> Option<Saved> {
+    let meta = std::fs::metadata(path).ok()?;
     if meta.len() > MAX_BYTES {
         return None;
     }
@@ -253,13 +261,19 @@ pub fn load() -> Option<Saved> {
 
 /// Writes `s`: to a file beside the session, then renamed over it, so a crash in the middle leaves the old one whole.
 pub fn save(s: &Saved) -> std::io::Result<()> {
-    let Some(path) = path() else { return Ok(()) };
+    match path() {
+        Some(path) => save_to(&path, s),
+        None => Ok(()),
+    }
+}
+
+fn save_to(path: &Path, s: &Saved) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = path.with_extension(format!("tmp{}", std::process::id()));
     std::fs::write(&tmp, encode(s))?;
-    std::fs::rename(&tmp, &path).inspect_err(|_| {
+    std::fs::rename(&tmp, path).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
     })
 }
@@ -371,24 +385,19 @@ mod tests {
     fn the_file_is_written_whole_and_read_back() {
         let dir = std::env::temp_dir().join(format!("axon-restore-test-{}", std::process::id()));
         let file = dir.join("nested").join("session");
-        // The environment is the process's: this test is the only one that sets it.
-        unsafe { std::env::set_var("AXON_SESSION", &file) };
-        assert_eq!(path(), Some(file.clone()));
-        assert_eq!(load(), None, "nothing yet");
-        save(&sample()).unwrap();
-        assert_eq!(load(), Some(sample()));
+        assert_eq!(path_in(Some(file.clone().into())), Some(file.clone()), "AXON_SESSION names the file");
+        assert_eq!(load_from(&file), None, "nothing yet");
+        save_to(&file, &sample()).unwrap();
+        assert_eq!(load_from(&file), Some(sample()));
         let mut s = sample();
         s.wins.truncate(1);
         s.groups.clear();
         s.wins[0].group = None;
-        save(&s).unwrap();
-        assert_eq!(load(), Some(Saved { cur: 0, ..s }), "saving again replaces it");
+        save_to(&file, &s).unwrap();
+        assert_eq!(load_from(&file), Some(Saved { cur: 0, ..s }), "saving again replaces it");
         assert_eq!(std::fs::read_dir(file.parent().unwrap()).unwrap().count(), 1, "no temporary file is left");
-        unsafe { std::env::set_var("AXON_SESSION", "off") };
-        assert_eq!(path(), None);
-        save(&sample()).unwrap();
-        assert_eq!(load(), None, "off keeps nothing");
-        unsafe { std::env::remove_var("AXON_SESSION") };
+        assert_eq!(path_in(Some("off".into())), None, "off keeps nothing");
+        assert_eq!(path_in(Some("0".into())), None, "nor does 0");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

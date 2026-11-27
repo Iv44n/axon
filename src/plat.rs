@@ -113,39 +113,6 @@ impl std::os::fd::AsFd for Wake {
     }
 }
 
+/// The Win32 event lives with the rest of the system's calls, in `win.rs`.
 #[cfg(windows)]
-pub struct Wake(pub(crate) windows_sys::Win32::Foundation::HANDLE);
-
-// SAFETY: an event handle is a kernel object that any thread may signal and wait on.
-#[cfg(windows)]
-unsafe impl Send for Wake {}
-#[cfg(windows)]
-unsafe impl Sync for Wake {}
-
-#[cfg(windows)]
-impl Wake {
-    pub fn new() -> std::io::Result<Wake> {
-        use windows_sys::Win32::System::Threading::CreateEventW;
-        // SAFETY: no security attributes and no name; the handle is ours and closed in `Drop`.
-        let h = unsafe { CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()) };
-        if h.is_null() { Err(std::io::Error::last_os_error()) } else { Ok(Wake(h)) }
-    }
-
-    pub fn signal(&self) {
-        // SAFETY: `self.0` is a live event handle.
-        unsafe { windows_sys::Win32::System::Threading::SetEvent(self.0) };
-    }
-
-    pub fn clear(&self) {
-        // SAFETY: `self.0` is a live event handle.
-        unsafe { windows_sys::Win32::System::Threading::ResetEvent(self.0) };
-    }
-}
-
-#[cfg(windows)]
-impl Drop for Wake {
-    fn drop(&mut self) {
-        // SAFETY: the handle is ours and nothing waits on it any more.
-        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
-    }
-}
+pub use crate::win::Wake;

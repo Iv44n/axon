@@ -692,19 +692,6 @@ thread_local! {
     static UI_FONT: std::cell::RefCell<std::rc::Weak<UiFont>> = const { std::cell::RefCell::new(std::rc::Weak::new()) };
 }
 
-/// Gives the heap pages that nothing uses any more back to the system. A dropped font is thousands of small
-/// allocations: freed, they stay in the process (the resident size does not fall) until this is asked.
-pub fn release_memory() {
-    #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    {
-        unsafe extern "C" {
-            fn malloc_trim(pad: usize) -> std::ffi::c_int;
-        }
-        // SAFETY: `malloc_trim` is glibc's and takes no pointers; it only returns free pages of the heap.
-        unsafe { malloc_trim(0) };
-    }
-}
-
 /// Families tried in order: the reference's own (Geist), the two that look most like it (Inter, and GNOME's Adwaita
 /// Sans, drawn from it), then the desktop's and other common good ones. Not Cantarell: its file is CFF2, which
 /// `fontdue` parses but draws nothing from.
@@ -728,10 +715,7 @@ impl UiFont {
         if let Some(f) = UI_FONT.with(|w| w.borrow().upgrade()) {
             return Some(f);
         }
-        let font = find_any(font_dirs(), &UI_FAMILIES).and_then(|p| load_ui_font(&p)).map(|font| std::rc::Rc::new(UiFont { font }));
-        // The file's bytes, their narrowed copy and the parser's scratch are free now: give their pages back.
-        release_memory();
-        let font = font?;
+        let font = find_any(font_dirs(), &UI_FAMILIES).and_then(|p| load_ui_font(&p)).map(|font| std::rc::Rc::new(UiFont { font }))?;
         UI_FONT.with(|w| *w.borrow_mut() = std::rc::Rc::downgrade(&font));
         Some(font)
     }

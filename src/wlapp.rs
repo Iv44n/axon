@@ -2165,7 +2165,6 @@ impl App {
         if self.panel.take().is_none() {
             return;
         }
-        crate::font::release_memory();
         self.ui.prefs = false;
         if self.hover == Hit::Prefs {
             self.hover = Hit::Client; // the grid is under the pointer now
